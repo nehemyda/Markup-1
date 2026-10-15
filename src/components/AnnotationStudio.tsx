@@ -123,7 +123,8 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
   const [newPinComment, setNewPinComment] = useState('');
   const [newPinCategory, setNewPinCategory] = useState<PinCategory>('design');
   const [newPinPriority, setNewPinPriority] = useState<PinPriority>('medium');
-  const [newPinAssignee, setNewPinAssignee] = useState<string>(teammates[1]?.id || '');
+  // New pins start unassigned; the person dropping the pin chooses an assignee if they want one
+  const [newPinAssignee, setNewPinAssignee] = useState<string>('');
   const [newPinScreenshot, setNewPinScreenshot] = useState<string | null>(null);
   const [newPinAttachments, setNewPinAttachments] = useState<Attachment[]>([]);
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
@@ -1149,17 +1150,19 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
                     </div>
                   </div>
 
-                  {/* Assignee */}
-                  <div>
-                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Assign To Teammate (1000+ Directory)</label>
-                    <SearchableMemberSelect
-                      selectedMember={teammates.find(t => t.id === newPinAssignee) || teammates[0]}
-                      teammates={teammates}
-                      onSelect={(tm) => setNewPinAssignee(tm.id)}
-                      placeholder="Search member or QA..."
-                      compact
-                    />
-                  </div>
+                  {/* Assignee (team members only; guests never see the team list) */}
+                  {!isGuest && (
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Assignee</label>
+                      <SearchableMemberSelect
+                        selectedMember={teammates.find(t => t.id === newPinAssignee)}
+                        teammates={teammates}
+                        onSelect={(tm) => setNewPinAssignee(tm.id)}
+                        placeholder="Search team members..."
+                        compact
+                      />
+                    </div>
+                  )}
 
                   {/* Screenshot & Attachments Row */}
                   <div>

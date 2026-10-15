@@ -82,6 +82,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
   const [commentInput, setCommentInput] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const [showMoreDetails, setShowMoreDetails] = useState(false);
+  const isGuest = currentUser.role === 'Guest';
   const [copiedSelector, setCopiedSelector] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -141,6 +142,8 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
 
   const handleCommentInputChange = (text: string) => {
     setCommentInput(text);
+    // Guests cannot @mention: the mention menu would show the team list
+    if (isGuest) return;
 
     // Detect @ symbol for autocomplete popup
     const lastAtIndex = text.lastIndexOf('@');
@@ -643,7 +646,8 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
           </div>
         )}
 
-        {/* Assignee Card with Searchable Member Select (1000+ support) */}
+        {/* Assignee (hidden for guests: they never see the team list) */}
+        {!isGuest && (
         <div className="bg-slate-50 border border-slate-200 p-2.5 rounded-lg space-y-1.5">
           <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Assignee</div>
 
@@ -666,8 +670,10 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
             placeholder="Search team members..."
           />
         </div>
+        )}
 
-        {/* Less-used tools, collapsed by default to keep the sidebar simple */}
+        {/* Less-used tools, collapsed by default to keep the sidebar simple (team only) */}
+        {!isGuest && (
         <div className="border border-slate-200 rounded-lg">
           <button
             type="button"
@@ -923,6 +929,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
             </div>
           )}
         </div>
+        )}
 
         {/* Discussion Timeline */}
         <div className="space-y-3 pt-1">

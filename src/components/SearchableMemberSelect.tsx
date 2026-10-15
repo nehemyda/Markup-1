@@ -17,7 +17,7 @@ export const SearchableMemberSelect: React.FC<SearchableMemberSelectProps> = ({
   selectedMember,
   teammates,
   onSelect,
-  placeholder = "Search 1000+ team members...",
+  placeholder = "Search team members...",
   className = "",
   label,
   compact = false
@@ -153,7 +153,7 @@ export const SearchableMemberSelect: React.FC<SearchableMemberSelectProps> = ({
                   roleFilter === 'all' ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
                 }`}
               >
-                All (1000+)
+                All
               </button>
               <button
                 type="button"
@@ -258,8 +258,7 @@ export const SearchableMemberSelect: React.FC<SearchableMemberSelectProps> = ({
 
           {/* Directory Footer Info */}
           <div className="px-3 py-1.5 bg-slate-50 border-t border-slate-200 text-[10px] text-slate-500 flex items-center justify-between font-medium">
-            <span>Showing {filteredTeammates.length} of 1,240 team members</span>
-            <span className="text-indigo-600 font-bold">Directory Synced</span>
+            <span>Showing {filteredTeammates.length} of {teammates.length} {teammates.length === 1 ? 'member' : 'members'}</span>
           </div>
         </div>
       )}

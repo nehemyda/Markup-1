@@ -340,7 +340,7 @@ export const Header: React.FC<HeaderProps> = ({
                           type="text"
                           value={teamSearchQuery}
                           onChange={(e) => setTeamSearchQuery(e.target.value)}
-                          placeholder="Search 1000+ members by name, email, role..."
+                          placeholder="Search members by name, email, role..."
                           className="w-full bg-white border border-slate-300 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-indigo-600 shadow-xs"
                         />
                       </div>
