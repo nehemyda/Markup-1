@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Project, Asset, Teammate } from '../types';
 import { projectUrl } from '../lib/routes';
+import { copyText } from '../lib/clipboard';
 import { 
   Plus, 
   X, 
@@ -55,7 +56,7 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClos
   ];
 
   return (
-    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-in fade-in duration-150 select-none">
+    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-in fade-in duration-150">
       <div className="bg-white border border-slate-200 rounded-xl max-w-lg w-full p-5 shadow-xl space-y-4">
         <div className="flex items-center justify-between border-b border-slate-200 pb-2.5">
           <div className="flex items-center gap-1.5 font-extrabold text-sm text-slate-900">
@@ -190,7 +191,7 @@ export const NewAssetModal: React.FC<NewAssetModalProps> = ({ isOpen, onClose, o
   };
 
   return (
-    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-in fade-in duration-150 select-none">
+    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-in fade-in duration-150">
       <div className="bg-white border border-slate-200 rounded-xl max-w-md w-full p-5 shadow-xl space-y-4">
         <div className="flex items-center justify-between border-b border-slate-200 pb-2.5">
           <div className="flex items-center gap-1.5 font-extrabold text-sm text-slate-900">
@@ -283,6 +284,7 @@ interface ShareModalProps {
 export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, currentProject, onInviteTeammate }) => {
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedGuestLink, setCopiedGuestLink] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
   const [sentInvite, setSentInvite] = useState(false);
 
@@ -291,14 +293,19 @@ export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, current
   const shareUrl = currentProject ? projectUrl(currentProject.id) : '';
   const guestShareUrl = currentProject ? projectUrl(currentProject.id, true) : '';
 
-  const copyLink = () => {
-    navigator.clipboard.writeText(shareUrl);
+  // Only show "Copied" when the copy really worked; otherwise ask the person to copy the link by hand
+  const copyLink = async () => {
+    const ok = await copyText(shareUrl);
+    setCopyFailed(!ok);
+    if (!ok) return;
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 2000);
   };
 
-  const copyGuestLink = () => {
-    navigator.clipboard.writeText(guestShareUrl);
+  const copyGuestLink = async () => {
+    const ok = await copyText(guestShareUrl);
+    setCopyFailed(!ok);
+    if (!ok) return;
     setCopiedGuestLink(true);
     setTimeout(() => setCopiedGuestLink(false), 2000);
   };
@@ -316,7 +323,7 @@ export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, current
   };
 
   return (
-    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-in fade-in duration-150 select-none">
+    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-in fade-in duration-150">
       <div className="bg-white border border-slate-200 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5">
         <div className="flex items-center justify-between border-b border-slate-200 pb-3">
           <div className="flex items-center gap-2 font-extrabold text-base text-slate-900">
@@ -394,11 +401,17 @@ export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, current
 
           </>)}
 
+          {copyFailed && (
+            <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-[11px] text-rose-700">
+              Your browser blocked copying. Click into the link box, select the link and copy it (Cmd+C).
+            </div>
+          )}
+
           {/* Email Invite */}
           <div className="pt-2 border-t border-slate-200 space-y-1.5">
             <label className="font-extrabold text-slate-700 uppercase tracking-wider block">Invite Teammate via Email</label>
             <p className="text-[11px] text-slate-500">
-              Users with <code className="bg-slate-100 text-slate-800 font-bold px-1 rounded">@yourdigitalagents.com</code> automatically join as <strong>Member (Editor & Annotator)</strong>.
+              Invited people can sign in with this email, even if it is outside your allowed domains. They join as a <strong>Member</strong>.
             </p>
             <form onSubmit={handleSendEmail} className="flex gap-1.5">
               <input
@@ -436,6 +449,62 @@ export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, current
           </div>
         </div>
       </div>
+    </div>
+  );
+};
+
+// Asks a signed-out guest for their name before their first pin or comment, so feedback is attributed
+export const GuestNameModal: React.FC<{
+  isOpen: boolean;
+  onSave: (profile: { name: string; email: string }) => void;
+  onCancel: () => void;
+}> = ({ isOpen, onSave, onCancel }) => {
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  if (!isOpen) return null;
+  return (
+    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center z-[60] p-4">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (name.trim()) onSave({ name: name.trim(), email: email.trim() });
+        }}
+        className="bg-white border border-slate-200 rounded-2xl max-w-sm w-full p-6 shadow-2xl space-y-4 text-sm"
+      >
+        <div>
+          <h2 className="font-extrabold text-base text-slate-900">Before you leave feedback</h2>
+          <p className="text-xs text-slate-500 mt-1">Your name is shown on the pins and comments you add.</p>
+        </div>
+        <label className="block">
+          <span className="text-xs font-bold text-slate-600">Your name</span>
+          <input
+            autoFocus
+            required
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Maria Lopez"
+            className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500"
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs font-bold text-slate-600">Email <span className="font-normal text-slate-400">(optional)</span></span>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@company.com"
+            className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500"
+          />
+        </label>
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onCancel} className="px-3 py-2 rounded-lg text-slate-600 hover:bg-slate-100 font-semibold">
+            Cancel
+          </button>
+          <button type="submit" className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold">
+            Continue
+          </button>
+        </div>
+      </form>
     </div>
   );
 };

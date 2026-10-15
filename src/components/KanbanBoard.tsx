@@ -105,7 +105,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
   };
 
   return (
-    <div className="flex-1 flex flex-col h-[calc(100vh-3.5rem)] bg-slate-50 overflow-hidden select-none text-slate-900">
+    <div className="flex-1 flex flex-col h-[calc(100vh-3.5rem)] bg-slate-50 overflow-hidden text-slate-900">
       
       {/* Top Project Stats & Filter Bar */}
       <div className="bg-white border-b border-slate-200 px-4 py-3 flex flex-wrap items-center justify-between gap-4 shadow-xs">

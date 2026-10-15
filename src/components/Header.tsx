@@ -152,13 +152,13 @@ export const Header: React.FC<HeaderProps> = ({
   };
 
   return (
-    <header className="h-14 border-b border-slate-200 bg-white text-slate-900 sticky top-0 z-50 select-none shrink-0">
+    <header className="h-14 border-b border-slate-200 bg-white text-slate-900 sticky top-0 z-50 shrink-0">
       <div className="w-full px-4 md:px-6 h-14 flex items-center justify-between gap-2 md:gap-4">
         
         {/* Left: Brand & All Projects Grid Navigation */}
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
           <button 
-            onClick={() => onViewModeChange('dashboard')}
+            onClick={() => !isGuestMode && onViewModeChange('dashboard')}
             className="flex items-center gap-2 font-bold text-lg tracking-tight text-slate-900 shrink-0 hover:opacity-85 transition-opacity text-left cursor-pointer"
             title="Return to Projects Grid Dashboard"
           >
@@ -184,8 +184,8 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
           )}
 
-          {/* Clean Navigation: All Projects Grid Button + Project Title (No bulky dropdowns) */}
-          {viewMode !== 'dashboard' && (
+          {/* Clean Navigation: All Projects Grid Button + Project Title (hidden for guests: they only see the shared project) */}
+          {viewMode !== 'dashboard' && !isGuestMode && (
             <>
               <div className="h-6 w-px bg-slate-200 hidden md:block" />
 
@@ -202,8 +202,8 @@ export const Header: React.FC<HeaderProps> = ({
           )}
         </div>
 
-        {/* Center: View Switcher Tabs (Only shown inside studio views) */}
-        {viewMode !== 'dashboard' && (
+        {/* Center: View Switcher Tabs (Only shown inside studio views, not for guests) */}
+        {viewMode !== 'dashboard' && !isGuestMode && (
           <div className="hidden lg:flex items-center bg-slate-100 p-1 rounded-md border border-slate-200 shrink-0">
             <button
               onClick={() => onViewModeChange('studio')}
@@ -276,8 +276,8 @@ export const Header: React.FC<HeaderProps> = ({
             <span className="text-[11px]">Firebase: <span className="font-extrabold text-amber-900">{useEmulator ? 'Local Emulator' : firebaseConfig.projectId}</span></span>
           </div>
 
-          {/* Active Collaborators & Share (Only shown inside studio views) */}
-          {viewMode !== 'dashboard' && (
+          {/* Active Collaborators & Share (Only shown inside studio views, not for guests) */}
+          {viewMode !== 'dashboard' && !isGuestMode && (
             <>
               {/* Interactive Teammate Avatars Stack */}
               <div ref={teamRef} className="relative shrink-0">
@@ -429,7 +429,8 @@ export const Header: React.FC<HeaderProps> = ({
             </>
           )}
 
-          {/* Notification Bell Button & Notification Center Popover */}
+          {/* Notification Bell Button & Notification Center Popover (not for guests) */}
+          {!isGuestMode && (
           <div ref={notificationRef} className="relative shrink-0">
             <button
               onClick={() => {
@@ -506,9 +507,10 @@ export const Header: React.FC<HeaderProps> = ({
               </div>
             )}
           </div>
+          )}
 
-          {/* User Account & Profile Dropdown */}
-          {currentUser && (
+          {/* User Account & Profile Dropdown (not for guests) */}
+          {currentUser && !isGuestMode && (
             <div ref={userRef} className="relative shrink-0">
               <button
                 onClick={() => {
@@ -591,7 +593,8 @@ export const Header: React.FC<HeaderProps> = ({
 
       </div>
 
-      {/* Mobile / Tablet View Switcher Sub-bar */}
+      {/* Mobile / Tablet View Switcher Sub-bar (not for guests) */}
+      {!isGuestMode && (
       <div className="lg:hidden flex items-center overflow-x-auto whitespace-nowrap px-3 py-1.5 gap-1.5 border-t border-slate-200 bg-white text-xs font-medium text-slate-700 scrollbar-none justify-start sm:justify-center">
         <button
           onClick={() => onViewModeChange('studio')}
@@ -634,6 +637,7 @@ export const Header: React.FC<HeaderProps> = ({
           <Award className="w-3.5 h-3.5" /> QA Score
         </button>
       </div>
+      )}
     </header>
   );
 };

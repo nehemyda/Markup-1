@@ -214,7 +214,7 @@ export const FeedbackMatrix: React.FC<FeedbackMatrixProps> = ({
         <div className="bg-white border border-slate-200 rounded-xl overflow-x-auto shadow-xs custom-scrollbar">
           <table className="w-full min-w-[960px] text-left text-xs border-collapse">
             <thead>
-              <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-extrabold uppercase tracking-wider select-none">
+              <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-extrabold uppercase tracking-wider">
                 <th className="p-2.5 w-10 text-center whitespace-nowrap">
                   <button onClick={handleToggleSelectAll} className="p-1 hover:text-slate-900">
                     {selectedIds.length === sortedPins.length && sortedPins.length > 0 ? (

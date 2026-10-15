@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Project, Asset, Teammate, ViewMode, Pin } from '../types';
 import { projectUrl } from '../lib/routes';
+import { copyText } from '../lib/clipboard';
 import { ARCHIVED_PROJECTS } from '../data/mockData';
 import { getAllowedDomains, saveAllowedDomains, useAllowedDomains, DEFAULT_ALLOWED_DOMAINS } from '../utils/domains';
 import { UserAvatar } from './UserAvatar';
@@ -130,7 +131,7 @@ const WebsiteThumbnailPreview: React.FC<{
   }
 
   return (
-    <div className="w-full h-full bg-slate-950 text-white p-3 flex flex-col justify-between font-sans select-none relative overflow-hidden">
+    <div className="w-full h-full bg-slate-950 text-white p-3 flex flex-col justify-between font-sans relative overflow-hidden">
       <div className="absolute -right-8 -bottom-8 w-32 h-32 bg-indigo-600/20 rounded-full blur-xl pointer-events-none" />
       <div className="absolute -left-8 -top-8 w-32 h-32 bg-blue-600/20 rounded-full blur-xl pointer-events-none" />
 
@@ -469,8 +470,9 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
   const copyGuestLinkForProject = (projId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     const guestUrl = projectUrl(projId, true);
-    navigator.clipboard.writeText(guestUrl);
-    setCopiedCardId(projId);
+    copyText(guestUrl).then((ok) => {
+      if (ok) setCopiedCardId(projId);
+    });
     setTimeout(() => setCopiedCardId(null), 2000);
   };
 

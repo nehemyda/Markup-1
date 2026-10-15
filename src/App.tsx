@@ -46,7 +46,7 @@ import { FeedbackMatrix } from './components/FeedbackMatrix';
 import { TeamActivityFeed } from './components/TeamActivityFeed';
 import { ProjectsGridView } from './components/ProjectsGridView';
 import { QAScoreManager } from './components/QAScoreManager';
-import { NewProjectModal, NewAssetModal, ShareModal } from './components/Modals';
+import { NewProjectModal, NewAssetModal, ShareModal, GuestNameModal } from './components/Modals';
 import { DomainSecurityModal } from './components/DomainSecurityModal';
 import { ProfileSettingsModal } from './components/ProfileSettingsModal';
 import { getAllowedDomains } from './utils/domains';
@@ -70,6 +70,19 @@ export default function App() {
   const [appIcon, setAppIcon] = useState('W');
   // Preview-as-guest toggle for signed-in members; visitors on a guest link are handled by isGuestShareLink
   const [isGuestMode, setIsGuestMode] = useState(false);
+  // A signed-out visitor on a guest link who clicked "Sign in"
+  const [guestWantsSignIn, setGuestWantsSignIn] = useState(false);
+  // Signed-out guests give their name before their first pin or comment (remembered in this browser)
+  const [guestProfile, setGuestProfile] = useState<{ id: string; name: string; email: string } | null>(() => {
+    try {
+      const saved = localStorage.getItem('mf_guest_profile');
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
+  });
+  const [showGuestNameModal, setShowGuestNameModal] = useState(false);
+  const pendingGuestAction = useRef<{ kind: 'pin'; data: any } | { kind: 'comment'; args: any[] } | null>(null);
   const [projectsLoaded, setProjectsLoaded] = useState(false);
 
   const [projects, setProjects] = useState<Project[]>(() => {
@@ -297,10 +310,10 @@ export default function App() {
     status: authUser.status,
     cursorColor: authUser.cursorColor
   } : {
-    id: 'usr_guest',
-    name: 'Guest Reviewer',
-    email: 'guest@client.com',
-    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+    id: guestProfile?.id || 'usr_guest',
+    name: guestProfile ? `${guestProfile.name} (Guest)` : 'Guest',
+    email: guestProfile?.email || '',
+    avatar: '',
     role: 'Guest',
     status: 'online',
     cursorColor: '#F59E0B'
@@ -356,6 +369,20 @@ export default function App() {
       setSelectedPin(pin);
     }
   }, [pins]);
+
+  // Run a guest's pending pin/comment once they have given their name (uses this render's handlers)
+  useEffect(() => {
+    const pending = pendingGuestAction.current;
+    if (!guestProfile || !pending) return;
+    pendingGuestAction.current = null;
+    if (pending.kind === 'pin') handleAddPin(pending.data);
+    else handleAddComment(...(pending.args as Parameters<typeof handleAddComment>));
+  }, [guestProfile]);
+
+  // Signed-out guests only see the shared project's canvas
+  useEffect(() => {
+    if (!authUser && isGuestShareLink && routeReady && viewMode !== 'studio') setViewMode('studio');
+  }, [authUser, routeReady, viewMode]);
 
   // Browser back / forward
   useEffect(() => {
@@ -508,19 +535,42 @@ export default function App() {
     setSelectedPin(null);
   };
 
-  const handleUpdateAssetUrl = (newUrl: string, newType: Asset['type']) => {
-    const updatedAsset = { ...currentAsset, url: newUrl, type: newType };
-    setCurrentAsset(updatedAsset);
-    setProjects((prev) =>
-      prev.map((proj) =>
-        proj.id === currentProject.id
-          ? {
-              ...proj,
-              assets: proj.assets.map((a) => (a.id === currentAsset.id ? updatedAsset : a)),
-            }
-          : proj
-      )
-    );
+  // Add a page (another URL of the website) to the current project, or switch to it if it is already there.
+  // Each page keeps its own pins.
+  const handleAddPage = (rawUrl: string) => {
+    let url = rawUrl.trim();
+    if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      alert('That does not look like a valid page URL.');
+      return;
+    }
+    const normalize = (u: string) => u.replace(/\/+$/, '').toLowerCase();
+    const existing = currentProject.assets.find((a) => normalize(a.url) === normalize(parsed.href));
+    if (existing) {
+      setCurrentAsset(existing);
+      setSelectedPin(null);
+      return;
+    }
+    const isImage = /\.(jpe?g|png|gif|svg|webp)$/i.test(parsed.pathname);
+    const newPage: Asset = {
+      id: `asset_${Date.now()}`,
+      projectId: currentProject.id,
+      title: parsed.pathname === '/' ? parsed.hostname : parsed.pathname,
+      type: isImage ? 'image' : 'url',
+      url: parsed.href,
+      status: 'in_review',
+      pinCount: 0,
+      resolvedCount: 0,
+    };
+    const updatedProject = { ...currentProject, assets: [...currentProject.assets, newPage] };
+    setProjects((prev) => prev.map((p) => (p.id === updatedProject.id ? updatedProject : p)));
+    saveProjectToFirestore(updatedProject);
+    setCurrentProject(updatedProject);
+    setCurrentAsset(newPage);
+    setSelectedPin(null);
   };
 
   // Add a new annotation pin
@@ -974,7 +1024,26 @@ export default function App() {
   const isGuestShareLink = typeof window !== 'undefined' &&
     new URLSearchParams(window.location.search).get('guest_mode') === 'true';
 
-  if (!authUser && !isGuestMode && !isGuestShareLink) {
+  // Guests must give a name before their first pin or comment; the action then runs with that name
+  const needsGuestName = !authUser && !guestProfile;
+  const addPinAsUser = (data: Parameters<typeof handleAddPin>[0]) => {
+    if (needsGuestName) {
+      pendingGuestAction.current = { kind: 'pin', data };
+      setShowGuestNameModal(true);
+      return;
+    }
+    handleAddPin(data);
+  };
+  const addCommentAsUser = (...args: Parameters<typeof handleAddComment>) => {
+    if (needsGuestName) {
+      pendingGuestAction.current = { kind: 'comment', args };
+      setShowGuestNameModal(true);
+      return;
+    }
+    handleAddComment(...args);
+  };
+
+  if (!authUser && ((!isGuestMode && !isGuestShareLink) || guestWantsSignIn)) {
     if (!authReady) {
       return (
         <div className="min-h-screen bg-slate-900 flex items-center justify-center">
@@ -1006,15 +1075,15 @@ export default function App() {
           <div className="flex items-center gap-2">
             <span className="text-sm">👁️</span>
             <span>
-              <strong>Guest Review Mode Active:</strong> You are viewing shared project <span className="underline">{currentProject.name}</span> as an invited reviewer (No login required).
+              <strong>Guest review:</strong> you are reviewing <span className="underline">{currentProject.name}</span>{guestProfile && !authUser ? ` as ${guestProfile.name}` : ''}. Drop pins and comment, no account needed.
             </span>
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => setIsGuestMode(false)}
+              onClick={() => (authUser ? setIsGuestMode(false) : setGuestWantsSignIn(true))}
               className="bg-slate-950 text-white hover:bg-slate-900 px-3 py-1 rounded-lg text-xs font-extrabold transition-all cursor-pointer"
             >
-              Sign In as Workspace Admin
+              {authUser ? 'Exit guest preview' : 'Sign in'}
             </button>
           </div>
         </div>
@@ -1025,7 +1094,8 @@ export default function App() {
         appName={appName}
         appIcon={appIcon}
         isGuestMode={effectiveGuestMode}
-        onToggleGuestMode={() => setIsGuestMode(!effectiveGuestMode)}
+        // Signed-out guests use the banner's Sign in button instead
+        onToggleGuestMode={authUser ? () => setIsGuestMode(!effectiveGuestMode) : undefined}
         projects={projects}
         currentProject={currentProject}
         onSelectProject={handleSelectProject}
@@ -1164,11 +1234,13 @@ export default function App() {
             <AnnotationStudio
               currentProject={currentProject}
               currentAsset={currentAsset}
-              onUpdateAssetUrl={handleUpdateAssetUrl}
+              pages={currentProject.assets || []}
+              onSelectPage={handleSelectAsset}
+              onAddPage={handleAddPage}
               pins={pins}
               selectedPin={selectedPin}
               onSelectPin={setSelectedPin}
-              onAddPin={handleAddPin}
+              onAddPin={addPinAsUser}
               teammates={teammates}
               currentUser={currentUser}
               filterState={filterState}
@@ -1177,6 +1249,7 @@ export default function App() {
               isAuditing={isAuditing}
               isSimulatingPartner={isSimulatingPartner}
               isSidebarOpen={isSidebarOpen}
+              isGuest={effectiveGuestMode}
               viewport={device}
               onViewportChange={(d) => {
                 setDevice(d);
@@ -1199,7 +1272,7 @@ export default function App() {
                       onSelectPin={setSelectedPin}
                       onUpdatePinStatus={handleUpdatePinStatus}
                       onUpdatePinAssignee={handleUpdatePinAssignee}
-                      onAddComment={handleAddComment}
+                      onAddComment={addCommentAsUser}
                       teammates={teammates}
                       currentUser={currentUser}
                       onNotify={handleNotifyMember}
@@ -1299,6 +1372,21 @@ export default function App() {
         isOpen={showNewAssetModal}
         onClose={() => setShowNewAssetModal(false)}
         onCreateAsset={handleCreateAsset}
+      />
+      <GuestNameModal
+        isOpen={showGuestNameModal}
+        onCancel={() => {
+          pendingGuestAction.current = null;
+          setShowGuestNameModal(false);
+        }}
+        onSave={({ name, email }) => {
+          const profile = { id: `guest_${Date.now().toString(36)}`, name, email };
+          try {
+            localStorage.setItem('mf_guest_profile', JSON.stringify(profile));
+          } catch (e) {}
+          setShowGuestNameModal(false);
+          setGuestProfile(profile);
+        }}
       />
       <ShareModal
         isOpen={showShareModal}

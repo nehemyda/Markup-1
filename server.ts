@@ -521,22 +521,39 @@ For each finding, set elementId to the id of the element the problem is on (it m
 html, body {
   overflow-y: visible !important;
   height: auto !important;
-  min-height: 100% !important;
 }
 </style>
 <script>
 (function() {
+  // Height of the page's real content: the lowest bottom edge of visible, in-flow elements.
+  // Ignores the frame's own height and fixed/sticky overlays (chat bubbles, cookie bars), so the frame can shrink to fit.
+  function contentHeight() {
+    var maxBottom = 0;
+    var els = document.body ? document.body.getElementsByTagName('*') : [];
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      var r = el.getBoundingClientRect();
+      if (r.height <= 0 || r.width <= 0) continue;
+      var bottom = r.bottom + window.scrollY;
+      if (bottom <= maxBottom) continue;
+      var st = getComputedStyle(el);
+      if (st.position === 'fixed' || st.position === 'sticky' || st.display === 'none' || st.visibility === 'hidden') continue;
+      // Skip boxes stretched to the bottom of the frame (min-height: 100vh / 100%, flex fillers);
+      // they grow with the frame, so their real content is counted instead
+      if (Math.abs(r.bottom + window.scrollY - window.innerHeight) < 3) continue;
+      var p = el.parentElement, floating = false;
+      while (p && p !== document.body) {
+        var ps = getComputedStyle(p).position;
+        if (ps === 'fixed' || ps === 'sticky') { floating = true; break; }
+        p = p.parentElement;
+      }
+      if (!floating) maxBottom = bottom;
+    }
+    return Math.ceil(maxBottom);
+  }
   function reportFullHeight() {
     try {
-      var body = document.body;
-      var html = document.documentElement;
-      var height = Math.max(
-        body ? body.scrollHeight : 0,
-        body ? body.offsetHeight : 0,
-        html ? html.clientHeight : 0,
-        html ? html.scrollHeight : 0,
-        html ? html.offsetHeight : 0
-      );
+      var height = contentHeight();
       if (height > 200) {
         window.parent.postMessage({ type: 'MARKUP_FULL_PAGE_HEIGHT', height: height, url: window.location.href }, '*');
       }
@@ -545,10 +562,16 @@ html, body {
   window.addEventListener('load', reportFullHeight);
   window.addEventListener('resize', reportFullHeight);
   document.addEventListener('DOMContentLoaded', reportFullHeight);
-  setTimeout(reportFullHeight, 300);
-  setTimeout(reportFullHeight, 1000);
-  setTimeout(reportFullHeight, 2500);
-  setTimeout(reportFullHeight, 5000);
+  // Sites keep settling after load (images, fonts, widgets): re-check every second for the first 20s,
+  // and whenever an image finishes loading
+  var checks = 0;
+  var timer = setInterval(function() {
+    reportFullHeight();
+    if (++checks >= 20) clearInterval(timer);
+  }, 1000);
+  document.addEventListener('load', function(e) {
+    if (e.target && e.target.tagName === 'IMG') reportFullHeight();
+  }, true);
   if (typeof ResizeObserver !== 'undefined' && document.body) {
     try {
       new ResizeObserver(reportFullHeight).observe(document.body);

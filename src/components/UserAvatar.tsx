@@ -106,7 +106,7 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
 
   return (
     <div
-      className={`relative inline-flex items-center justify-center shrink-0 rounded-full select-none ${className}`}
+      className={`relative inline-flex items-center justify-center shrink-0 rounded-full ${className}`}
       style={{ width: `${pxSize}px`, height: `${pxSize}px` }}
       title={title || `${displayName} (${email || 'Google Workspace'})`}
     >

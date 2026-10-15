@@ -30,6 +30,7 @@ import {
   FileSpreadsheet,
   X,
   Pin as PinIcon,
+  ChevronDown,
   PinOff,
   Bell,
   AtSign,
@@ -80,6 +81,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
 }) => {
   const [commentInput, setCommentInput] = useState('');
   const [isRecording, setIsRecording] = useState(false);
+  const [showMoreDetails, setShowMoreDetails] = useState(false);
   const [copiedSelector, setCopiedSelector] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -346,7 +348,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
     const resolvedPins = pins.filter(p => p.status === 'resolved' || p.status === 'archived');
 
     return (
-      <aside className="w-80 lg:w-96 min-w-[20rem] lg:min-w-[24rem] max-w-[20rem] lg:max-w-[24rem] bg-white border-l border-slate-200 flex flex-col h-full select-none shrink-0 shadow-xs overflow-hidden text-slate-900 z-10 relative">
+      <aside className="w-80 lg:w-96 min-w-[20rem] lg:min-w-[24rem] max-w-[20rem] lg:max-w-[24rem] bg-white border-l border-slate-200 flex flex-col h-full shrink-0 shadow-xs overflow-hidden text-slate-900 z-10 relative">
         <div className="p-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2 font-bold text-xs text-slate-900">
             <MessageSquare className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
@@ -469,7 +471,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
 
   // IF PIN IS SELECTED: Render rich discussion thread, technical metadata, and AI assistant tools
   return (
-    <aside className="w-80 lg:w-96 min-w-[20rem] lg:min-w-[24rem] max-w-[20rem] lg:max-w-[24rem] bg-white border-l border-slate-200 flex flex-col h-full select-none shrink-0 shadow-xs overflow-hidden animate-in slide-in-from-right duration-200 text-slate-900 z-10 relative">
+    <aside className="w-80 lg:w-96 min-w-[20rem] lg:min-w-[24rem] max-w-[20rem] lg:max-w-[24rem] bg-white border-l border-slate-200 flex flex-col h-full shrink-0 shadow-xs overflow-hidden animate-in slide-in-from-right duration-200 text-slate-900 z-10 relative">
       
       {/* Top Header: Pin #, Back Button, Status Changer */}
       <div className="p-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between gap-2">
@@ -643,13 +645,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
 
         {/* Assignee Card with Searchable Member Select (1000+ support) */}
         <div className="bg-slate-50 border border-slate-200 p-2.5 rounded-lg space-y-1.5">
-          <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-slate-500">
-            <span>Assigned Teammate</span>
-            <span className="text-indigo-600 font-extrabold flex items-center gap-1">
-              <UserCheck className="w-3 h-3" />
-              <span>1000+ Directory</span>
-            </span>
-          </div>
+          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Assignee</div>
 
           <SearchableMemberSelect
             selectedMember={selectedPin.assignedTo}
@@ -667,10 +663,25 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
                 });
               }
             }}
-            placeholder="Search 1000+ team members (e.g. Akshat, Anju, QA)..."
+            placeholder="Search team members..."
           />
         </div>
 
+        {/* Less-used tools, collapsed by default to keep the sidebar simple */}
+        <div className="border border-slate-200 rounded-lg">
+          <button
+            type="button"
+            onClick={() => setShowMoreDetails((open) => !open)}
+            className="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg"
+          >
+            <span>More details</span>
+            <span className="flex items-center gap-1 text-[10px] font-normal text-slate-400">
+              QA rating, browser info, AI actions
+              <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showMoreDetails ? 'rotate-180' : ''}`} />
+            </span>
+          </button>
+          {showMoreDetails && (
+            <div className="p-3 pt-1 space-y-4">
         {/* QA Error & Weightage Classifier Card */}
         <div className="bg-slate-900 text-white border border-slate-800 p-3 rounded-xl space-y-2 shadow-xs">
           <div className="flex items-center justify-between text-[10px] font-extrabold uppercase tracking-wider text-indigo-300">
@@ -909,11 +920,14 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
           )}
         </div>
 
+            </div>
+          )}
+        </div>
+
         {/* Discussion Timeline */}
         <div className="space-y-3 pt-1">
           <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 flex items-center justify-between">
-            <span>Discussion Timeline ({selectedPin.comments.length})</span>
-            <span className="text-[10px] text-slate-500">Oldest to Newest</span>
+            <span>Comments ({selectedPin.comments.length})</span>
           </div>
 
           <div className="space-y-2.5">
@@ -1065,27 +1079,6 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
 
       {/* Bottom Comment Composer Input */}
       <div className="p-3 bg-slate-50 border-t border-slate-200 space-y-2 relative">
-        {/* Quick Tag Teammates Bar */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-[11px] no-scrollbar">
-          <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wide shrink-0">Tag QA / Team:</span>
-          {teammates.slice(0, 8).map((tm) => (
-            <button
-              key={tm.id}
-              type="button"
-              onClick={() => {
-                const tagText = `@${tm.name} `;
-                if (!commentInput.includes(tagText)) {
-                  setCommentInput((prev) => prev + tagText);
-                }
-              }}
-              className="bg-white hover:bg-indigo-50 border border-slate-200 hover:border-indigo-300 text-slate-700 hover:text-indigo-700 px-2 py-0.5 rounded-full text-[10px] font-semibold shrink-0 flex items-center gap-1 transition-colors cursor-pointer"
-            >
-              <img src={tm.avatar} alt={tm.name} className="w-3.5 h-3.5 rounded-full shrink-0 object-cover" />
-              <span>@{tm.name.split(' ')[0]} ({tm.role})</span>
-            </button>
-          ))}
-        </div>
-
         {/* Floating @Mention Autocomplete Menu */}
         {showMentionMenu && (
           <div className="absolute left-3 right-3 bottom-full mb-2 bg-white border border-slate-200 rounded-xl shadow-2xl z-50 overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-150">
@@ -1189,16 +1182,6 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
                 <Paperclip className="w-3.5 h-3.5" />
               </button>
 
-              <button
-                type="button"
-                onClick={handleSimulateVoiceNote}
-                title="Record instant voice note"
-                className={`p-1.5 rounded-md transition-colors cursor-pointer ${
-                  isRecording ? 'bg-rose-600 text-white animate-pulse' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'
-                }`}
-              >
-                <Mic className="w-3.5 h-3.5" />
-              </button>
               
               <button
                 type="submit"
@@ -1208,13 +1191,6 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
                 <Send className="w-3.5 h-3.5" />
               </button>
             </div>
-          </div>
-          <div className="flex items-center justify-between text-[10px] text-slate-500 px-1 pt-0.5 font-medium">
-            <span>Press Enter to send, Shift+Enter for newline</span>
-            <span className="text-indigo-600 font-semibold flex items-center gap-1">
-              <Sparkles className="w-3 h-3" />
-              <span>Attach screenshots & files</span>
-            </span>
           </div>
         </form>
       </div>
