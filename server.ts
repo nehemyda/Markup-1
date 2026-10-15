@@ -25,6 +25,10 @@ function getAIClient(): GoogleGenAI | null {
   return aiClient;
 }
 
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -211,18 +215,55 @@ Provide an instant technical fix or copywriting alternative. If it's a styling/U
 
   // 4. AI Automated Website Auditor
   app.post('/api/ai/audit-site', async (req, res) => {
-    const { url, title, type } = req.body;
-    try {
-      const ai = getAIClient();
+    const { url, title, snapshot, existingIssues } = req.body || {};
+    const ai = getAIClient();
+    if (!ai) {
+      return res.status(503).json({ error: 'AI review is unavailable: GEMINI_API_KEY is not set in .env.' });
+    }
+    if (!snapshot || (snapshot.kind !== 'page' && snapshot.kind !== 'image')) {
+      return res.status(400).json({ error: 'Missing page snapshot.' });
+    }
 
-      if (ai) {
-        const prompt = `You are an expert AI Design & UX Auditor reviewing the website or interface: "${title}" (URL/Asset: ${url}).
-Perform a simulated visual and interactive UX audit. Generate exactly 3 highly realistic, actionable annotation pins representing common web design improvements (e.g. mobile responsiveness, button contrast for WCAG accessibility, clear value proposition CTA, or layout spacing).
-Assign realistic X and Y percentage coordinates (between 15% and 85%) where these pins would sit on a live webpage canvas.`;
+    const category = { type: Type.STRING, enum: ['bug', 'design', 'content', 'question'] };
+    const priority = { type: Type.STRING, enum: ['high', 'medium', 'low'] };
+    const guidance = `Review it like a senior UX designer and accessibility specialist. Report only real, specific problems you can see in the provided data -- for example low text contrast (WCAG AA needs 4.5:1 for normal text, 3:1 for text 24px+ or 18.66px+ bold), missing image alt text, unclear or duplicate link/button labels, tiny tap targets, unreadably small text, weak headings or hierarchy, confusing copy, broken-looking layout or overlap, missing form labels. Do not invent problems or give generic advice. Return between 0 and 6 findings, most important first. Each comment should say what is wrong, why it matters, and the concrete fix.${
+      Array.isArray(existingIssues) && existingIssues.length
+        ? `\nThese issues are already reported on this page; do not report them again:\n${existingIssues.slice(0, 50).map((t: string) => `- ${String(t).slice(0, 160)}`).join('\n')}`
+        : ''
+    }`;
+
+    try {
+      if (snapshot.kind === 'page') {
+        console.log(`AI review: ${url} - ${(snapshot.elements || []).length} elements, screenshot ${snapshot.screenshot ? `${Math.round(snapshot.screenshot.length / 1024)} KB` : 'not available'}`);
+        // Compact element list so the prompt stays small; Gemini must point at one of these ids
+        const elementLines = (snapshot.elements || []).map((el: any) => {
+          const bits = [`#${el.id} <${el.tag}>`, `at (${el.x},${el.y}) ${el.w}x${el.h}px`];
+          if (el.text) bits.push(`text="${el.text}"`);
+          if (el.fontSize) bits.push(`font=${el.fontSize}px/${el.fontWeight}`);
+          if (el.contrast) bits.push(`contrast=${el.contrast}:1 (${el.color} on ${el.background})`);
+          if (el.attrs) bits.push(`attrs=${JSON.stringify(el.attrs)}`);
+          return bits.join(' ');
+        }).join('\n');
+
+        const prompt = `You are reviewing the live webpage "${snapshot.title || title}" (${url}).
+Page: ${snapshot.pageWidth}x${snapshot.pageHeight}px, lang="${snapshot.lang}", meta description="${snapshot.description}".
+${snapshot.screenshot ? 'An approximate screenshot of the full page is attached. It is a re-render, so it can drop or shift spaces, letter spacing, fonts and some images: use it only for layout, visual hierarchy and overlap. Judge text, spelling, spacing and punctuation ONLY from the text in the element list, which is the real page text.' : 'No screenshot was available; rely on the element list.'}
+
+Visible elements (id, tag, position in page pixels, text, font, measured text contrast, attributes). Text ending in "[...]" was shortened by this tool, not on the page -- never report it as truncated:
+${elementLines}
+
+${guidance}
+For each finding, set elementId to the id of the element the problem is on (it must be one of the ids above).`;
+
+        const parts: any[] = [{ text: prompt }];
+        if (typeof snapshot.screenshot === 'string' && snapshot.screenshot.startsWith('data:image/')) {
+          const [meta, data] = snapshot.screenshot.split(',');
+          parts.push({ inlineData: { mimeType: meta.slice(5, meta.indexOf(';')), data } });
+        }
 
         const response = await ai.models.generateContent({
           model: 'gemini-3.6-flash',
-          contents: prompt,
+          contents: [{ role: 'user', parts }],
           config: {
             responseMimeType: 'application/json',
             responseSchema: {
@@ -230,57 +271,89 @@ Assign realistic X and Y percentage coordinates (between 15% and 85%) where thes
               items: {
                 type: Type.OBJECT,
                 properties: {
-                  title: { type: Type.STRING, description: 'Short feedback headline e.g. "Increase contrast on secondary CTA"' },
-                  comment: { type: Type.STRING, description: 'Detailed constructive critique and recommended solution.' },
-                  category: { type: Type.STRING, description: 'bug, design, content, or question' },
-                  priority: { type: Type.STRING, description: 'high, medium, or low' },
-                  x: { type: Type.NUMBER, description: 'Horizontal coordinate percentage (10 to 90)' },
-                  y: { type: Type.NUMBER, description: 'Vertical coordinate percentage (15 to 80)' },
-                  selector: { type: Type.STRING, description: 'Simulated CSS selector e.g. #hero-subhead or .nav-link-cta' },
+                  elementId: { type: Type.INTEGER, description: 'id of the element from the list' },
+                  title: { type: Type.STRING, description: 'Short headline, e.g. "Low contrast on Contact button"' },
+                  comment: { type: Type.STRING, description: 'What is wrong, why it matters, and the fix' },
+                  category,
+                  priority,
                 },
-                required: ['title', 'comment', 'category', 'priority', 'x', 'y', 'selector'],
+                required: ['elementId', 'title', 'comment', 'category', 'priority'],
               },
             },
           },
         });
 
-        const text = response.text || '[]';
-        return res.json(JSON.parse(text));
+        const byId = new Map((snapshot.elements || []).map((el: any) => [el.id, el]));
+        const findings = JSON.parse(response.text || '[]')
+          .filter((f: any) => byId.has(f.elementId))
+          .map((f: any) => {
+            const el: any = byId.get(f.elementId);
+            return { ...f, x: el.pinX, y: el.pinY, selector: el.selector };
+          });
+        return res.json({ findings });
       }
-    } catch (error: any) {
-      console.warn('AI Audit Site Error (falling back to heuristic audit pins):', error?.message || error);
-    }
 
-    // Fallback audit pins if Gemini API key is missing or call fails
-    return res.json([
-      {
-        title: "Primary Call-To-Action Visual Hierarchy",
-        comment: "Increase button contrast ratio to meet WCAG 2.1 AA compliance (at least 4.5:1 ratio) for improved mobile legibility.",
-        category: "design",
-        priority: "high",
-        x: 48,
-        y: 38,
-        selector: ".hero-cta-button"
-      },
-      {
-        title: "Navigation Bar Horizontal Padding",
-        comment: "Tighten header nav spacing on tablet screens (768px - 1024px) to prevent item wrapping onto two lines.",
-        category: "bug",
-        priority: "medium",
-        x: 76,
-        y: 12,
-        selector: "header nav"
-      },
-      {
-        title: "Value Proposition Subheading Scanability",
-        comment: "Trim headline copy down from 22 words to ~12 words so users instantly grasp the key benefit above the fold.",
-        category: "content",
-        priority: "low",
-        x: 34,
-        y: 46,
-        selector: "#hero-subhead"
+      // Uploaded image / mockup: send the image itself and ask for boxes (0-1000 normalized)
+      let mimeType = 'image/png';
+      let data = '';
+      if (typeof url === 'string' && url.startsWith('data:image/')) {
+        const [meta, b64] = url.split(',');
+        mimeType = meta.slice(5, meta.indexOf(';'));
+        data = b64;
+      } else {
+        const imgRes = await fetch(url);
+        if (!imgRes.ok) throw new Error(`Could not download the image (HTTP ${imgRes.status}).`);
+        mimeType = imgRes.headers.get('content-type')?.split(';')[0] || mimeType;
+        const buf = Buffer.from(await imgRes.arrayBuffer());
+        if (buf.length > 15 * 1024 * 1024) throw new Error('The image is too large to review (over 15 MB).');
+        data = buf.toString('base64');
       }
-    ]);
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.6-flash',
+        contents: [{
+          role: 'user',
+          parts: [
+            { text: `You are reviewing a design image titled "${title}".\n${guidance}\nFor each finding, give box_2d as [ymin, xmin, ymax, xmax] normalized to 0-1000 around the area the problem is in.` },
+            { inlineData: { mimeType, data } },
+          ],
+        }],
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                box_2d: { type: Type.ARRAY, items: { type: Type.INTEGER } },
+                title: { type: Type.STRING },
+                comment: { type: Type.STRING },
+                category,
+                priority,
+              },
+              required: ['box_2d', 'title', 'comment', 'category', 'priority'],
+            },
+          },
+        },
+      });
+
+      const box = snapshot.box;
+      const findings = JSON.parse(response.text || '[]')
+        .filter((f: any) => Array.isArray(f.box_2d) && f.box_2d.length === 4)
+        .map((f: any) => {
+          const [ymin, xmin, ymax, xmax] = f.box_2d;
+          return {
+            ...f,
+            x: box.left + (((xmin + xmax) / 2) / 1000) * box.width,
+            y: box.top + (((ymin + ymax) / 2) / 1000) * box.height,
+            selector: `image region [${f.box_2d.join(', ')}]`,
+          };
+        });
+      return res.json({ findings });
+    } catch (error: any) {
+      console.warn('AI review failed:', error?.message || error);
+      return res.status(502).json({ error: `AI review failed: ${error?.message || 'unknown error'}` });
+    }
   });
 
   // 5. Live Website Proxy with Full-Height Auto-Expansion (Markup.io architecture)
@@ -314,7 +387,7 @@ Assign realistic X and Y percentage coordinates (between 15% and 85%) where thes
         html = html.replace(/<meta[^>]*http-equiv=["']?X-Frame-Options["']?[^>]*>/gi, '');
         html = html.replace(/<meta[^>]*http-equiv=["']?Content-Security-Policy["']?[^>]*>/gi, '');
 
-        const baseTag = `<base href="${targetUrl}">`;
+        const baseTag = `<base href="${escapeHtml(String(targetUrl))}">`;
         const autoHeightSnippet = `
 <style>
 /* Full Page Continuous Layout - Markup.io style */
@@ -382,6 +455,7 @@ html, body {
 <!DOCTYPE html>
 <html>
 <head>
+  <meta name="markup-proxy-error" content="1">
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f8fafc; padding: 40px; text-align: center; }
     .card { max-width: 600px; margin: 40px auto; background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 32px; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5); }
@@ -393,8 +467,8 @@ html, body {
 <body>
   <div class="card">
     <h2>🌐 External Web Server Connection Restricted</h2>
-    <p>Target: <span class="code">${rawUrl}</span></p>
-    <p>The external server either requires VPN/internal credentials or strictly limits bot proxy headers. Switch to <strong>🖥️ Interactive Staging View</strong> in the toolbar to inspect the full page layout without cut-offs.</p>
+    <p>Target: <span class="code">${escapeHtml(rawUrl)}</span></p>
+    <p>The website could not be loaded here. It may require a login or VPN, or it blocks automated requests. Use the open-in-new-tab icon next to the URL to view it directly.</p>
   </div>
 </body>
 </html>

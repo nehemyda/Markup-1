@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Project, 
   Asset, 
@@ -19,11 +19,7 @@ import {
   QAPinError
 } from './types';
 import { 
-  TEAMMATES, 
   INITIAL_PROJECTS, 
-  INITIAL_ASSETS,
-  INITIAL_PINS, 
-  INITIAL_ACTIVITY_LOGS 
 } from './data/mockData';
 import { INITIAL_QA_RUBRIC } from './data/qaRubricData';
 import { 
@@ -33,7 +29,12 @@ import {
   deleteProjectFromFirestore,
   savePinToFirestore, 
   deletePinFromFirestore, 
-  seedInitialFirestoreData,
+  deletePinsForAssets,
+  subscribeTeam,
+  inviteMember,
+  updateMemberRole,
+  removeMember,
+  normalizeRole,
   checkFirebaseConnection
 } from './lib/firebaseSync';
 import { Header } from './components/Header';
@@ -49,42 +50,36 @@ import { NewProjectModal, NewAssetModal, ShareModal } from './components/Modals'
 import { DomainSecurityModal } from './components/DomainSecurityModal';
 import { ProfileSettingsModal } from './components/ProfileSettingsModal';
 import { getAllowedDomains } from './utils/domains';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { auth } from './lib/firebase';
+import { ReviewSnapshot } from './lib/pageSnapshot';
+import { nextPinNumber } from './lib/pins';
+import { isEmailDomainAllowed, isMasterAdmin, getDefaultOrganization, loadOrCreateProfile, saveProfile } from './lib/userProfile';
 
 export default function App() {
   // Authentication State
-  const [authUser, setAuthUser] = useState<AuthUser | null>(() => {
-    try {
-      const saved = localStorage.getItem('mf_auth_user');
-      if (saved) return JSON.parse(saved);
-    } catch (e) {}
-    return null;
-  });
-
-  const [currentOrganization, setCurrentOrganization] = useState<Organization | null>(() => {
-    try {
-      const saved = localStorage.getItem('mf_auth_org');
-      if (saved) return JSON.parse(saved);
-    } catch (e) {}
-    return null;
-  });
+  // Authentication State (driven by Firebase Auth via onAuthStateChanged below)
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const [currentOrganization, setCurrentOrganization] = useState<Organization | null>(null);
 
   // State
   const [appName, setAppName] = useState('WebReview Pro');
   const [appIcon, setAppIcon] = useState('W');
-  const [isGuestMode, setIsGuestMode] = useState(() => {
-    const search = window.location.search;
-    return search.includes('guest_mode=true') || search.includes('project=');
-  });
+  // Preview-as-guest toggle for signed-in members; visitors on a guest link are handled by isGuestShareLink
+  const [isGuestMode, setIsGuestMode] = useState(false);
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
 
   const [projects, setProjects] = useState<Project[]>(() => {
     try {
       const saved = localStorage.getItem('webreview_projects_v2');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed)) return parsed;
       }
     } catch (e) {}
-    return INITIAL_PROJECTS;
+    return [];
   });
 
   const [pins, setPins] = useState<Pin[]>(() => {
@@ -95,7 +90,7 @@ export default function App() {
         if (Array.isArray(parsed)) return parsed;
       }
     } catch (e) {}
-    return INITIAL_PINS;
+    return [];
   });
 
   const [rubricRules, setRubricRules] = useState<QARubricRule[]>(() => {
@@ -133,36 +128,12 @@ export default function App() {
   const [currentProject, setCurrentProject] = useState<Project>(() => projects[0] || INITIAL_PROJECTS[0]);
   const [currentAsset, setCurrentAsset] = useState<Asset>(() => (projects[0]?.assets?.[0]) || INITIAL_PROJECTS[0].assets[0]);
   const [selectedPin, setSelectedPin] = useState<Pin | null>(null);
-  const [activityLogs, setActivityLogs] = useState<ActivityItem[]>(INITIAL_ACTIVITY_LOGS);
-  const [teammates, setTeammates] = useState<Teammate[]>(TEAMMATES);
+  const [activityLogs, setActivityLogs] = useState<ActivityItem[]>([]);
+  // Teammates are the real signed-up users (Firestore users collection), see subscribeUsers below
+  const [teammates, setTeammates] = useState<Teammate[]>([]);
 
   // Notifications State
-  const [notifications, setNotifications] = useState<NotificationItem[]>([
-    {
-      id: 'notif_1',
-      type: 'mention',
-      title: 'Tagged in Pin #1',
-      message: 'Sarah Jenkins tagged you: "@QA Lead please re-verify contrast ratio on button"',
-      timestamp: '2m ago',
-      isRead: false,
-      pinId: 'pin_101',
-      assetId: 'asset_1',
-      sender: TEAMMATES[1],
-      recipientName: 'QA Lead'
-    },
-    {
-      id: 'notif_2',
-      type: 'assignment',
-      title: 'Assigned to Pin #2',
-      message: 'Alex Rivera assigned Pin #2 (Hero spacing issue) to you.',
-      timestamp: '1h ago',
-      isRead: false,
-      pinId: 'pin_102',
-      assetId: 'asset_1',
-      sender: TEAMMATES[0],
-      recipientName: 'You'
-    }
-  ]);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
 
   const handleNotifyMember = (notif: { title: string; message: string; recipient: string; pinId?: string; assetId?: string }) => {
     const newNotif: NotificationItem = {
@@ -199,24 +170,43 @@ export default function App() {
     } catch (e) {}
   }, [pins]);
 
+  // Firebase Auth: restore the session on load and react to sign-in / sign-out
+  useEffect(() => {
+    const unsubAuth = onAuthStateChanged(auth, async (fbUser) => {
+      if (!fbUser) {
+        setAuthUser(null);
+        setCurrentOrganization(null);
+        setAuthReady(true);
+        return;
+      }
+      if (!isEmailDomainAllowed(fbUser.email)) {
+        // AuthPage shows the "domain not authorized" message
+        await signOut(auth);
+        return;
+      }
+      const org = getDefaultOrganization();
+      const profile = await loadOrCreateProfile(fbUser, org);
+      if (!profile) {
+        setAuthNotice('Your access to this workspace was removed by an admin. Ask an admin to invite you again.');
+        await signOut(auth);
+        return;
+      }
+      setAuthNotice(null);
+      setCurrentOrganization(org);
+      setAuthUser(profile);
+      setAuthReady(true);
+    });
+    return () => unsubAuth();
+  }, []);
+
   // Firebase Firestore Real-Time Synchronization
   useEffect(() => {
     checkFirebaseConnection();
-    seedInitialFirestoreData(INITIAL_PROJECTS, INITIAL_PINS);
 
+    // Firestore is the source of truth; its SDK queues writes made while offline
     const unsubProjects = subscribeProjects((cloudProjects) => {
-      if (cloudProjects && cloudProjects.length > 0) {
-        setProjects((prevProjects) => {
-          // Prevent losing any local project created offline or un-synced
-          const cloudIds = new Set(cloudProjects.map((p) => p.id));
-          const localOnly = prevProjects.filter((p) => !cloudIds.has(p.id));
-          if (localOnly.length > 0) {
-            localOnly.forEach((p) => saveProjectToFirestore(p));
-            return [...localOnly, ...cloudProjects];
-          }
-          return cloudProjects;
-        });
-      }
+      setProjects(cloudProjects);
+      setProjectsLoaded(true);
     });
 
     const unsubPins = subscribePins((cloudPins) => {
@@ -225,35 +215,56 @@ export default function App() {
       }
     });
 
+    const unsubTeam = subscribeTeam((team) => {
+      setTeammates(team);
+      // Keep the signed-in user's role in step when an admin changes it
+      setAuthUser((prev) => {
+        const me = prev && team.find((t) => t.id === prev.id);
+        return me && normalizeRole(prev.role) !== me.role ? { ...prev, role: me.role as any } : prev;
+      });
+    });
+
     return () => {
       unsubProjects();
       unsubPins();
+      unsubTeam();
     };
   }, []);
 
-  // Check URL query parameters on mount to auto-open shared project in Guest Review Mode without requiring login
+  // Open the project from a share link (?project=ID) once projects have loaded from Firestore.
+  // ?guest_mode=true lets visitors review without signing in; without it, the link requires sign-in.
+  const shareLinkHandled = useRef(false);
   useEffect(() => {
-    const search = window.location.search;
-    const params = new URLSearchParams(search);
-    const projId = params.get('project');
-    const isGuestParam = params.get('guest_mode') === 'true' || search.includes('guest') || !!projId;
+    if (shareLinkHandled.current || !projectsLoaded) return;
+    shareLinkHandled.current = true;
 
-    if (isGuestParam) {
-      setIsGuestMode(true);
-    }
-
-    if (projId) {
-      const allProjects = projects.length > 0 ? projects : INITIAL_PROJECTS;
-      const foundProj = allProjects.find((p) => p.id === projId) || INITIAL_PROJECTS.find((p) => p.id === projId);
-      if (foundProj) {
-        setCurrentProject(foundProj);
-        if (foundProj.assets && foundProj.assets.length > 0) {
-          setCurrentAsset(foundProj.assets[0]);
-        }
-        setViewMode('studio');
+    const projId = new URLSearchParams(window.location.search).get('project');
+    if (!projId) return;
+    const foundProj = projects.find((p) => p.id === projId);
+    if (foundProj) {
+      setCurrentProject(foundProj);
+      if (foundProj.assets && foundProj.assets.length > 0) {
+        setCurrentAsset(foundProj.assets[0]);
       }
+      setViewMode('studio');
+    } else {
+      alert('This shared project no longer exists or the link is incorrect.');
     }
-  }, [projects]);
+  }, [projects, projectsLoaded]);
+
+  // Keep the selected project pointing at a real project (the initial value is only a placeholder)
+  useEffect(() => {
+    if (!projectsLoaded || projects.length === 0) return;
+    const current = projects.find((p) => p.id === currentProject.id);
+    if (current) {
+      if (current !== currentProject) setCurrentProject(current);
+      return;
+    }
+    setCurrentProject(projects[0]);
+    if (projects[0].assets && projects[0].assets.length > 0) {
+      setCurrentAsset(projects[0].assets[0]);
+    }
+  }, [projects, projectsLoaded]);
 
   const handleUpdateBranding = (newName: string, newIcon: string) => {
     setAppName(newName);
@@ -261,9 +272,12 @@ export default function App() {
   };
 
   const handleUpdateTeammateRole = (id: string, newRole: Teammate['role']) => {
-    setTeammates((prev) =>
-      prev.map((tm) => (tm.id === id ? { ...tm, role: newRole } : tm))
-    );
+    const member = teammates.find((tm) => tm.id === id);
+    if (member && isMasterAdmin(member.email)) {
+      alert('The master admin role cannot be changed.');
+      return;
+    }
+    updateMemberRole(id, newRole);
   };
   
   const currentUser: Teammate = authUser ? {
@@ -271,7 +285,7 @@ export default function App() {
     name: authUser.name,
     email: authUser.email,
     avatar: authUser.avatar,
-    role: (authUser.role === 'Admin' || authUser.role === 'Reviewer') ? 'Owner' : (authUser.role as any),
+    role: normalizeRole(authUser.role),
     status: authUser.status,
     cursorColor: authUser.cursorColor
   } : {
@@ -311,31 +325,16 @@ export default function App() {
         ...authUser,
         name: updatedData.name,
         email: updatedData.email,
-        role: updatedData.role,
+        // Only admins may change their own role; everyone else keeps theirs
+        role: (['Owner', 'Admin'].includes(normalizeRole(authUser.role)) && !isMasterAdmin(authUser.email)
+          ? updatedData.role
+          : authUser.role) as AuthUser['role'],
         avatar: updatedData.avatar,
         status: updatedData.status,
       };
       setAuthUser(updatedAuth);
-      try {
-        localStorage.setItem('mf_auth_user', JSON.stringify(updatedAuth));
-      } catch (e) {}
+      saveProfile({ ...updatedAuth, department: updatedData.department });
     }
-    setTeammates((prev) =>
-      prev.map((tm) => {
-        if (tm.id === currentUser.id || tm.email.toLowerCase() === currentUser.email.toLowerCase()) {
-          return {
-            ...tm,
-            name: updatedData.name,
-            email: updatedData.email,
-            role: updatedData.role as any,
-            avatar: updatedData.avatar,
-            department: updatedData.department,
-            status: updatedData.status,
-          };
-        }
-        return tm;
-      })
-    );
   };
 
   const handleAddNewUrlAsset = (newUrl: string) => {
@@ -401,6 +400,8 @@ export default function App() {
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
   const [showNewAssetModal, setShowNewAssetModal] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
+  // Project chosen from a project card's Share button; null = share the currently open project
+  const [shareProject, setShareProject] = useState<Project | null>(null);
   const [showDomainModal, setShowDomainModal] = useState(false);
 
   const handleUpdateFilter = (updates: Partial<FilterState>) => {
@@ -447,9 +448,8 @@ export default function App() {
     screenshotUrl?: string;
     attachments?: Attachment[];
   }) => {
-    const assetPins = pins.filter((p) => p.assetId === currentAsset.id);
-    const nextNum = assetPins.length + 1;
-    const assignee = teammates.find((t) => t.id === pinData.assigneeId) || teammates[1];
+    const nextNum = nextPinNumber(pins, currentAsset.id);
+    const assignee = teammates.find((t) => t.id === pinData.assigneeId);
 
     const pinId = `pin_${Date.now()}`;
     const newPin: Pin = {
@@ -610,7 +610,7 @@ export default function App() {
   };
 
   // AI Automated Website Review
-  const handleRunAiAudit = async () => {
+  const handleRunAiAudit = async (snapshot: ReviewSnapshot) => {
     setIsAuditing(true);
     try {
       const res = await fetch('/api/ai/audit-site', {
@@ -619,89 +619,89 @@ export default function App() {
         body: JSON.stringify({
           url: currentAsset.url,
           title: currentAsset.title,
-          type: currentAsset.type,
+          snapshot,
+          // Issues already pinned on this page, so a re-run does not repeat them
+          existingIssues: pins
+            .filter((p) => p.assetId === currentAsset.id && p.status !== 'archived')
+            .map((p) => p.title.replace(/^\[AI Review\] /, '')),
         }),
       });
-      const aiPinsData = await res.json();
-      if (Array.isArray(aiPinsData) && aiPinsData.length > 0) {
-        const currentCount = pins.filter((p) => p.assetId === currentAsset.id).length;
-        const newPins: Pin[] = aiPinsData.map((item: any, idx: number) => {
-          const num = currentCount + idx + 1;
-          return {
-            id: `ai_pin_${Date.now()}_${idx}`,
-            assetId: currentAsset.id,
-            number: num,
-            x: item.x || 30 + idx * 20,
-            y: item.y || 25 + idx * 18,
-            category: item.category || 'design',
-            status: 'open',
-            priority: item.priority || 'medium',
-            title: `✨ [AI Review] ${item.title}`,
-            createdAt: 'Just now',
-            author: {
-              id: 'ai_gemini',
-              name: 'Gemini AI Auditor',
-              email: 'gemini@aistudio.google.com',
-              avatar: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=150&auto=format&fit=crop&q=80',
-              role: 'Designer',
-              status: 'online',
-              cursorColor: '#F59E0B',
-            },
-            assignedTo: teammates[1],
-            metadata: {
-              browser: 'Gemini 3.6 Vision Engine',
-              os: 'Google Cloud Platform',
-              viewport: '1920x1080 (Responsive UI Scan)',
-              selector: item.selector || `#ai-target-${num}`,
-              deviceType: 'desktop',
-            },
-            comments: [
-              {
-                id: `ai_cmt_${Date.now()}_${idx}`,
-                pinId: `ai_pin_${Date.now()}_${idx}`,
-                author: {
-                  id: 'ai_gemini',
-                  name: 'Gemini AI Auditor',
-                  email: 'gemini@aistudio.google.com',
-                  avatar: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=150&auto=format&fit=crop&q=80',
-                  role: 'Designer',
-                  status: 'online',
-                  cursorColor: '#F59E0B',
-                },
-                text: item.comment,
-                createdAt: 'Just now',
-                isAiGenerated: true,
-              },
-            ],
-            isUnread: true,
-          };
-        });
-
-        setPins((prev) => [...newPins, ...prev]);
-        setSelectedPin(newPins[0]);
-
-        const log: ActivityItem = {
-          id: `act_${Date.now()}`,
-          projectId: currentProject.id,
-          assetId: currentAsset.id,
-          author: {
-            id: 'ai_gemini',
-            name: 'Gemini AI Auditor',
-            email: 'gemini@aistudio.google.com',
-            avatar: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=150&auto=format&fit=crop&q=80',
-            role: 'Designer',
-            status: 'online',
-            cursorColor: '#F59E0B',
-          },
-          action: 'completed automated UX audit and placed',
-          targetName: `${newPins.length} constructive pins`,
-          timestamp: 'Just now',
-          type: 'pin',
-        };
-        setActivityLogs((prev) => [log, ...prev]);
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(result.error || `AI review failed (HTTP ${res.status}).`);
       }
-    } catch (err) {
+      const findings: any[] = Array.isArray(result.findings) ? result.findings : [];
+      if (findings.length === 0) {
+        alert('The AI review found no clear issues on this page.');
+        return;
+      }
+
+      const aiReviewer: Teammate = {
+        id: 'ai_gemini',
+        name: 'Gemini AI Review',
+        email: 'ai-review@markup.local',
+        avatar: '',
+        role: 'Reviewer',
+        status: 'online',
+        cursorColor: '#F59E0B',
+      };
+      const viewport = snapshot.kind === 'page' ? `${snapshot.pageWidth}x${snapshot.pageHeight}` : 'Image';
+      const firstNumber = nextPinNumber(pins, currentAsset.id);
+      const stamp = Date.now();
+
+      const newPins: Pin[] = findings.map((item, idx) => {
+        const pinId = `ai_pin_${stamp}_${idx}`;
+        return {
+          id: pinId,
+          assetId: currentAsset.id,
+          number: firstNumber + idx,
+          x: item.x,
+          y: item.y,
+          category: item.category || 'design',
+          status: 'open',
+          priority: item.priority || 'medium',
+          title: `[AI Review] ${item.title}`,
+          createdAt: new Date().toLocaleString(),
+          author: aiReviewer,
+          metadata: {
+            browser: 'Gemini AI review',
+            os: snapshot.kind === 'page' ? 'Live page snapshot' : 'Uploaded image',
+            viewport,
+            selector: item.selector || '',
+            deviceType: 'desktop',
+          },
+          comments: [
+            {
+              id: `ai_cmt_${stamp}_${idx}`,
+              pinId,
+              author: aiReviewer,
+              text: item.comment,
+              createdAt: new Date().toLocaleString(),
+              isAiGenerated: true,
+            },
+          ],
+          isUnread: true,
+        };
+      });
+
+      setPins((prev) => [...newPins, ...prev]);
+      newPins.forEach((pin) => savePinToFirestore(pin));
+      setSelectedPin(newPins[0]);
+
+      const log: ActivityItem = {
+        id: `act_${stamp}`,
+        projectId: currentProject.id,
+        assetId: currentAsset.id,
+        author: aiReviewer,
+        action: 'completed an AI review and placed',
+        targetName: `${newPins.length} ${newPins.length === 1 ? 'pin' : 'pins'}`,
+        timestamp: 'Just now',
+        type: 'pin',
+      };
+      setActivityLogs((prev) => [log, ...prev]);
+    } catch (err: any) {
       console.error(err);
+      alert(err?.message || 'AI review failed.');
     } finally {
       setIsAuditing(false);
     }
@@ -776,7 +776,11 @@ export default function App() {
 
   // Delete Project
   const handleDeleteProject = (projectId: string) => {
+    const deletedProject = projects.find((p) => p.id === projectId);
+    const assetIds = (deletedProject?.assets || []).map((a) => a.id);
     deleteProjectFromFirestore(projectId);
+    deletePinsForAssets(assetIds);
+    setPins((prev) => prev.filter((p) => !assetIds.includes(p.assetId)));
     setProjects((prev) => {
       const updated = prev.filter((p) => p.id !== projectId);
       try {
@@ -794,11 +798,21 @@ export default function App() {
 
   // Delete Teammate
   const handleDeleteTeammate = (teammateId: string) => {
-    setTeammates((prev) => prev.filter((t) => t.id !== teammateId));
+    const member = teammates.find((tm) => tm.id === teammateId);
+    if (teammateId === currentUser.id) {
+      alert('You cannot remove yourself from the workspace.');
+      return;
+    }
+    if (member && isMasterAdmin(member.email)) {
+      alert('The master admin cannot be removed.');
+      return;
+    }
+    removeMember(teammateId);
   };
 
   // Delete Pin
   const handleDeletePin = (pinId: string) => {
+    deletePinFromFirestore(pinId);
     setPins((prev) => prev.filter((p) => p.id !== pinId));
     if (selectedPin?.id === pinId) {
       setSelectedPin(null);
@@ -847,17 +861,11 @@ export default function App() {
 
   // Invite Teammate
   const handleInviteTeammate = (name: string, email: string, role: Teammate['role']) => {
-    const newTm: Teammate = {
-      id: `usr_${Date.now()}`,
-      name,
-      email,
-      avatar: `https://images.unsplash.com/photo-${1500000000000 + Math.floor(Math.random() * 500000000)}?w=150&auto=format&fit=crop&q=80`,
-      role,
-      status: 'online',
-      cursorColor: '#F43F5E',
-      createdBy: currentUser.email,
-    };
-    setTeammates((prev) => [...prev, newTm]);
+    if (teammates.some((tm) => tm.email.toLowerCase() === email.trim().toLowerCase())) {
+      alert(`${email} is already a member or has a pending invitation.`);
+      return;
+    }
+    inviteMember(name, email, role, currentUser.email);
 
     const log: ActivityItem = {
       id: `act_${Date.now()}`,
@@ -871,32 +879,22 @@ export default function App() {
     setActivityLogs((prev) => [log, ...prev]);
   };
 
-  const handleLogin = (user: AuthUser, org: Organization) => {
-    setAuthUser(user);
-    setCurrentOrganization(org);
-    try {
-      localStorage.setItem('mf_auth_user', JSON.stringify(user));
-      localStorage.setItem('mf_auth_org', JSON.stringify(org));
-    } catch (e) {}
-  };
-
   const handleSignOut = () => {
-    setAuthUser(null);
-    setCurrentOrganization(null);
-    try {
-      localStorage.removeItem('mf_auth_user');
-      localStorage.removeItem('mf_auth_org');
-    } catch (e) {}
+    signOut(auth);
   };
 
-  const isGuestShareLink = typeof window !== 'undefined' && (
-    window.location.search.includes('guest_mode=true') ||
-    window.location.search.includes('project=') ||
-    window.location.search.includes('guest')
-  );
+  const isGuestShareLink = typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('guest_mode') === 'true';
 
   if (!authUser && !isGuestMode && !isGuestShareLink) {
-    return <AuthPage onLogin={handleLogin} availableTeammates={teammates} />;
+    if (!authReady) {
+      return (
+        <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+          <span className="w-8 h-8 border-2 border-indigo-500/30 border-t-indigo-400 rounded-full animate-spin" />
+        </div>
+      );
+    }
+    return <AuthPage notice={authNotice} />;
   }
 
   const effectiveGuestMode = isGuestMode || (!authUser && isGuestShareLink);
@@ -951,7 +949,10 @@ export default function App() {
         isSimulatingPartner={isSimulatingPartner}
         onToggleSimulatePartner={() => setIsSimulatingPartner(!isSimulatingPartner)}
         onOpenNewProjectModal={() => setShowNewProjectModal(true)}
-        onOpenShareModal={() => setShowShareModal(true)}
+        onOpenShareModal={() => {
+          setShareProject(null);
+          setShowShareModal(true);
+        }}
         onOpenNewAssetModal={() => setShowNewAssetModal(true)}
         currentUser={headerUser}
         currentOrganization={currentOrganization || undefined}
@@ -996,14 +997,6 @@ export default function App() {
             }
           }
 
-          // Fallback if asset is in INITIAL_ASSETS
-          if (!foundAsset && targetAssetId) {
-            foundAsset = INITIAL_ASSETS.find((a) => a.id === targetAssetId);
-            if (foundAsset) {
-              foundProject = projects.find((p) => p.id === foundAsset?.projectId) || INITIAL_PROJECTS.find((p) => p.id === foundAsset?.projectId);
-            }
-          }
-
           if (foundProject) {
             setCurrentProject(foundProject);
           }
@@ -1032,7 +1025,10 @@ export default function App() {
             onSelectProject={handleSelectProject}
             onSelectAsset={handleSelectAsset}
             onOpenNewProjectModal={() => setShowNewProjectModal(true)}
-            onOpenShareModal={() => setShowShareModal(true)}
+            onOpenShareModal={(project?: Project) => {
+              setShareProject(project || null);
+              setShowShareModal(true);
+            }}
             teammates={teammates}
             onUpdateTeammateRole={handleUpdateTeammateRole}
             currentUser={currentUser}
@@ -1190,7 +1186,8 @@ export default function App() {
       <ShareModal
         isOpen={showShareModal}
         onClose={() => setShowShareModal(false)}
-        currentProject={currentProject}
+        currentProject={shareProject || (projects.some((p) => p.id === currentProject.id) ? currentProject : null)}
+        onInviteTeammate={handleInviteTeammate}
       />
       <DomainSecurityModal
         isOpen={showDomainModal}

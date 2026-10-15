@@ -275,10 +275,11 @@ export const NewAssetModal: React.FC<NewAssetModalProps> = ({ isOpen, onClose, o
 interface ShareModalProps {
   isOpen: boolean;
   onClose: () => void;
-  currentProject: Project;
+  currentProject: Project | null;
+  onInviteTeammate?: (name: string, email: string, role: Teammate['role']) => void;
 }
 
-export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, currentProject }) => {
+export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, currentProject, onInviteTeammate }) => {
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedGuestLink, setCopiedGuestLink] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
@@ -286,8 +287,8 @@ export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, current
 
   if (!isOpen) return null;
 
-  const shareUrl = window.location.origin + `/?project=${currentProject.id}`;
-  const guestShareUrl = window.location.origin + `/?project=${currentProject.id}&guest_mode=true`;
+  const shareUrl = currentProject ? window.location.origin + `/?project=${encodeURIComponent(currentProject.id)}` : '';
+  const guestShareUrl = currentProject ? `${shareUrl}&guest_mode=true` : '';
 
   const copyLink = () => {
     navigator.clipboard.writeText(shareUrl);
@@ -304,6 +305,8 @@ export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, current
   const handleSendEmail = (e: React.FormEvent) => {
     e.preventDefault();
     if (!inviteEmail.trim()) return;
+    const email = inviteEmail.trim();
+    onInviteTeammate?.(email.split('@')[0].replace(/[._]/g, ' '), email, 'Member');
     setSentInvite(true);
     setTimeout(() => {
       setInviteEmail('');
@@ -323,7 +326,18 @@ export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, current
         </div>
 
         <div className="space-y-4 text-xs">
-          
+
+          {currentProject ? (
+            <div className="text-[11px] text-slate-500">
+              Sharing project: <strong className="text-slate-900">{currentProject.name}</strong>
+            </div>
+          ) : (
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 text-[11px] text-slate-600">
+              There are no projects to share yet. Create a project first, then open Share from inside it.
+            </div>
+          )}
+
+          {currentProject && (<>
           {/* Guest Client Link (No Login Required) */}
           <div className="bg-amber-50/80 border border-amber-200 rounded-xl p-3.5 space-y-2">
             <div className="flex items-center justify-between">
@@ -376,6 +390,8 @@ export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, current
               </button>
             </div>
           </div>
+
+          </>)}
 
           {/* Email Invite */}
           <div className="pt-2 border-t border-slate-200 space-y-1.5">

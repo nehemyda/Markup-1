@@ -1,5 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import html2canvas from 'html2canvas';
+import { capturePageSnapshot, captureImageSnapshot, ReviewSnapshot } from '../lib/pageSnapshot';
+import { nextPinNumber } from '../lib/pins';
 import { Project, Asset, Pin, PinCategory, PinPriority, Teammate, FilterState, DeviceViewport, Attachment } from '../types';
 import { SearchableMemberSelect } from './SearchableMemberSelect';
 import { 
@@ -64,7 +66,7 @@ interface AnnotationStudioProps {
   currentUser: Teammate;
   filterState: FilterState;
   onUpdateFilter: (updates: Partial<FilterState>) => void;
-  onRunAiAudit: () => Promise<void>;
+  onRunAiAudit: (snapshot: ReviewSnapshot) => Promise<void>;
   isAuditing: boolean;
   isSimulatingPartner: boolean;
 }
@@ -91,11 +93,8 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
   const [urlInput, setUrlInput] = useState(currentAsset.url);
   const [showUrlEditor, setShowUrlEditor] = useState(false);
   const [iframeError, setIframeError] = useState(false);
-  const [useStagingRender, setUseStagingRender] = useState(false);
+  // Full page height, reported by the proxied page (see /api/proxy-site); 4200 until it reports
   const [pageCanvasHeight, setPageCanvasHeight] = useState<number>(4200);
-  const [isAutoHeight, setIsAutoHeight] = useState(true);
-  const [dismissIframeNotice, setDismissIframeNotice] = useState(false);
-  const [activeFaq, setActiveFaq] = useState<number | null>(null);
 
   // New Pin Popover state
   const [newPinCoord, setNewPinCoord] = useState<{ x: number; y: number } | null>(null);
@@ -115,6 +114,31 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
+  const [isCapturingPage, setIsCapturingPage] = useState(false);
+
+  // AI review: read the page actually shown in the canvas, then hand it to App to send to Gemini
+  const handleRunAiReview = async () => {
+    if (!canvasRef.current) return;
+    setIsCapturingPage(true);
+    try {
+      let snapshot: ReviewSnapshot;
+      if (currentAsset.type === 'image' || currentAsset.type === 'mockup') {
+        if (!imageRef.current) throw new Error('The image has not loaded yet.');
+        snapshot = captureImageSnapshot(imageRef.current, canvasRef.current, zoom);
+      } else {
+        if (!iframeRef.current) throw new Error('The page has not loaded yet.');
+        snapshot = await capturePageSnapshot(iframeRef.current, canvasRef.current, zoom);
+      }
+      setIsCapturingPage(false);
+      await onRunAiAudit(snapshot);
+    } catch (err: any) {
+      alert(err?.message || 'Could not read the page for the AI review.');
+    } finally {
+      setIsCapturingPage(false);
+    }
+  };
 
   useEffect(() => {
     setUrlInput(currentAsset.url);
@@ -131,6 +155,25 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
     };
     window.addEventListener('message', handleHeightMsg);
     return () => window.removeEventListener('message', handleHeightMsg);
+  }, []);
+
+  // Keyboard shortcuts: C = Drop Pin Mode, V = Browse / Scroll (ignored while typing)
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
+      const key = e.key.toLowerCase();
+      if (key === 'c') {
+        setMode('comment');
+        setNewPinCoord(null);
+      } else if (key === 'v') {
+        setMode('browse');
+        setNewPinCoord(null);
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
   }, []);
 
   // Simulate Partner Cursors
@@ -526,197 +569,6 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
     }
   };
 
-  const isDemoUrl =
-    useStagingRender ||
-    (currentAsset.url.includes('.internal') || currentAsset.url.includes('example.com'));
-
-  // Helper to render customized project content based on the selected project / asset
-  const renderProjectDemoContent = () => {
-    const urlLower = (currentAsset.url + ' ' + (currentProject?.name || '') + ' ' + (currentAsset.title || '')).toLowerCase();
-
-    if (urlLower.includes('nehemiah') || urlLower.includes('portfolio') || urlLower.includes('editor') || urlLower.includes('yourdigitalagents') || urlLower.includes('personal')) {
-      return {
-        brand: 'Nehemiah C. — Digital Innovation & Systems',
-        avatar: '💻',
-        badge: '⚡ Principal Web Architect & Digital Agency Systems',
-        headline: 'Engineering High-Velocity Web Portals, Agency Workspaces & Cloud Infrastructure',
-        subhead: 'Architecting synchronous visual annotation platforms, automated QA rubric systems, real-time collaboration engines, and enterprise web solutions for high-growth digital agencies.',
-        ctaPrimary: 'Explore Client Systems',
-        ctaSecondary: 'Request Architectural Review',
-        stats: [
-          { label: 'Uptime & Reliability', value: '99.99%', desc: 'Global edge network delivery' },
-          { label: 'Enterprise Deployments', value: '500+', desc: 'Live agency & client portals' },
-          { label: 'Client Satisfaction', value: '4.95 / 5', desc: 'Over 140+ verified client sign-offs' },
-          { label: 'Sync Latency', value: '< 60ms', desc: 'Real-time WebSocket & Firebase events' }
-        ],
-        features: [
-          { icon: '📍', title: 'Precision Pinpoint Visual Review', desc: 'Click anywhere on live responsive staging viewports to leave exact x/y feedback pins with browser metadata capture and localized area snapshots.', tag: 'Core Canvas' },
-          { icon: '🤖', title: 'Automated Ticket Synthesis', desc: 'Instant transformation of design critique into formatted Jira, Linear, and GitHub tickets complete with reproduction steps.', tag: 'AI Engine' },
-          { icon: '🛡️', title: 'Enterprise QA Rubric Standards', desc: '100-point quality assurance audits categorizing defects by layout, typography, contrast, responsiveness, and performance.', tag: 'QA System' },
-          { icon: '👥', title: 'Passwordless Guest Invites', desc: 'Share secure, tokenized review URLs with clients and external stakeholders for frictionless sign-offs.', tag: 'Collaboration' },
-          { icon: '⚡', title: 'Multi-Viewport Responsive Matrix', desc: 'Seamlessly toggle between 4K Desktop, 768px Tablet, and 375px Mobile viewports with synchronous coordinate mapping.', tag: 'Dev Tools' },
-          { icon: '🔒', title: 'End-to-End Enterprise Hardening', desc: 'Strict domain allowlists, encrypted Firestore persistence, and role-based access control for 1,000+ member agencies.', tag: 'Security' }
-        ],
-        caseStudies: [
-          {
-            title: 'YourDigitalAgents Live Annotation Studio',
-            category: 'Visual Feedback Platform',
-            stat: '85% faster client approvals',
-            desc: 'Eliminated tedious back-and-forth review emails by integrating canvas-level pin threads with automated bug ticket generation.',
-            tags: ['React 19', 'Tailwind', 'Vite', 'Firebase', 'html2canvas'],
-            image: 'https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=800&auto=format&fit=crop&q=80'
-          },
-          {
-            title: 'Vendasta Agency Reselling Ecosystem',
-            category: 'Enterprise SaaS Portal',
-            stat: '250+ white-label tools',
-            desc: 'Multi-tenant cloud architecture allowing agencies to distribute software solutions, AI business centers, and automated SEO audits.',
-            tags: ['Microservices', 'GraphQL', 'Next.js', 'PostgreSQL'],
-            image: 'https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=800&auto=format&fit=crop&q=80'
-          },
-          {
-            title: 'ROCS Local Market 2-Hour Cold-Chain Engine',
-            category: 'Food Logistics & E-Commerce',
-            stat: '40+ direct farm partners',
-            desc: 'Real-time pallet tracking and algorithmic driver route optimization for perishable grocery distribution.',
-            tags: ['Real-time GPS', 'Express Logistics', 'Redis', 'Node.js'],
-            image: 'https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?w=800&auto=format&fit=crop&q=80'
-          }
-        ],
-        architecture: [
-          { title: 'Zero-Latency State Management', desc: 'Optimistic UI mutations coupled with persistent cloud storage guarantee immediate feedback without layout jank.', icon: '⚡' },
-          { title: 'Responsive Canvas Scaling', desc: 'Dynamic coordinate normalization recalculates pin percentages across arbitrary screen dimensions and zoom factors.', icon: '📐' },
-          { title: 'Automated Viewport Capture', desc: 'Integrated localized canvas clipping extracts exact element context for developers and QA engineers.', icon: '📸' },
-          { title: 'Type-Safe Modular Architecture', desc: 'Strict TypeScript interfaces ensure robust domain modeling from user authentication to pin thread discussions.', icon: '🧩' }
-        ],
-        testimonials: [
-          { name: 'Sarah Jenkins', role: 'Lead UI/UX Designer, YDA', avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150', quote: 'Nehemiah completely overhauled our web review operations. What used to take two weeks of confusing email threads now takes 15 minutes of visual canvas annotations.', rating: 5 },
-          { name: 'Alex Rivera', role: 'Senior Systems Architect', avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150', quote: 'The responsiveness of the canvas and the precision of the coordinate mapping across breakpoints is genuinely best-in-class.', rating: 5 },
-          { name: 'Elena Rostova', role: 'VP of Digital Operations, Client Partner', avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150', quote: 'Our executive stakeholders loved the guest review mode. No passwords, no friction—just click, view the site, and approve.', rating: 5 }
-        ],
-        pricing: [
-          { name: 'Studio Starter', price: '$49', period: '/ month', features: ['Up to 5 active review projects', 'Unlimited visual pins & threads', 'Localized area screenshots', 'Standard export to Linear & Jira'] },
-          { name: 'Agency Pro', price: '$199', period: '/ month', popular: true, features: ['Unlimited active client projects', 'Support for 1,000+ team members', 'Guest passwordless review links', 'Custom brand logos & domains', 'Automated QA Rubric scoring'] },
-          { name: 'Enterprise Dedicated', price: 'Custom', period: 'tailored SLA', features: ['Dedicated isolated database instance', 'Custom SSO & SAML authentication', 'White-glove migration assistance', '24/7 Priority engineering SLA'] }
-        ],
-        faqs: [
-          { q: 'How does real-time pinpoint annotation work on live staging URLs?', a: 'Users toggle Drop Pin Mode and click anywhere on the responsive viewport. Exact X/Y coordinate percentages, element selectors, and screen snippets are automatically stored in the thread.' },
-          { q: 'Can clients review staging websites without creating an account?', a: 'Yes! Guest links can be issued with customizable expiration times and passwordless access, enabling rapid stakeholder sign-offs.' },
-          { q: 'Why was the full page previously cut off, and how does this fix it?', a: 'Standard web iframes and fixed-height containers often restrict views to 1200px. With our Full Page Canvas Length controls (1400px to 5200px) and auto-expanding wrappers, the entire scrollable height of the page is accessible from header to footer.' }
-        ],
-        footerText: '© 2026 Nehemiah C. — Digital Innovation & Systems. All rights reserved.'
-      };
-    }
-
-    if (urlLower.includes('vendasta')) {
-      return {
-        brand: '⚡ Vendasta Platform',
-        avatar: '⚡',
-        badge: '🚀 End-to-End Operating System for Agencies & Local Businesses',
-        headline: 'Scale Digital Products, AI Services & Reselling for Local Businesses',
-        subhead: 'Rebrand and distribute 250+ white-label solutions, AI Business Centers, automated SEO snapshots, and client review intelligence under your brand.',
-        ctaPrimary: 'Explore Marketplace',
-        ctaSecondary: 'Request Executive Demo',
-        stats: [
-          { label: 'Active Business Users', value: '5.5M+', desc: 'Small businesses empowered' },
-          { label: 'Agency Channel Partners', value: '60,000+', desc: 'Global digital agencies' },
-          { label: 'Curated SaaS Products', value: '250+', desc: 'Ready-to-resell solutions' },
-          { label: 'Platform Availability', value: '99.98%', desc: 'Enterprise cloud SLA' }
-        ],
-        features: [
-          { icon: '🏪', title: 'White-Label Marketplace', desc: 'Over 250 curated software products, SaaS tools, and digital services ready to bundle and sell.', tag: 'Distribution' },
-          { icon: '🤖', title: 'AI Business Center', desc: 'Automated executive reporting, client review management, and automated lead intelligence.', tag: 'Automation' },
-          { icon: '📊', title: 'Snapshot Report Generator', desc: 'Instant automated digital audits analyzing SEO, listing accuracy, social presence, and website speed.', tag: 'Sales Engine' },
-          { icon: '💳', title: 'Integrated Client Billing', desc: 'Automated recurring billing, subscription management, and localized payment gateway processing.', tag: 'Monetization' },
-          { icon: '📱', title: 'Single Sign-On Client Portal', desc: 'Unified white-label portal providing small businesses a single login for all their software tools.', tag: 'Client UX' },
-          { icon: '📈', title: 'Channel Partner Analytics', desc: 'Cohort retention, churn prediction, and revenue expansion forecasting for agency leaders.', tag: 'Intelligence' }
-        ],
-        caseStudies: [
-          { title: 'Media Group Digital Transformation', category: 'Publishing & Media', stat: '$3.4M new ARR', desc: 'Equipped 120 traditional ad sales reps with digital audits, growing recurring SaaS revenue by 340%.', tags: ['White-Label', 'SaaS', 'Billing'], image: 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?w=800&auto=format&fit=crop&q=80' },
-          { title: 'Regional Marketing Agency Scale-Up', category: 'Digital Marketing', stat: '450 local clients', desc: 'Streamlined local SEO fulfillment and automated monthly executive reporting.', tags: ['SEO', 'Automation'], image: 'https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=800&auto=format&fit=crop&q=80' },
-          { title: 'Financial Services Brand Expansion', category: 'FinTech', stat: '98% retention', desc: 'Bundled digital reputation management with commercial merchant services.', tags: ['FinTech', 'Reputation'], image: 'https://images.unsplash.com/photo-1551836022-d5d88e9218df?w=800&auto=format&fit=crop&q=80' }
-        ],
-        architecture: [
-          { title: 'Multi-Tenant Isolation', desc: 'Dedicated branding, custom domain mapping, and data partitioning for every channel partner.', icon: '🏢' },
-          { title: 'Automated API Webhooks', desc: 'Bi-directional synchronization with Salesforce, HubSpot, QuickBooks, and Stripe.', icon: '🔗' },
-          { title: 'Enterprise Security Compliance', desc: 'SOC 2 Type II certified, GDPR compliant, and audited under strict data privacy regulations.', icon: '🛡️' },
-          { title: 'Real-Time Notification Bus', desc: 'High-throughput event queues processing millions of customer feedback events per minute.', icon: '📡' }
-        ],
-        testimonials: [
-          { name: 'Marcus Sterling', role: 'CEO, Agency Accelerator Group', avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150', quote: 'Vendasta gave us an instant product catalog of 250 solutions without having to build a single engineering team from scratch.', rating: 5 },
-          { name: 'Claire Thornton', role: 'Director of Growth, MediaCorp', avatar: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=150', quote: 'The Snapshot reports alone increased our close rate on prospect discovery calls by over 45%.', rating: 5 },
-          { name: 'Derek Wu', role: 'Head of Operations, LocalScale', avatar: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150', quote: 'Automated billing and white-label client onboarding saved our account managers 30 hours each week.', rating: 5 }
-        ],
-        pricing: [
-          { name: 'Starter Agency', price: '$499', period: '/ month', features: ['Up to 50 local business accounts', 'Access to full Marketplace catalog', 'Standard automated Snapshot audits', 'Email partner support'] },
-          { name: 'Scale Partner', price: '$1,199', period: '/ month', popular: true, features: ['Up to 250 local business accounts', 'Custom domain & white-label portal', 'AI Business Center features enabled', 'Dedicated Partner Success Manager'] },
-          { name: 'Enterprise Network', price: 'Custom', period: 'tailored quote', features: ['Unlimited client accounts', 'Custom API integrations & SSO', 'Custom product onboarding to marketplace', 'Executive QBRs & SLA guarantees'] }
-        ],
-        faqs: [
-          { q: 'Can we rebrand all products with our agency logo and color palette?', a: 'Yes! All client-facing portals, emails, invoices, and reports display your agency logo, domain name, and colors.' },
-          { q: 'How does the Snapshot Report generate audits automatically?', a: 'It queries public search indexes, social networks, and page speed monitors to score local business digital health in real time.' },
-          { q: 'Does Vendasta handle end-customer payment billing?', a: 'Yes, integrated billing allows you to charge clients via credit card or ACH, automatically disbursing your margins.' }
-        ],
-        footerText: '© 2026 Vendasta Technologies Inc. All rights reserved.'
-      };
-    }
-
-    // Default Fallback for custom user created projects
-    const pName = currentProject?.name || currentAsset.title || 'Live Application Workspace';
-    const cName = currentProject?.client || 'Enterprise Partner';
-    const avatar = currentProject?.avatar || '🌐';
-    const desc = currentProject?.description || 'Interactive web staging preview, visual annotation canvas, and collaborative review hub.';
-
-    return {
-      brand: `${avatar} ${pName}`,
-      avatar,
-      badge: `✨ Staging Preview Portal for ${cName}`,
-      headline: pName,
-      subhead: desc,
-      ctaPrimary: 'Launch Review Canvas',
-      ctaSecondary: 'View Asset Metadata',
-      stats: [
-        { label: 'Page Health Score', value: '98 / 100', desc: 'Audited performance & contrast' },
-        { label: 'Active Pins', value: `${pins.filter(p => p.assetId === currentAsset.id).length}`, desc: 'Collaborative feedback items' },
-        { label: 'Resolved Tickets', value: `${pins.filter(p => p.assetId === currentAsset.id && p.status === 'resolved').length}`, desc: 'Verified and completed fixes' },
-        { label: 'Assigned Members', value: `${teammates.length}`, desc: 'Cross-functional teammates' }
-      ],
-      features: [
-        { icon: '📍', title: 'Interactive Visual Pinning', desc: 'Click anywhere on this preview page to leave targeted feedback pins and comments.', tag: 'Annotation' },
-        { icon: '💬', title: 'Collaborative Thread Discussion', desc: 'Reply to feedback items, tag team members, and track status resolutions.', tag: 'Collaboration' },
-        { icon: '✅', title: 'Status & Approval Tracking', desc: 'Keep track of items marked as In Review, Changes Requested, or Approved.', tag: 'Workflow' },
-        { icon: '📐', title: 'Multi-Device Responsive Preview', desc: 'Inspect layout behavior on Mobile (375px), Tablet (768px), and Full Desktop viewports.', tag: 'Responsive' },
-        { icon: '📸', title: 'Pin Snapshot & File Attachments', desc: 'Capture element-specific context and upload custom mockups, design files, or PDFs.', tag: 'Attachments' },
-        { icon: '🚀', title: 'Synchronous Ticket Generation', desc: 'Directly export visual defect threads into engineering sprints and task trackers.', tag: 'Integration' }
-      ],
-      caseStudies: [
-        { title: `${pName} Production Staging`, category: 'Live Environment', stat: '100% test pass', desc: 'Fully responsive web deployment configured for stakeholder sign-off and QA verification.', tags: ['Staging', 'QA', 'Responsive'], image: currentAsset.thumbnailUrl || 'https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=800&auto=format&fit=crop&q=80' },
-        { title: 'Interactive Client Approval Gate', category: 'Sign-off Workflow', stat: 'Zero blocker defects', desc: 'Stakeholder sign-off and approval tracking with immutable audit trails.', tags: ['Approvals', 'Compliance'], image: 'https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=800&auto=format&fit=crop&q=80' },
-        { title: 'Automated Visual Regression Test', category: 'DevOps & Quality', stat: 'Sub-second diffing', desc: 'Continuous inspection ensuring new CSS commits do not break existing layouts.', tags: ['CI/CD', 'Automated QA'], image: 'https://images.unsplash.com/photo-1551836022-d5d88e9218df?w=800&auto=format&fit=crop&q=80' }
-      ],
-      architecture: [
-        { title: 'Coordinate Normalization', desc: 'Pins retain exact spatial positioning across responsive resize and device zooming.', icon: '📐' },
-        { title: 'High-Fidelity Rendering', desc: 'Full length continuous page display without arbitrary height cut-offs.', icon: '🖥️' },
-        { title: 'Real-Time Sync', desc: 'Pin statuses, assignees, and comments propagate instantly to all active teammates.', icon: '⚡' },
-        { title: 'Role-Based Permissions', desc: 'Secure boundaries for internal team discussions versus external client comments.', icon: '🛡️' }
-      ],
-      testimonials: [
-        { name: 'Sarah Jenkins', role: 'Design Lead', avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150', quote: 'The visual clarity and full-length webpage display makes client design sign-offs effortless.', rating: 5 },
-        { name: 'Alex Rivera', role: 'Lead Developer', avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150', quote: 'Having exact element selectors and localized area screenshots in every ticket saves hours.', rating: 5 }
-      ],
-      pricing: [
-        { name: 'Review Basic', price: '$29', period: '/ month', features: ['Up to 3 active projects', 'Unlimited comments', 'Screenshot attachment'] },
-        { name: 'Pro Agency', price: '$99', period: '/ month', popular: true, features: ['Unlimited projects', 'Guest links', 'Full page height canvas', 'Priority support'] },
-        { name: 'Enterprise', price: 'Custom', period: 'annual plan', features: ['Custom SLA', 'SSO & Audit logs', 'White-labeling'] }
-      ],
-      faqs: [
-        { q: 'How do I scroll the full height of this page in comment mode?', a: 'Scroll your mouse wheel or trackpad anywhere over the canvas. You can drop pins from the top header all the way down to the bottom footer.' },
-        { q: 'How can I change the length of the page canvas?', a: 'Use the ↕️ Length presets (1400px, 2800px, 3600px, 5200px) in the top toolbar to adjust canvas depth.' }
-      ],
-      footerText: `© 2026 ${pName}. All rights reserved.`
-    };
-  };
-
   return (
     <div className="flex-1 min-h-0 min-w-0 flex flex-col h-full bg-slate-100 overflow-hidden select-none relative">
       
@@ -810,64 +662,17 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
             </button>
           </div>
 
-          {/* Canvas Height / Full Page Length Presets */}
-          <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-md border border-slate-200 text-slate-600">
-            <span className="text-[10px] font-bold text-slate-500 uppercase px-1 hidden xl:inline">↕️ Page Length:</span>
-            {[
-              { label: 'Auto', val: 4200, title: 'Automatically fit entire document scroll height' },
-              { label: '1400px', val: 1400, title: 'Above fold / Compact view' },
-              { label: '2800px', val: 2800, title: 'Standard landing page length' },
-              { label: '4200px', val: 4200, title: 'Full webpage length (Markup.io standard)' },
-              { label: '6000px', val: 6000, title: 'Deep scroll full page' },
-              { label: '8500px', val: 8500, title: 'Ultra long page length' },
-            ].map((preset) => (
-              <button
-                key={preset.val + preset.label}
-                type="button"
-                onClick={() => {
-                  setPageCanvasHeight(preset.val);
-                  setIsAutoHeight(preset.label === 'Auto');
-                }}
-                title={preset.title}
-                className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all cursor-pointer ${
-                  pageCanvasHeight === preset.val
-                    ? 'bg-indigo-600 text-white shadow-xs'
-                    : 'hover:text-slate-900 hover:bg-white text-slate-600'
-                }`}
-              >
-                {preset.label}
-              </button>
-            ))}
-            <div className="flex items-center border-l border-slate-200 pl-1 ml-0.5 gap-0.5">
-              <button
-                type="button"
-                onClick={() => setPageCanvasHeight(prev => Math.max(1000, prev - 500))}
-                className="px-1.5 py-0.5 text-[10px] hover:bg-white text-slate-600 font-bold rounded cursor-pointer"
-                title="Decrease length by 500px"
-              >
-                -500
-              </button>
-              <button
-                type="button"
-                onClick={() => setPageCanvasHeight(prev => prev + 500)}
-                className="px-1.5 py-0.5 text-[10px] hover:bg-white text-slate-600 font-bold rounded cursor-pointer"
-                title="Increase length by 500px"
-              >
-                +500
-              </button>
-            </div>
-          </div>
         </div>
 
         {/* Right: AI Website Auditor Trigger */}
         <div className="flex items-center gap-2">
           <button
-            onClick={onRunAiAudit}
-            disabled={isAuditing}
+            onClick={handleRunAiReview}
+            disabled={isAuditing || isCapturingPage}
             className="flex items-center gap-1.5 bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 hover:from-amber-600 hover:to-rose-600 text-white px-3 py-1.5 rounded-md text-xs font-bold shadow-xs transition-all active:scale-95 disabled:opacity-50"
           >
-            <Sparkles className={`w-3.5 h-3.5 ${isAuditing ? 'animate-spin' : ''}`} />
-            <span>{isAuditing ? 'AI Auditing Interface...' : '✨ Run AI Website Review'}</span>
+            <Sparkles className={`w-3.5 h-3.5 ${isAuditing || isCapturingPage ? 'animate-spin' : ''}`} />
+            <span>{isCapturingPage ? 'Reading page...' : isAuditing ? 'AI reviewing page...' : 'Run AI Website Review'}</span>
           </button>
         </div>
 
@@ -909,16 +714,6 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
               >
                 <span className="truncate font-mono text-[11px] text-slate-600">{currentAsset.url}</span>
                 <div className="flex items-center gap-1 shrink-0 ml-2">
-                  <button 
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setUseStagingRender(!useStagingRender);
-                    }}
-                    className="text-[10px] bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold px-2 py-0.5 rounded border border-slate-300 transition-colors"
-                    title="Toggle between direct iframe embed and interactive staging preview render"
-                  >
-                    {isDemoUrl ? '🖥️ Interactive View' : '🌐 Direct iframe'}
-                  </button>
                   <span className="text-[10px] text-indigo-600 font-semibold bg-indigo-50 hover:bg-indigo-100 px-1.5 py-0.5 rounded border border-indigo-200 uppercase">Change URL</span>
                 </div>
               </div>
@@ -1011,50 +806,6 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
                   {currentAsset.url}
                 </span>
               </div>
-              <div className="flex items-center gap-2 font-mono text-[10px]">
-                {/* Live Web vs Staging View Switcher */}
-                <div className="flex items-center bg-white border border-slate-200 rounded p-0.5 shadow-2xs">
-                  <button
-                    type="button"
-                    onClick={() => setUseStagingRender(false)}
-                    className={`px-2 py-0.5 rounded font-sans font-bold text-[10px] transition-colors cursor-pointer ${
-                      !useStagingRender
-                        ? 'bg-blue-600 text-white shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                    title="Render live webpage with full continuous proxy"
-                  >
-                    🌐 Live Web
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setUseStagingRender(true)}
-                    className={`px-2 py-0.5 rounded font-sans font-bold text-[10px] transition-colors cursor-pointer ${
-                      useStagingRender
-                        ? 'bg-indigo-600 text-white shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                    title="Render high-fidelity interactive staging view with all sections"
-                  >
-                    🖥️ Staging View
-                  </button>
-                </div>
-
-                {/* Quick Full Page Length Button */}
-                <button
-                  type="button"
-                  onClick={() => setPageCanvasHeight(prev => prev >= 6000 ? 2800 : prev + 1800)}
-                  className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 px-2 py-0.5 rounded font-sans font-bold text-[10px] flex items-center gap-1 cursor-pointer transition-colors"
-                  title="Expand canvas length to fit full content"
-                >
-                  <span>↕️ {pageCanvasHeight}px (Expand +)</span>
-                </button>
-
-                <span className="bg-white px-2 py-0.5 rounded text-slate-700 font-semibold border border-slate-200">
-                  {viewport.toUpperCase()} • {zoom}%
-                </span>
-                <span>{mode === 'comment' ? '📍 Drop Pin Mode' : '🖱️ Browse & Scroll'}</span>
-              </div>
             </div>
 
           {/* Interactive Web Page / Mockup Canvas Area */}
@@ -1070,321 +821,12 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
             {currentAsset.type === 'image' || currentAsset.type === 'mockup' ? (
               <div className="w-full flex flex-col items-center justify-start bg-slate-100 p-2 sm:p-4 min-h-[850px]">
                 <img 
+                  ref={imageRef}
                   src={currentAsset.url} 
                   alt={currentAsset.title}
                   className="w-full h-auto object-top rounded shadow-lg border border-slate-200"
                 />
               </div>
-            ) : isDemoUrl ? (
-              /* Built-in Dynamic Full-Page Project Web Portal */
-              (() => {
-                const demo = renderProjectDemoContent();
-                return (
-                  <div className="w-full bg-slate-950 text-white font-sans pb-52">
-                    {/* Header */}
-                    <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur-md sticky top-0 z-10 px-8 py-4 flex items-center justify-between">
-                      <div className="flex items-center gap-2 font-bold text-xl text-indigo-400">
-                        <span className="text-2xl">{demo.avatar}</span>
-                        <span>{demo.brand}</span>
-                      </div>
-                      <nav className="hidden md:flex items-center gap-6 text-xs font-semibold text-slate-300">
-                        <a href="#features" className="hover:text-white transition-colors">Features</a>
-                        <a href="#showcase" className="hover:text-white transition-colors">Showcase</a>
-                        <a href="#architecture" className="hover:text-white transition-colors">Architecture</a>
-                        <a href="#testimonials" className="hover:text-white transition-colors">Reviews</a>
-                        <a href="#pricing" className="hover:text-white transition-colors">Pricing</a>
-                        <a href="#faq" className="hover:text-white transition-colors">FAQ</a>
-                      </nav>
-                      <div className="flex items-center gap-3">
-                        <button className="text-xs font-semibold hover:text-white text-slate-300 px-3 py-1.5">Sign In</button>
-                        <button id="hero-primary-btn" className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold text-xs px-4 py-2 rounded-lg shadow-lg shadow-blue-600/30 transition-all cursor-pointer">
-                          {demo.ctaPrimary}
-                        </button>
-                      </div>
-                    </header>
-
-                    <main className="max-w-6xl mx-auto px-6 pt-16 pb-20 text-center">
-                      {/* Badge */}
-                      <div className="inline-flex items-center gap-2 bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 text-xs font-semibold px-4 py-1.5 rounded-full mb-6">
-                        <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                        <span>{demo.badge}</span>
-                      </div>
-
-                      {/* Headline */}
-                      <h1 className="text-3xl sm:text-5xl md:text-6xl font-extrabold tracking-tight max-w-4xl mx-auto leading-tight text-white">
-                        {demo.headline}
-                      </h1>
-
-                      {/* Subhead */}
-                      <p className="mt-6 text-base sm:text-lg text-slate-400 max-w-3xl mx-auto leading-relaxed">
-                        {demo.subhead}
-                      </p>
-                      
-                      {/* CTAs */}
-                      <div className="mt-10 flex flex-wrap items-center justify-center gap-4">
-                        <button className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold px-8 py-3.5 rounded-xl shadow-xl shadow-indigo-600/25 transition-all text-sm cursor-pointer">
-                          {demo.ctaPrimary}
-                        </button>
-                        <button className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold px-6 py-3.5 rounded-xl border border-slate-700 text-sm cursor-pointer transition-colors">
-                          {demo.ctaSecondary}
-                        </button>
-                      </div>
-
-                      {/* Stats Counter Row */}
-                      {demo.stats && demo.stats.length > 0 && (
-                        <div className="mt-16 grid grid-cols-2 md:grid-cols-4 gap-4 p-6 bg-slate-900/60 border border-slate-800 rounded-2xl">
-                          {demo.stats.map((st, sidx) => (
-                            <div key={sidx} className="text-center p-3 border-r last:border-r-0 border-slate-800">
-                              <div className="text-2xl sm:text-3xl font-extrabold text-indigo-400 font-mono">{st.value}</div>
-                              <div className="text-xs font-bold text-slate-200 mt-1">{st.label}</div>
-                              <div className="text-[11px] text-slate-400 mt-0.5">{st.desc}</div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {/* Section: Features & Capabilities */}
-                      <div id="features" className="mt-24 text-left">
-                        <div className="text-center mb-12">
-                          <span className="text-xs uppercase font-extrabold tracking-widest text-indigo-400">Core Capabilities</span>
-                          <h2 className="text-2xl sm:text-3xl font-extrabold text-white mt-1">Platform Architecture & Features</h2>
-                          <p className="text-sm text-slate-400 max-w-xl mx-auto mt-2">Engineered for seamless client collaboration, pixel-perfect inspectability, and rapid release cycles.</p>
-                        </div>
-
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                          {demo.features.map((feat, idx) => (
-                            <div key={idx} className="bg-slate-900/90 border border-slate-800 p-6 rounded-2xl hover:border-indigo-500/40 transition-all group flex flex-col justify-between">
-                              <div>
-                                <div className="flex items-center justify-between mb-4">
-                                  <div className="w-12 h-12 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 text-2xl group-hover:scale-105 transition-transform">
-                                    {feat.icon}
-                                  </div>
-                                  {feat.tag && (
-                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700">
-                                      {feat.tag}
-                                    </span>
-                                  )}
-                                </div>
-                                <h3 className="text-lg font-bold text-white mb-2">{feat.title}</h3>
-                                <p className="text-xs text-slate-400 leading-relaxed">
-                                  {feat.desc}
-                                </p>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Section: Case Studies & Live Deployments */}
-                      {demo.caseStudies && demo.caseStudies.length > 0 && (
-                        <div id="showcase" className="mt-24 text-left">
-                          <div className="text-center mb-12">
-                            <span className="text-xs uppercase font-extrabold tracking-widest text-emerald-400">Proven Deployments</span>
-                            <h2 className="text-2xl sm:text-3xl font-extrabold text-white mt-1">Featured Case Studies & Work</h2>
-                            <p className="text-sm text-slate-400 max-w-xl mx-auto mt-2">Real-world production platforms scaling thousands of daily transactions and visual reviews.</p>
-                          </div>
-
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                            {demo.caseStudies.map((cs, cidx) => (
-                              <div key={cidx} className="bg-slate-900/90 border border-slate-800 rounded-2xl overflow-hidden hover:border-slate-700 transition-all flex flex-col">
-                                <div className="h-44 overflow-hidden relative">
-                                  <img src={cs.image} alt={cs.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
-                                  <div className="absolute top-3 left-3 bg-slate-950/80 backdrop-blur-md px-2.5 py-1 rounded text-[10px] font-bold text-emerald-400 border border-slate-800">
-                                    {cs.stat}
-                                  </div>
-                                </div>
-                                <div className="p-5 flex-1 flex flex-col justify-between">
-                                  <div>
-                                    <span className="text-[10px] font-mono uppercase text-indigo-400 font-bold">{cs.category}</span>
-                                    <h3 className="text-base font-bold text-white mt-1 mb-2">{cs.title}</h3>
-                                    <p className="text-xs text-slate-400 leading-relaxed mb-4">{cs.desc}</p>
-                                  </div>
-                                  <div className="flex flex-wrap gap-1 pt-3 border-t border-slate-800/80">
-                                    {cs.tags.map((t, tidx) => (
-                                      <span key={tidx} className="text-[9px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded font-mono">
-                                        {t}
-                                      </span>
-                                    ))}
-                                  </div>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Section: Platform Architecture Pillars */}
-                      {demo.architecture && demo.architecture.length > 0 && (
-                        <div id="architecture" className="mt-24 text-left">
-                          <div className="text-center mb-12">
-                            <span className="text-xs uppercase font-extrabold tracking-widest text-indigo-400">System Design</span>
-                            <h2 className="text-2xl sm:text-3xl font-extrabold text-white mt-1">High-Throughput Engineering Pillars</h2>
-                          </div>
-
-                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-                            {demo.architecture.map((arch, aidx) => (
-                              <div key={aidx} className="bg-slate-900/60 border border-slate-800 p-5 rounded-xl">
-                                <div className="text-2xl mb-3">{arch.icon}</div>
-                                <h3 className="text-sm font-bold text-white mb-1.5">{arch.title}</h3>
-                                <p className="text-xs text-slate-400 leading-relaxed">{arch.desc}</p>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Section: Testimonials & Client Endorsements */}
-                      {demo.testimonials && demo.testimonials.length > 0 && (
-                        <div id="testimonials" className="mt-24 text-left">
-                          <div className="text-center mb-12">
-                            <span className="text-xs uppercase font-extrabold tracking-widest text-amber-400">Verified Feedback</span>
-                            <h2 className="text-2xl sm:text-3xl font-extrabold text-white mt-1">Trusted by Digital Agencies & Teams</h2>
-                          </div>
-
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                            {demo.testimonials.map((test, tidx) => (
-                              <div key={tidx} className="bg-slate-900/90 border border-slate-800 p-6 rounded-2xl flex flex-col justify-between">
-                                <div>
-                                  <div className="flex items-center gap-1 text-amber-400 mb-4">
-                                    {[...Array(test.rating)].map((_, i) => (
-                                      <Star key={i} className="w-4 h-4 fill-amber-400 text-amber-400" />
-                                    ))}
-                                  </div>
-                                  <p className="text-xs text-slate-300 italic leading-relaxed mb-6">"{test.quote}"</p>
-                                </div>
-                                <div className="flex items-center gap-3 pt-4 border-t border-slate-800">
-                                  <img src={test.avatar} alt={test.name} className="w-9 h-9 rounded-full object-cover border border-slate-700" />
-                                  <div>
-                                    <div className="text-xs font-bold text-white">{test.name}</div>
-                                    <div className="text-[10px] text-slate-400">{test.role}</div>
-                                  </div>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Section: Pricing & Collaboration Tiers */}
-                      {demo.pricing && demo.pricing.length > 0 && (
-                        <div id="pricing" className="mt-24 text-left">
-                          <div className="text-center mb-12">
-                            <span className="text-xs uppercase font-extrabold tracking-widest text-indigo-400">Investment Tiers</span>
-                            <h2 className="text-2xl sm:text-3xl font-extrabold text-white mt-1">Transparent Agency Pricing</h2>
-                            <p className="text-sm text-slate-400 max-w-xl mx-auto mt-2">Zero long-term contracts. Scale as your team and client volume expands.</p>
-                          </div>
-
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                            {demo.pricing.map((plan, pidx) => (
-                              <div 
-                                key={pidx} 
-                                className={`p-6 rounded-2xl flex flex-col justify-between transition-all ${
-                                  plan.popular 
-                                    ? 'bg-gradient-to-b from-indigo-950 to-slate-900 border-2 border-indigo-500 shadow-xl shadow-indigo-950/50' 
-                                    : 'bg-slate-900/80 border border-slate-800'
-                                }`}
-                              >
-                                <div>
-                                  <div className="flex items-center justify-between">
-                                    <h3 className="text-base font-bold text-white">{plan.name}</h3>
-                                    {plan.popular && (
-                                      <span className="text-[9px] font-extrabold bg-indigo-600 text-white px-2 py-0.5 rounded-full uppercase tracking-wider">
-                                        Most Popular
-                                      </span>
-                                    )}
-                                  </div>
-                                  <div className="my-5 flex items-baseline gap-1">
-                                    <span className="text-3xl font-extrabold text-white">{plan.price}</span>
-                                    <span className="text-xs text-slate-400">{plan.period}</span>
-                                  </div>
-                                  <div className="space-y-2.5 pt-2 border-t border-slate-800">
-                                    {plan.features.map((f, fidx) => (
-                                      <div key={fidx} className="flex items-start gap-2 text-xs text-slate-300">
-                                        <Check className="w-3.5 h-3.5 text-indigo-400 shrink-0 mt-0.5" />
-                                        <span>{f}</span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-                                <button className={`mt-8 w-full py-2.5 rounded-xl font-bold text-xs transition-all cursor-pointer ${
-                                  plan.popular 
-                                    ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg' 
-                                    : 'bg-slate-800 hover:bg-slate-700 text-slate-200'
-                                }`}>
-                                  Select Plan
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Section: Frequently Asked Questions */}
-                      {demo.faqs && demo.faqs.length > 0 && (
-                        <div id="faq" className="mt-24 text-left max-w-4xl mx-auto">
-                          <div className="text-center mb-12">
-                            <span className="text-xs uppercase font-extrabold tracking-widest text-indigo-400">Got Questions?</span>
-                            <h2 className="text-2xl sm:text-3xl font-extrabold text-white mt-1">Frequently Asked Questions</h2>
-                          </div>
-
-                          <div className="space-y-3">
-                            {demo.faqs.map((faq, fidx) => (
-                              <div key={fidx} className="bg-slate-900/80 border border-slate-800 rounded-xl overflow-hidden">
-                                <button 
-                                  onClick={() => setActiveFaq(activeFaq === fidx ? null : fidx)}
-                                  className="w-full p-4 flex items-center justify-between text-left text-sm font-bold text-white hover:text-indigo-300 transition-colors cursor-pointer"
-                                >
-                                  <span>{faq.q}</span>
-                                  <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${activeFaq === fidx ? 'rotate-180 text-indigo-400' : ''}`} />
-                                </button>
-                                {activeFaq === fidx && (
-                                  <div className="px-4 pb-4 text-xs text-slate-400 leading-relaxed border-t border-slate-800/60 pt-3">
-                                    {faq.a}
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Consultation Inquiry Form */}
-                      <div className="mt-24 p-8 bg-gradient-to-r from-slate-900 via-indigo-950/60 to-slate-900 border border-slate-800 rounded-3xl text-left max-w-4xl mx-auto">
-                        <div className="max-w-xl">
-                          <span className="text-xs uppercase font-bold text-indigo-400 tracking-wider">Direct Collaboration</span>
-                          <h2 className="text-2xl font-extrabold text-white mt-1">Have a project or web deployment in mind?</h2>
-                          <p className="text-xs text-slate-400 mt-2">Send a direct message to discuss web application architecture, review studios, and custom digital integrations.</p>
-                        </div>
-                        <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-3">
-                          <input 
-                            type="text" 
-                            placeholder="Your Name" 
-                            className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-indigo-500"
-                          />
-                          <input 
-                            type="email" 
-                            placeholder="Work Email" 
-                            className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-indigo-500"
-                          />
-                          <button className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs py-2 px-4 rounded-lg shadow-md transition-all cursor-pointer">
-                            Request Consultation
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Footer */}
-                      <footer className="mt-24 pt-12 border-t border-slate-800/80 flex flex-wrap items-center justify-between text-xs text-slate-500 gap-4">
-                        <div>{demo.footerText}</div>
-                        <div className="security-badges flex items-center gap-4 text-[11px]">
-                          <span className="flex items-center gap-1 text-slate-400"><ShieldCheck className="w-3.5 h-3.5 text-emerald-400" /> SSL Encrypted</span>
-                          <span>🛡️ Verified Domain</span>
-                          <span>⚡ 99.99% Availability</span>
-                        </div>
-                      </footer>
-                    </main>
-                  </div>
-                );
-              })()
             ) : (
               /* External URL iframe Embed with Full-Length Continuous Scrolling Canvas */
               <div 
@@ -1392,6 +834,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
                 className="w-full relative bg-slate-900 transition-all duration-300"
               >
                 <iframe
+                  ref={iframeRef}
                   src={
                     currentAsset.url.startsWith('http')
                       ? `/api/proxy-site?url=${encodeURIComponent(currentAsset.url)}`
@@ -1417,51 +860,6 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
                   </div>
                 )}
 
-                {/* Dismissible Top Helper Notice (does not cover footer) */}
-                {!dismissIframeNotice && (
-                  <div className="absolute top-4 left-4 right-4 bg-slate-900/95 border border-slate-700/80 text-slate-300 p-3 rounded-xl shadow-2xl text-xs flex flex-wrap items-center justify-between gap-3 z-30 backdrop-blur-md">
-                    <div className="flex items-center gap-2.5 flex-1 min-w-[260px]">
-                      <AlertCircle className="w-4 h-4 text-emerald-400 shrink-0" />
-                      <span className="leading-relaxed">
-                        Rendering live continuous full-length webpage via Markup.io proxy (<strong className="text-white">{pageCanvasHeight}px</strong>). Scroll header to footer without cut-offs.
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => setUseStagingRender(true)}
-                        className="bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white font-bold px-3 py-1.5 rounded-lg text-xs shadow-md transition-all flex items-center gap-1.5 cursor-pointer"
-                      >
-                        <span>🖥️ Render Interactive View</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPageCanvasHeight(prev => prev < 4200 ? 5200 : 2800)}
-                        className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold px-2.5 py-1.5 rounded-lg text-xs border border-slate-700 flex items-center gap-1 cursor-pointer"
-                        title="Toggle canvas length"
-                      >
-                        <span>↕️ {pageCanvasHeight >= 4200 ? '2800px Length' : '5200px Deep Length'}</span>
-                      </button>
-                      <a 
-                        href={currentAsset.url} 
-                        target="_blank" 
-                        rel="noreferrer"
-                        className="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-3 py-1.5 rounded-lg text-xs shrink-0 flex items-center gap-1 shadow-sm"
-                      >
-                        <span>Open Live Tab</span>
-                        <ExternalLink className="w-3.5 h-3.5" />
-                      </a>
-                      <button
-                        type="button"
-                        onClick={() => setDismissIframeNotice(true)}
-                        className="text-slate-400 hover:text-white p-1 ml-1 cursor-pointer"
-                        title="Dismiss helper banner"
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                )}
               </div>
             )}
 
@@ -1555,7 +953,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
                 <div className="flex items-center justify-between border-b border-slate-200 pb-2 mb-3">
                   <div className="flex items-center gap-1.5 font-bold text-xs text-indigo-600">
                     <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center font-mono text-[10px]">
-                      #{pins.filter(p => p.assetId === currentAsset.id).length + 1}
+                      #{nextPinNumber(pins, currentAsset.id)}
                     </span>
                     <span>New Annotation Pin</span>
                   </div>
@@ -1751,7 +1149,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
                       className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-3.5 py-1.5 rounded-md text-xs shadow-sm transition-all active:scale-95"
                     >
                       <Send className="w-3 h-3" />
-                      <span>Post Pin #{pins.filter(p => p.assetId === currentAsset.id).length + 1}</span>
+                      <span>Post Pin #{nextPinNumber(pins, currentAsset.id)}</span>
                     </button>
                   </div>
                 </form>

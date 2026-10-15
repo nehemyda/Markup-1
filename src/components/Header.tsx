@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Project, ViewMode, Teammate, Asset, AuthUser, Organization, NotificationItem } from '../types';
 import { UserAvatar } from './UserAvatar';
+import { firebaseConfig, useEmulator } from '../lib/firebase';
 import { 
   Layers, 
   Kanban, 
@@ -270,9 +271,9 @@ export const Header: React.FC<HeaderProps> = ({
         {/* Right Controls */}
         <div className="flex items-center gap-2.5">
           {/* Firebase Connection Status Badge */}
-          <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/10 border border-amber-500/30 text-amber-700 rounded-lg text-xs font-bold" title="Connected to Firebase Cloud Firestore (webreview-pro)">
+          <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/10 border border-amber-500/30 text-amber-700 rounded-lg text-xs font-bold" title={useEmulator ? `Connected to the local Firebase Emulator (${firebaseConfig.projectId})` : `Connected to Firebase Cloud Firestore (${firebaseConfig.projectId})`}>
             <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
-            <span className="text-[11px]">Firebase: <span className="font-extrabold text-amber-900">webreview-pro</span></span>
+            <span className="text-[11px]">Firebase: <span className="font-extrabold text-amber-900">{useEmulator ? 'Local Emulator' : firebaseConfig.projectId}</span></span>
           </div>
 
           {/* Active Collaborators & Share (Only shown inside studio views) */}
@@ -320,7 +321,7 @@ export const Header: React.FC<HeaderProps> = ({
                         <Users className="w-4 h-4 text-indigo-400" />
                         <div>
                           <div className="text-xs font-extrabold text-white">Team Directory & Online Presence</div>
-                          <div className="text-[10px] text-slate-400">1,240 Total Members • 4 Active Now</div>
+                          <div className="text-[10px] text-slate-400">{teammates.length} {teammates.length === 1 ? 'Member' : 'Members'}</div>
                         </div>
                       </div>
                       <button 

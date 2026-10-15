@@ -8,7 +8,6 @@ import {
   ViewMode 
 } from '../types';
 import { CATEGORY_COLORS } from '../data/qaRubricData';
-import { TEAMMATES } from '../data/mockData';
 import { 
   Award, 
   AlertTriangle, 
@@ -50,7 +49,7 @@ interface QAScoreManagerProps {
 export const QAScoreManager: React.FC<QAScoreManagerProps> = ({
   projects,
   pins,
-  teammates = TEAMMATES,
+  teammates = [],
   rubricRules,
   onUpdateRubricRules,
   onUpdatePinQAError,

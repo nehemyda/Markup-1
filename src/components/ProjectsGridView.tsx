@@ -58,7 +58,7 @@ interface ProjectsGridViewProps {
   onSelectProject: (project: Project) => void;
   onSelectAsset: (asset: Asset) => void;
   onOpenNewProjectModal: () => void;
-  onOpenShareModal: () => void;
+  onOpenShareModal: (project?: Project) => void;
   teammates: Teammate[];
   onUpdateTeammateRole?: (id: string, newRole: Teammate['role']) => void;
   currentUser: Teammate;
@@ -349,7 +349,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
   const [notifyOnGuestFeedback, setNotifyOnGuestFeedback] = useState(true);
 
   // Archive State
-  const [archivedItems, setArchivedItems] = useState(ARCHIVED_PROJECTS);
+  const [archivedItems, setArchivedItems] = useState<typeof ARCHIVED_PROJECTS>([]);
 
   // Filter, Search, and Slider State for Archive & Dashboard
   const [archiveSearchQuery, setArchiveSearchQuery] = useState('');
@@ -454,7 +454,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
 
   const copyGuestLinkForProject = (projId: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    const guestUrl = `${window.location.origin}/?project=${projId}&guest_mode=true`;
+    const guestUrl = `${window.location.origin}/?project=${encodeURIComponent(projId)}&guest_mode=true`;
     navigator.clipboard.writeText(guestUrl);
     setCopiedCardId(projId);
     setTimeout(() => setCopiedCardId(null), 2000);
@@ -906,7 +906,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                             onClick={(e) => {
                               e.stopPropagation();
                               copyGuestLinkForProject(project.id, e);
-                              onOpenShareModal();
+                              onOpenShareModal(project);
                             }}
                             className="bg-slate-900/80 hover:bg-slate-950 text-white font-bold text-xs px-4 py-2 rounded-xl shadow-md flex items-center gap-2 border border-white/30 transition-all transform hover:scale-105 cursor-pointer"
                           >
@@ -1424,7 +1424,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
               </div>
               
               <button
-                onClick={onOpenShareModal}
+                onClick={() => onOpenShareModal()}
                 className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition-all shadow-2xs flex items-center gap-1.5 cursor-pointer"
               >
                 <Plus className="w-4 h-4" />
@@ -1452,7 +1452,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                     : 'text-slate-400 hover:text-slate-700'
                 }`}
               >
-                External Guests & Clients (3)
+                External Guests & Clients (0)
               </button>
               <button
                 onClick={() => setTeamSubTab('roles')}
@@ -1510,6 +1510,11 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                                   You
                                 </span>
                               )}
+                              {tm.lastActive === 'Invitation pending' && (
+                                <span className="ml-2 text-[10px] bg-amber-100 text-amber-700 font-bold px-2 py-0.5 rounded-full">
+                                  Invitation pending
+                                </span>
+                              )}
                             </div>
                           </td>
                           <td className="py-3.5 px-5 text-slate-600 font-mono text-[11px]">
@@ -1547,10 +1552,17 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                             )}
                           </td>
                           <td className="py-3.5 px-5 font-medium">
-                            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
-                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                              <span>Active</span>
-                            </span>
+                            {tm.lastActive === 'Invitation pending' ? (
+                              <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-amber-700 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-200">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                                <span>Pending</span>
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                                <span>Active</span>
+                              </span>
+                            )}
                           </td>
                           <td className="py-3.5 px-5 text-right font-medium">
                             {!isSelf && !isTargetMasterAdmin && (
@@ -1615,69 +1627,9 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      <tr className="hover:bg-slate-50/50 transition-colors">
-                        <td className="py-3.5 px-5 font-bold text-slate-900 flex items-center gap-3">
-                          <UserAvatar
-                            name="Elena Rostova"
-                            email="elena@clientcorp.io"
-                            size="sm"
-                            showOnlineStatus
-                            status="online"
-                          />
-                          <div>
-                            <span>Elena Rostova (Client Stakeholder)</span>
-                            <div className="text-[11px] text-slate-400 font-mono">elena@clientcorp.io</div>
-                          </div>
-                        </td>
-                        <td className="py-3.5 px-5 font-semibold text-slate-700">
-                          Holiday Finance Portal
-                        </td>
-                        <td className="py-3.5 px-5">
-                          <button
-                            onClick={onOpenShareModal}
-                            className="bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-[11px] px-3 py-1.5 rounded-lg border border-slate-200 flex items-center gap-1 cursor-pointer"
-                          >
-                            <Copy className="w-3 h-3 text-slate-500" />
-                            <span>Copy Share Link</span>
-                          </button>
-                        </td>
-                        <td className="py-3.5 px-5 text-right">
-                          <span className="text-[11px] font-bold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-full border border-slate-200">
-                            Read & Comment Only
-                          </span>
-                        </td>
-                      </tr>
-
-                      <tr className="hover:bg-slate-50/50 transition-colors">
-                        <td className="py-3.5 px-5 font-bold text-slate-900 flex items-center gap-3">
-                          <UserAvatar
-                            name="Demond"
-                            email="demond.review@partner.org"
-                            size="sm"
-                            showOnlineStatus
-                            status="online"
-                          />
-                          <div>
-                            <span>Demond (External Reviewer)</span>
-                            <div className="text-[11px] text-slate-400 font-mono">demond.review@partner.org</div>
-                          </div>
-                        </td>
-                        <td className="py-3.5 px-5 font-semibold text-slate-700">
-                          StealthEnomics AI Chatbot
-                        </td>
-                        <td className="py-3.5 px-5">
-                          <button
-                            onClick={onOpenShareModal}
-                            className="bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-[11px] px-3 py-1.5 rounded-lg border border-slate-200 flex items-center gap-1 cursor-pointer"
-                          >
-                            <Copy className="w-3 h-3 text-slate-500" />
-                            <span>Copy Share Link</span>
-                          </button>
-                        </td>
-                        <td className="py-3.5 px-5 text-right">
-                          <span className="text-[11px] font-bold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-full border border-slate-200">
-                            Read & Comment Only
-                          </span>
+                      <tr>
+                        <td colSpan={5} className="py-10 px-5 text-center text-xs text-slate-400">
+                          No external guests yet. Guests appear here once they review a project through a Guest Share Link.
                         </td>
                       </tr>
                     </tbody>

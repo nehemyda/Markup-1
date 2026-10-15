@@ -330,7 +330,7 @@ export const FeedbackMatrix: React.FC<FeedbackMatrixProps> = ({
                       <td className="p-2.5">
                         <div className="flex items-center gap-1.5">
                           <img 
-                            src={pin.assignedTo?.avatar || teammates[0].avatar} 
+                            src={pin.assignedTo?.avatar || teammates[0]?.avatar} 
                             alt="Assignee" 
                             className="w-4.5 h-4.5 rounded-full object-cover border border-slate-200" 
                           />

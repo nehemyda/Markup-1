@@ -10,7 +10,7 @@ import {
   orderBy
 } from 'firebase/firestore';
 import { db, firebaseConfig } from './firebase';
-import { Project, Pin, QARubricRule } from '../types';
+import { Project, Pin, QARubricRule, Teammate, AuthUser } from '../types';
 
 export interface FirebaseConnectionInfo {
   isConnected: boolean;
@@ -47,15 +47,11 @@ export function subscribeProjects(onProjectsUpdate: (projects: Project[]) => voi
   try {
     const projectsCol = collection(db, 'projects');
     const unsubscribe = onSnapshot(projectsCol, (snapshot) => {
-      if (!snapshot.empty) {
-        const fetchedProjects: Project[] = [];
-        snapshot.forEach((docSnap) => {
-          fetchedProjects.push(docSnap.data() as Project);
-        });
-        if (fetchedProjects.length > 0) {
-          onProjectsUpdate(fetchedProjects);
-        }
-      }
+      const fetchedProjects: Project[] = [];
+      snapshot.forEach((docSnap) => {
+        fetchedProjects.push(docSnap.data() as Project);
+      });
+      onProjectsUpdate(fetchedProjects);
     }, (error) => {
       console.warn("Projects Firestore subscription error, using local state:", error);
     });
@@ -82,13 +78,11 @@ export function subscribePins(onPinsUpdate: (pins: Pin[]) => void): () => void {
   try {
     const pinsCol = collection(db, 'pins');
     const unsubscribe = onSnapshot(pinsCol, (snapshot) => {
-      if (!snapshot.empty) {
-        const fetchedPins: Pin[] = [];
-        snapshot.forEach((docSnap) => {
-          fetchedPins.push(docSnap.data() as Pin);
-        });
-        onPinsUpdate(fetchedPins);
-      }
+      const fetchedPins: Pin[] = [];
+      snapshot.forEach((docSnap) => {
+        fetchedPins.push(docSnap.data() as Pin);
+      });
+      onPinsUpdate(fetchedPins);
     }, (error) => {
       console.warn("Pins Firestore subscription error, using local state:", error);
     });
@@ -130,38 +124,135 @@ export async function deleteProjectFromFirestore(projectId: string): Promise<voi
   }
 }
 
-// Seed initial projects to Firestore if empty or missing
-export async function seedInitialFirestoreData(initialProjects: Project[], initialPins: Pin[]): Promise<void> {
+// Delete all Pins belonging to the given Asset IDs (used when a Project is deleted)
+export async function deletePinsForAssets(assetIds: string[]): Promise<void> {
+  if (assetIds.length === 0) return;
   try {
-    const projectsSnap = await getDocs(collection(db, 'projects'));
-    if (projectsSnap.empty) {
-      for (const proj of initialProjects) {
-        await setDoc(doc(db, 'projects', proj.id), proj, { merge: true });
-      }
-    }
-
-    // Check localStorage for any locally saved projects created while offline/un-synced
-    try {
-      const localSaved = localStorage.getItem('webreview_projects_v2');
-      if (localSaved) {
-        const parsed = JSON.parse(localSaved);
-        if (Array.isArray(parsed)) {
-          for (const p of parsed) {
-            if (p && p.id) {
-              await setDoc(doc(db, 'projects', p.id), p, { merge: true });
-            }
-          }
-        }
-      }
-    } catch (e) {}
-
     const pinsSnap = await getDocs(collection(db, 'pins'));
-    if (pinsSnap.empty) {
-      for (const pin of initialPins) {
-        await setDoc(doc(db, 'pins', pin.id), pin, { merge: true });
-      }
+    const ids = new Set(assetIds);
+    await Promise.all(
+      pinsSnap.docs
+        .filter((d) => ids.has((d.data() as Pin).assetId))
+        .map((d) => deleteDoc(d.ref))
+    );
+  } catch (err) {
+    console.warn("Failed deleting project pins from Firestore:", err);
+  }
+}
+
+// ---------- Team members ----------
+// Members are signed-up accounts (users/{uid}); removed members keep their doc with removed: true.
+// Pending invitations live in invites/{email} until that person creates an account.
+
+const INVITE_ID_PREFIX = 'invite:';
+
+export function isInviteId(id: string): boolean {
+  return id.startsWith(INVITE_ID_PREFIX);
+}
+
+function inviteDocId(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+// Older profiles stored the long label; the Team page uses the short role names
+export function normalizeRole(role: string | undefined): Teammate['role'] {
+  if (!role || role === 'Member (Editor & Annotator)') return 'Member';
+  return role as Teammate['role'];
+}
+
+// Live team list: active members plus pending invitations
+export function subscribeTeam(onTeamUpdate: (team: Teammate[]) => void): () => void {
+  let members: Teammate[] = [];
+  let invites: Teammate[] = [];
+  const emit = () => onTeamUpdate([...members, ...invites]);
+
+  try {
+    const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
+      members = [];
+      snapshot.forEach((docSnap) => {
+        const u = docSnap.data() as AuthUser & { department?: string; removed?: boolean };
+        if (u.removed) return;
+        members.push({
+          id: docSnap.id,
+          name: u.name,
+          email: u.email,
+          avatar: u.avatar,
+          role: normalizeRole(u.role),
+          status: u.status || 'offline',
+          cursorColor: u.cursorColor || '#6366f1',
+          department: u.department,
+        });
+      });
+      emit();
+    }, (error) => {
+      console.warn("Users Firestore subscription error:", error);
+    });
+
+    const unsubInvites = onSnapshot(collection(db, 'invites'), (snapshot) => {
+      invites = [];
+      snapshot.forEach((docSnap) => {
+        const inv = docSnap.data() as { name: string; email: string; role: string; invitedBy?: string };
+        invites.push({
+          id: INVITE_ID_PREFIX + docSnap.id,
+          name: inv.name,
+          email: inv.email,
+          avatar: '',
+          role: normalizeRole(inv.role),
+          status: 'offline',
+          cursorColor: '#94a3b8',
+          lastActive: 'Invitation pending',
+          createdBy: inv.invitedBy,
+        });
+      });
+      emit();
+    }, (error) => {
+      console.warn("Invites Firestore subscription error:", error);
+    });
+
+    return () => {
+      unsubUsers();
+      unsubInvites();
+    };
+  } catch (e) {
+    console.warn("Failed to subscribe to team collections:", e);
+    return () => {};
+  }
+}
+
+export async function inviteMember(name: string, email: string, role: Teammate['role'], invitedBy: string): Promise<void> {
+  try {
+    await setDoc(doc(db, 'invites', inviteDocId(email)), {
+      name,
+      email: email.trim(),
+      role,
+      invitedBy,
+      invitedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.warn("Failed saving invite to Firestore:", err);
+  }
+}
+
+export async function updateMemberRole(id: string, role: Teammate['role']): Promise<void> {
+  try {
+    if (isInviteId(id)) {
+      await setDoc(doc(db, 'invites', id.slice(INVITE_ID_PREFIX.length)), { role }, { merge: true });
+    } else {
+      await setDoc(doc(db, 'users', id), { role }, { merge: true });
     }
   } catch (err) {
-    console.warn("Cloud Firestore initial seed fallback:", err);
+    console.warn("Failed updating member role in Firestore:", err);
+  }
+}
+
+export async function removeMember(id: string): Promise<void> {
+  try {
+    if (isInviteId(id)) {
+      await deleteDoc(doc(db, 'invites', id.slice(INVITE_ID_PREFIX.length)));
+    } else {
+      await setDoc(doc(db, 'users', id), { removed: true, removedAt: new Date().toISOString() }, { merge: true });
+    }
+  } catch (err) {
+    console.warn("Failed removing member in Firestore:", err);
   }
 }
