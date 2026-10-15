@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import html2canvas from 'html2canvas';
 import { capturePageSnapshot, captureImageSnapshot, ReviewSnapshot, cssSelector } from '../lib/pageSnapshot';
 import { nextPinNumber, pinDevice, PinDevice, DEVICE_WIDTHS } from '../lib/pins';
@@ -301,6 +302,42 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
     setNewPinAttachments([]);
     onSelectPin(null);
   };
+
+  // ---------- New pin form placement ----------
+  // Place the form beside the pending marker on screen; flip to the left when there is no room, keep it in the window
+  const pendingMarkerRef = useRef<HTMLDivElement>(null);
+  const pinFormRef = useRef<HTMLDivElement>(null);
+  const [pinFormPos, setPinFormPos] = useState<{ left: number; top: number } | null>(null);
+  useLayoutEffect(() => {
+    if (!newPinCoord) {
+      setPinFormPos(null);
+      return;
+    }
+    const place = () => {
+      const marker = pendingMarkerRef.current;
+      if (!marker) return;
+      const m = marker.getBoundingClientRect();
+      const w = pinFormRef.current?.offsetWidth || 320;
+      const h = pinFormRef.current?.offsetHeight || 420;
+      const gap = 12;
+      const margin = 8;
+      let left = m.right + gap;
+      if (left + w > window.innerWidth - margin) left = m.left - gap - w;
+      left = Math.max(margin, Math.min(left, window.innerWidth - w - margin));
+      const top = Math.max(margin, Math.min(m.top - 24, window.innerHeight - h - margin));
+      setPinFormPos((prev) => (prev && prev.left === left && prev.top === top ? prev : { left, top }));
+    };
+    place();
+    const frame = requestAnimationFrame(place);
+    const container = scrollContainerRef.current;
+    container?.addEventListener('scroll', place);
+    window.addEventListener('resize', place);
+    return () => {
+      cancelAnimationFrame(frame);
+      container?.removeEventListener('scroll', place);
+      window.removeEventListener('resize', place);
+    };
+  }, [newPinCoord, scale, newPinScreenshot, newPinAttachments.length]);
 
   // ---------- Pin screenshots ----------
   // Snippet size in page pixels around the pin
@@ -1060,6 +1097,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
             {/* 4. NEW PIN: marker at the clicked point, form beside it (left side near the right edge) */}
             {newPinCoord && (
               <div
+                ref={pendingMarkerRef}
                 onClick={(e) => e.stopPropagation()}
                 style={{ left: `${newPinCoord.x}%`, top: `${newPinCoord.y}%` }}
                 className="absolute z-50 -translate-x-1/2 -translate-y-1/2 w-7 h-7 rounded-full bg-indigo-600 border-[3px] border-white shadow-lg flex items-center justify-center text-white font-bold text-[11px] pointer-events-none animate-in zoom-in-50 duration-150"
@@ -1067,17 +1105,19 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
                 {nextPinNumber(pins, currentAsset.id)}
               </div>
             )}
-            {newPinCoord && (
+            {/* The form is drawn above everything (not inside the page frame), so it is never clipped
+                (e.g. by the 375px mobile frame) and is not scaled with the page */}
+            {newPinCoord && createPortal(
               <div
+                ref={pinFormRef}
                 onClick={(e) => e.stopPropagation()}
                 style={{
-                  left: `${newPinCoord.x}%`,
-                  top: `${newPinCoord.y}%`,
-                  visibility: hidePinFormForCapture ? 'hidden' : 'visible',
+                  left: pinFormPos?.left ?? -9999,
+                  top: pinFormPos?.top ?? -9999,
+                  maxHeight: 'calc(100vh - 16px)',
+                  visibility: hidePinFormForCapture || !pinFormPos ? 'hidden' : 'visible',
                 }}
-                className={`absolute z-50 -translate-y-6 ${
-                  newPinCoord.x > 60 ? '-translate-x-[calc(100%+24px)]' : 'translate-x-6'
-                } bg-white border border-slate-200 text-slate-900 p-4 rounded-xl shadow-2xl w-80 animate-in fade-in zoom-in-95 duration-150`}
+                className="fixed z-[55] overflow-y-auto bg-white border border-slate-200 text-slate-900 p-4 rounded-xl shadow-2xl w-80 animate-in fade-in zoom-in-95 duration-150"
               >
                 <div className="flex items-center justify-between border-b border-slate-200 pb-2 mb-3">
                   <div className="flex items-center gap-1.5 font-bold text-xs text-indigo-600">
@@ -1284,7 +1324,8 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
                     </button>
                   </div>
                 </form>
-              </div>
+              </div>,
+              document.body
             )}
 
           </div>
