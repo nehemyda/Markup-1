@@ -29,6 +29,8 @@ import {
   Code,
   FileSpreadsheet,
   X,
+  Pin as PinIcon,
+  PinOff,
   Bell,
   AtSign,
   Award,
@@ -54,6 +56,8 @@ interface SidebarDiscussionProps {
   onDeletePin?: (pinId: string) => void;
   onDeleteComment?: (pinId: string, commentId: string) => void;
   onClose?: () => void;
+  isPinned?: boolean;
+  onTogglePinned?: () => void;
 }
 
 export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
@@ -71,6 +75,8 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
   onDeletePin,
   onDeleteComment,
   onClose,
+  isPinned = true,
+  onTogglePinned,
 }) => {
   const [commentInput, setCommentInput] = useState('');
   const [isRecording, setIsRecording] = useState(false);
@@ -350,6 +356,16 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
             <span className="bg-slate-200 border border-slate-300 px-2 py-0.5 rounded text-[10px] text-slate-700 font-mono font-bold">
               {pins.length} total
             </span>
+            {onTogglePinned && (
+              <button
+                type="button"
+                onClick={onTogglePinned}
+                title={isPinned ? 'Unpin: float the sidebar over the page' : 'Pin: show the sidebar beside the page'}
+                className={`p-1 rounded-md transition-colors hover:bg-slate-200 ${isPinned ? 'text-indigo-600' : 'text-slate-400 hover:text-slate-700'}`}
+              >
+                {isPinned ? <PinIcon className="w-4 h-4" /> : <PinOff className="w-4 h-4" />}
+              </button>
+            )}
             {onClose && (
             <button
               type="button"
@@ -515,6 +531,16 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
               </button>
             );
           })()}
+          {onTogglePinned && (
+            <button
+              type="button"
+              onClick={onTogglePinned}
+              title={isPinned ? 'Unpin: float the sidebar over the page' : 'Pin: show the sidebar beside the page'}
+              className={`p-1 rounded-md transition-colors hover:bg-slate-200 ${isPinned ? 'text-indigo-600' : 'text-slate-400 hover:text-slate-700'}`}
+            >
+              {isPinned ? <PinIcon className="w-4 h-4" /> : <PinOff className="w-4 h-4" />}
+            </button>
+          )}
           {onClose && (
             <button
               type="button"

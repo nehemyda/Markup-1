@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import html2canvas from 'html2canvas';
 import { capturePageSnapshot, captureImageSnapshot, ReviewSnapshot, cssSelector } from '../lib/pageSnapshot';
-import { nextPinNumber, pinDevice, PinDevice } from '../lib/pins';
+import { nextPinNumber, pinDevice, PinDevice, DEVICE_WIDTHS } from '../lib/pins';
 import { Project, Asset, Pin, PinCategory, PinPriority, Teammate, FilterState, DeviceViewport, Attachment } from '../types';
 import { SearchableMemberSelect } from './SearchableMemberSelect';
 import { 
@@ -126,6 +126,29 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
   const canvasRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+
+  // Fixed render width per device; the stage is scaled down to fit the space available (then by the zoom control)
+  const deviceWidth = DEVICE_WIDTHS[viewport];
+  const [availableWidth, setAvailableWidth] = useState(deviceWidth);
+  const [stageHeight, setStageHeight] = useState(900);
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    const stage = stageRef.current;
+    if (!container || !stage) return;
+    const observer = new ResizeObserver(() => {
+      const padding = window.innerWidth >= 640 ? 48 : 24;
+      setAvailableWidth(Math.max(200, container.clientWidth - padding));
+      setStageHeight(stage.offsetHeight);
+    });
+    observer.observe(container);
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, []);
+  const fitScale = Math.min(1, availableWidth / deviceWidth);
+  const scale = fitScale * (zoom / 100);
+  // Effective zoom in percent, used to map screen positions back to page positions
+  const effectiveZoom = scale * 100;
   const imageRef = useRef<HTMLImageElement>(null);
   const [isCapturingPage, setIsCapturingPage] = useState(false);
 
@@ -137,10 +160,10 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
       let snapshot: ReviewSnapshot;
       if (currentAsset.type === 'image' || currentAsset.type === 'mockup') {
         if (!imageRef.current) throw new Error('The image has not loaded yet.');
-        snapshot = captureImageSnapshot(imageRef.current, canvasRef.current, zoom);
+        snapshot = captureImageSnapshot(imageRef.current, canvasRef.current, effectiveZoom);
       } else {
         if (!iframeRef.current) throw new Error('The page has not loaded yet.');
-        snapshot = await capturePageSnapshot(iframeRef.current, canvasRef.current, zoom);
+        snapshot = await capturePageSnapshot(iframeRef.current, canvasRef.current, effectiveZoom);
       }
       setIsCapturingPage(false);
       await onRunAiAudit(snapshot);
@@ -305,7 +328,6 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
     const doc = iframe?.contentDocument;
     if (!canvasRef.current || !iframe || !doc || !newPinCoord) return undefined;
     try {
-      const scale = zoom / 100;
       const c = canvasRef.current.getBoundingClientRect();
       const f = iframe.getBoundingClientRect();
       const x = (newPinCoord.x / 100) * canvasRef.current.offsetWidth - (f.left - c.left) / scale;
@@ -340,7 +362,6 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
     setIsCapturingScreenshot(true);
     try {
       const canvas = canvasRef.current;
-      const scale = zoom / 100;
       const canvasRect = canvas.getBoundingClientRect();
       const pin = pinCanvasPoint();
 
@@ -570,14 +591,6 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
     }
   };
 
-  const getViewportWidth = () => {
-    switch (viewport) {
-      case 'mobile': return 'max-w-[375px]';
-      case 'tablet': return 'max-w-[768px]';
-      case 'desktop': return 'max-w-full';
-      case 'full': return 'max-w-full';
-    }
-  };
 
   return (
     <div className="flex-1 min-h-0 min-w-0 flex flex-col h-full bg-slate-100 overflow-hidden select-none relative">
@@ -762,21 +775,27 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
 
         {/* Filter Chips & Search */}
         <div className="flex items-center gap-2 overflow-x-auto py-1">
-          <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-md border border-slate-200">
-            {(['all', 'bug', 'design', 'content', 'question', 'approved'] as const).map((cat) => (
-              <button
-                key={cat}
-                onClick={() => onUpdateFilter({ category: cat })}
-                className={`px-2 py-0.5 rounded text-[11px] font-semibold capitalize transition-all ${
-                  filterState.category === cat
-                    ? 'bg-white text-slate-900 shadow-xs'
-                    : 'text-slate-500 hover:text-slate-900'
-                }`}
-              >
-                {cat === 'all' ? 'All Pins' : cat}
-              </button>
-            ))}
-          </div>
+          {/* Pin type filter (counts are for this page on the current device) */}
+          <label className="relative flex items-center">
+            <span className="sr-only">Filter pins by type</span>
+            <select
+              value={filterState.category}
+              onChange={(e) => onUpdateFilter({ category: e.target.value as FilterState['category'] })}
+              className="appearance-none bg-white border border-slate-200 rounded-md pl-2.5 pr-7 py-1 text-[11px] font-semibold text-slate-700 shadow-xs hover:border-slate-300 focus:outline-none focus:border-indigo-500 cursor-pointer"
+            >
+              {(['all', 'bug', 'design', 'content', 'question', 'approved'] as const).map((cat) => {
+                const count = pins.filter(
+                  (p) => p.assetId === currentAsset.id && pinDevice(p) === viewport && (cat === 'all' || p.category === cat)
+                ).length;
+                return (
+                  <option key={cat} value={cat}>
+                    {cat === 'all' ? 'All pins' : cat[0].toUpperCase() + cat.slice(1)} ({count})
+                  </option>
+                );
+              })}
+            </select>
+            <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2 pointer-events-none" />
+          </label>
 
           <button
             onClick={() => onUpdateFilter({ showResolved: !filterState.showResolved })}
@@ -806,7 +825,8 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
       </div>
 
       {/* Canvas area + comments sidebar (which slides over the canvas, below the toolbars) */}
-      <div className="flex-1 min-h-0 relative flex flex-col">
+      <div className="flex-1 min-h-0 relative flex">
+      <div className="flex-1 min-w-0 flex flex-col">
       {/* Main Canvas Scroll Area */}
       <div 
         ref={scrollContainerRef}
@@ -816,16 +836,18 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
         {/* Background Grid Pattern */}
         <div className="absolute inset-0 bg-[radial-gradient(#cbd5e1_1px,transparent_1px)] [background-size:24px_24px] pointer-events-none opacity-60" />
 
-        {/* Centering wrapper that allows full scrollable content without negative margin clipping */}
-        <div className="w-full flex justify-center min-w-fit">
+        {/* The page renders at a fixed width per device and is scaled to fit, so its layout (and pin positions)
+            never change when the window or the sidebar changes size. The outer box reserves the scaled size. */}
+        <div className="w-full">
+          <div
+            style={{ width: deviceWidth * scale, height: stageHeight * scale }}
+            className="relative mx-auto my-4 mb-40 shrink-0"
+          >
           {/* The Viewport Stage Container */}
           <div 
-            style={{ 
-              transform: `scale(${zoom / 100})`, 
-              transformOrigin: 'top center',
-              marginBottom: zoom !== 100 ? `${Math.max(0, (zoom / 100 - 1) * 3600)}px` : undefined 
-            }}
-            className={`w-full ${getViewportWidth()} transition-all duration-200 relative bg-white rounded-lg shadow-2xl border border-slate-300 overflow-hidden min-h-[850px] my-4 mb-40`}
+            ref={stageRef}
+            style={{ width: deviceWidth, transform: `scale(${scale})`, transformOrigin: 'top left' }}
+            className="absolute top-0 left-0 bg-white rounded-lg shadow-2xl border border-slate-300 overflow-hidden min-h-[850px]"
           >
             
             {/* Simulated Browser Bar */}
@@ -1205,6 +1227,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
 
           </div>
         </div>
+          </div>
       </div>
 
       </div>
@@ -1219,6 +1242,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
           <span className="w-2 h-2 rounded-full bg-green-500" />
           <span className="text-slate-700">Real-time WebSocket Sync Active</span>
         </div>
+      </div>
       </div>
       {sidebar}
       </div>

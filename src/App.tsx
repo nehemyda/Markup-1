@@ -131,6 +131,22 @@ export default function App() {
   const [selectedPin, setSelectedPin] = useState<Pin | null>(null);
   // Comments sidebar: closed by default, opens when a pin is selected (clicked or just created)
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  // Pinned: sidebar sits beside the canvas (default). Unpinned: it floats over the canvas. Remembered per browser.
+  const [isSidebarPinned, setIsSidebarPinned] = useState(() => {
+    try {
+      return localStorage.getItem('mf_sidebar_pinned') !== 'false';
+    } catch (e) {
+      return true;
+    }
+  });
+  const toggleSidebarPinned = () => {
+    setIsSidebarPinned((pinned) => {
+      try {
+        localStorage.setItem('mf_sidebar_pinned', String(!pinned));
+      } catch (e) {}
+      return !pinned;
+    });
+  };
   // Device view (desktop / tablet / mobile): each shows only its own pins
   const [device, setDevice] = useState<PinDevice>('desktop');
   useEffect(() => {
@@ -1167,10 +1183,16 @@ export default function App() {
                 if (selectedPin && pinDevice(selectedPin) !== d) setSelectedPin(null);
               }}
               onToggleSidebar={() => setIsSidebarOpen((open) => !open)}
-              // Comments sidebar slides over the canvas so the page width (and pin positions) never change
+              // Pinned: beside the canvas (the page scales to fit). Unpinned: floats over the canvas.
               sidebar={
                 isSidebarOpen && (
-                  <div className="absolute top-0 right-0 bottom-0 z-30 flex shadow-2xl">
+                  <div
+                    className={
+                      isSidebarPinned
+                        ? 'relative h-full flex shrink-0'
+                        : 'absolute top-0 right-0 bottom-0 z-30 flex shadow-2xl'
+                    }
+                  >
                     <SidebarDiscussion
                       pins={pins.filter((p) => p.assetId === currentAsset.id && pinDevice(p) === device)}
                       selectedPin={selectedPin}
@@ -1189,6 +1211,8 @@ export default function App() {
                         setIsSidebarOpen(false);
                         setSelectedPin(null);
                       }}
+                      isPinned={isSidebarPinned}
+                      onTogglePinned={toggleSidebarPinned}
                     />
                   </div>
                 )

@@ -28,3 +28,6 @@ export function describeClient(): { browser: string; os: string } {
     : /iPhone|iPad/.test(ua) ? 'iOS' : /Linux/.test(ua) ? 'Linux' : 'Unknown OS';
   return { browser, os };
 }
+
+// Width each device view renders the page at (the canvas scales it to fit the screen)
+export const DEVICE_WIDTHS: Record<PinDevice, number> = { desktop: 1440, tablet: 768, mobile: 375 };
