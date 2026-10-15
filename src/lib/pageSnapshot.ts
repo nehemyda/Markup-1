@@ -87,7 +87,7 @@ function contrastFor(el: Element, win: Window): { color: string; background: str
   return { color: style.color, background: `rgb(${bg[0]}, ${bg[1]}, ${bg[2]})`, ratio: Math.round(ratio * 100) / 100 };
 }
 
-function cssSelector(el: Element): string {
+export function cssSelector(el: Element): string {
   if (el.id) return `#${CSS.escape(el.id)}`;
   const parts: string[] = [];
   let node: Element | null = el;

@@ -3,6 +3,8 @@ import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
+import fs from 'fs';
+import puppeteer, { Browser, Page } from 'puppeteer-core';
 
 dotenv.config();
 
@@ -27,6 +29,75 @@ function getAIClient(): GoogleGenAI | null {
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+}
+
+// ---------- Real screenshots via the local Google Chrome (puppeteer-core) ----------
+// Pin snippets are real browser screenshots, like Markup.io. Set CHROME_PATH if Chrome lives elsewhere.
+const CHROME_PATH = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const PAGE_IDLE_MS = 2 * 60 * 1000;
+let browserPromise: Promise<Browser> | null = null;
+const openPages = new Map<string, { page: Page; timer: NodeJS.Timeout }>();
+
+function getBrowser(): Promise<Browser> {
+  if (!browserPromise) {
+    if (!fs.existsSync(CHROME_PATH)) {
+      return Promise.reject(new Error(`Google Chrome was not found at ${CHROME_PATH}. Set CHROME_PATH in .env.`));
+    }
+    browserPromise = puppeteer.launch({
+      executablePath: CHROME_PATH,
+      headless: true,
+      args: ['--hide-scrollbars'],
+      // We close Chrome ourselves on shutdown (see closeBrowser), so the server exits cleanly
+      handleSIGINT: false,
+      handleSIGTERM: false,
+      handleSIGHUP: false,
+    });
+    browserPromise.then(
+      (browser) => browser.on('disconnected', resetBrowser),
+      () => { browserPromise = null; }
+    );
+  }
+  return browserPromise;
+}
+
+// Forget Chrome and its pages (it closed or crashed); the next request starts a fresh one
+function resetBrowser() {
+  browserPromise = null;
+  for (const { timer } of openPages.values()) clearTimeout(timer);
+  openPages.clear();
+}
+
+async function closeBrowser() {
+  const pending = browserPromise;
+  resetBrowser();
+  if (pending) await pending.then((b) => b.close()).catch(() => {});
+}
+
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+  process.once(signal, () => {
+    closeBrowser().finally(() => process.exit(0));
+  });
+}
+
+// Reuse a loaded page for the same URL + width so repeated snippets are fast
+async function getPage(url: string, width: number): Promise<Page> {
+  const key = `${width}|${url}`;
+  const cached = openPages.get(key);
+  const closeLater = (page: Page) => setTimeout(() => {
+    openPages.delete(key);
+    page.close().catch(() => {});
+  }, PAGE_IDLE_MS);
+  if (cached && !cached.page.isClosed()) {
+    clearTimeout(cached.timer);
+    cached.timer = closeLater(cached.page);
+    return cached.page;
+  }
+  const browser = await getBrowser();
+  const page = await browser.newPage();
+  await page.setViewport({ width, height: 900, deviceScaleFactor: 2 });
+  await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+  openPages.set(key, { page, timer: closeLater(page) });
+  return page;
 }
 
 async function startServer() {
@@ -353,6 +424,62 @@ For each finding, set elementId to the id of the element the problem is on (it m
     } catch (error: any) {
       console.warn('AI review failed:', error?.message || error);
       return res.status(502).json({ error: `AI review failed: ${error?.message || 'unknown error'}` });
+    }
+  });
+
+  // Real screenshot of a page area (used for pin snippets)
+  app.post('/api/screenshot', async (req, res) => {
+    const { url, viewportWidth, x, y, width, height } = req.body || {};
+    if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+      return res.status(400).json({ error: 'A full http(s) URL is required.' });
+    }
+    const nums = [viewportWidth, x, y, width, height].map(Number);
+    if (nums.some((n) => !Number.isFinite(n)) || nums[0] < 200 || nums[0] > 4000 || nums[3] <= 0 || nums[4] <= 0) {
+      return res.status(400).json({ error: 'Invalid screenshot area.' });
+    }
+    const [vw, cx, cy, cw, ch] = nums.map(Math.round);
+    const capture = async () => {
+      const page = await getPage(url, vw);
+      // Scroll to the area so lazy-loaded images there load, then capture it in page coordinates
+      await page.evaluate((top: number) => window.scrollTo(0, Math.max(0, top - 200)), cy);
+      await new Promise((r) => setTimeout(r, 600));
+      // Hide floating overlays (chat widgets, cookie banners, back-to-top buttons).
+      // Keep only full-width fixed bars at the top of the page, i.e. sticky headers.
+      await page.evaluate(() => {
+        const vw = window.innerWidth;
+        for (const el of Array.from(document.body.querySelectorAll('*'))) {
+          if (getComputedStyle(el).position !== 'fixed') continue;
+          const r = el.getBoundingClientRect();
+          const isTopBar = r.top <= 80 && r.width >= vw * 0.9;
+          if (!isTopBar) (el as HTMLElement).style.setProperty('visibility', 'hidden', 'important');
+        }
+      });
+      return page.screenshot({
+        type: 'png',
+        clip: { x: Math.max(0, cx), y: Math.max(0, cy), width: cw, height: ch },
+        captureBeyondViewport: true,
+      });
+    };
+    try {
+      let png: Uint8Array;
+      try {
+        png = await capture();
+      } catch (err) {
+        // A cached page can go stale (site navigated, Chrome restarted): drop it and try once more
+        const key = `${vw}|${url}`;
+        const stale = openPages.get(key);
+        if (stale) {
+          clearTimeout(stale.timer);
+          openPages.delete(key);
+          stale.page.close().catch(() => {});
+        }
+        png = await capture();
+      }
+      res.setHeader('Content-Type', 'image/png');
+      return res.send(Buffer.from(png));
+    } catch (err: any) {
+      console.warn('Screenshot failed for', url, err?.message);
+      return res.status(502).json({ error: `Could not take a real screenshot: ${err?.message || 'unknown error'}` });
     }
   });
 

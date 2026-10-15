@@ -119,7 +119,7 @@ export const DomainSecurityModal: React.FC<DomainSecurityModalProps> = ({
             </div>
             <div>
               <h2 className="text-base font-extrabold text-white tracking-tight flex items-center gap-2">
-                <span>Master Admin: Domain & Seat Access Control</span>
+                <span>Access Control: Allowed Domains</span>
                 <span className="px-2 py-0.5 bg-indigo-500/20 border border-indigo-500/30 text-indigo-300 text-[10px] font-bold uppercase rounded-full tracking-wider">
                   Super Admin
                 </span>
@@ -294,22 +294,6 @@ export const DomainSecurityModal: React.FC<DomainSecurityModalProps> = ({
                   </div>
                 );
               })}
-            </div>
-          </div>
-
-          {/* Seat SLA Summary */}
-          <div className="p-4 bg-slate-800/40 border border-slate-700/60 rounded-xl flex items-center justify-between text-xs">
-            <div>
-              <span className="text-slate-400 block font-medium">Current Organization SLA Plan:</span>
-              <strong className="text-white text-sm">
-                {currentOrganization?.name || 'YourDigitalAgents Enterprise'} ({currentOrganization?.plan || 'Enterprise'})
-              </strong>
-            </div>
-            <div className="text-right">
-              <span className="text-slate-400 block font-medium">Max Seat Allocation:</span>
-              <strong className="text-emerald-400 font-mono text-sm font-bold">
-                {currentOrganization?.maxSeats || 'Unlimited'} Seats
-              </strong>
             </div>
           </div>
 

@@ -53,6 +53,7 @@ interface SidebarDiscussionProps {
   onUpdatePinQAError?: (pinId: string, qaError?: QAPinError) => void;
   onDeletePin?: (pinId: string) => void;
   onDeleteComment?: (pinId: string, commentId: string) => void;
+  onClose?: () => void;
 }
 
 export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
@@ -68,7 +69,8 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
   rubricRules = [],
   onUpdatePinQAError,
   onDeletePin,
-  onDeleteComment
+  onDeleteComment,
+  onClose,
 }) => {
   const [commentInput, setCommentInput] = useState('');
   const [isRecording, setIsRecording] = useState(false);
@@ -344,9 +346,21 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
             <MessageSquare className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
             <span>Feedback Threads</span>
           </div>
-          <span className="bg-slate-200 border border-slate-300 px-2 py-0.5 rounded text-[10px] text-slate-700 font-mono font-bold shrink-0">
-            {pins.length} total
-          </span>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span className="bg-slate-200 border border-slate-300 px-2 py-0.5 rounded text-[10px] text-slate-700 font-mono font-bold">
+              {pins.length} total
+            </span>
+            {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              title="Close sidebar"
+              className="p-1 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-200 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+            )}
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-3 space-y-5">
@@ -501,6 +515,16 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
               </button>
             );
           })()}
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              title="Close sidebar"
+              className="p-1 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-200 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
 

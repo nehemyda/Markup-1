@@ -1,14 +1,39 @@
 import { User } from 'firebase/auth';
-import { collection, deleteDoc, doc, getDoc, getDocs, limit, query, setDoc } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDoc, getDocs, limit, query, setDoc, where } from 'firebase/firestore';
 import { db } from './firebase';
 import { AuthUser, Organization } from '../types';
-import { getAllowedDomains } from '../utils/domains';
+import { fetchAllowedDomains, getAllowedDomains } from '../utils/domains';
 
 const DEFAULT_AVATAR = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80';
 
-export function isEmailDomainAllowed(email: string | null | undefined): boolean {
-  const domain = email?.split('@')[1]?.toLowerCase().trim() || '';
-  return getAllowedDomains().some((d) => d.toLowerCase() === domain);
+/**
+ * Who can sign in:
+ * - master admins (VITE_ADMIN_EMAILS)
+ * - anyone with an email on an allowed domain (domain-based access)
+ * - anyone with a pending invite, whatever their domain (user-based access)
+ * - existing members who have not been removed
+ */
+export async function checkWorkspaceAccess(email: string | null | undefined): Promise<boolean> {
+  const normalized = (email || '').trim().toLowerCase();
+  if (!normalized.includes('@')) return false;
+  if (isMasterAdmin(normalized)) return true;
+
+  const domain = normalized.split('@')[1];
+  if ((await fetchAllowedDomains()).some((d) => d.toLowerCase() === domain)) return true;
+
+  try {
+    if ((await getDoc(doc(db, 'invites', normalized))).exists()) return true;
+    const members = await getDocs(query(collection(db, 'users'), where('email', '==', normalized)));
+    return members.docs.some((d) => !d.data().removed);
+  } catch (err) {
+    console.warn('Failed checking workspace access:', err);
+    return false;
+  }
+}
+
+export function accessDeniedMessage(email: string): string {
+  const domain = email.split('@')[1]?.toLowerCase().trim() || '';
+  return `Access denied: @${domain} is not an allowed domain and ${email} has not been invited. Ask a workspace admin to invite you.`;
 }
 
 // Default Enterprise Organization with Unlimited Seats SLA

@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { Project, Asset, Teammate, ViewMode } from '../types';
+import { Project, Asset, Teammate, ViewMode, Pin } from '../types';
+import { projectUrl } from '../lib/routes';
 import { ARCHIVED_PROJECTS } from '../data/mockData';
-import { getAllowedDomains, saveAllowedDomains, DEFAULT_ALLOWED_DOMAINS } from '../utils/domains';
+import { getAllowedDomains, saveAllowedDomains, useAllowedDomains, DEFAULT_ALLOWED_DOMAINS } from '../utils/domains';
 import { UserAvatar } from './UserAvatar';
 import { 
   LayoutGrid, 
@@ -55,6 +56,7 @@ interface ProjectsGridViewProps {
   appIcon?: string;
   onUpdateBranding?: (newName: string, newIcon: string) => void;
   projects: Project[];
+  pins?: Pin[];
   onSelectProject: (project: Project) => void;
   onSelectAsset: (asset: Asset) => void;
   onOpenNewProjectModal: () => void;
@@ -69,6 +71,7 @@ interface ProjectsGridViewProps {
   onRestoreProject?: (item: typeof ARCHIVED_PROJECTS[0]) => void;
   initialTab?: 'dashboard' | 'archive' | 'team' | 'settings';
   onTabChange?: (tab: 'dashboard' | 'archive' | 'team' | 'settings') => void;
+  onSettingsSubTabChange?: (tab: 'details' | 'domains') => void;
   initialSettingsSubTab?: 'details' | 'domains';
 }
 
@@ -179,6 +182,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
   appIcon = 'W',
   onUpdateBranding,
   projects,
+  pins = [],
   onSelectProject,
   onSelectAsset,
   onOpenNewProjectModal,
@@ -193,6 +197,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
   onRestoreProject,
   initialTab,
   onTabChange,
+  onSettingsSubTabChange,
   initialSettingsSubTab
 }) => {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'archive' | 'team' | 'settings'>(initialTab || 'dashboard');
@@ -211,8 +216,15 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
     if (initialSettingsSubTab) setSettingsSubTab(initialSettingsSubTab);
   }, [initialSettingsSubTab]);
 
-  // Domain & Seat Access Control State
+  // Report sub-tab changes so the page URL can follow (/settings vs /settings/access)
+  React.useEffect(() => {
+    onSettingsSubTabChange?.(settingsSubTab);
+  }, [settingsSubTab]);
+
+  // Access control: allowed domains are shared in Firestore; keep the editable copy in sync
+  const sharedDomains = useAllowedDomains();
   const [domains, setDomains] = useState<string[]>(() => getAllowedDomains());
+  React.useEffect(() => setDomains(sharedDomains), [sharedDomains]);
   const [newDomain, setNewDomain] = useState('');
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editingValue, setEditingValue] = useState('');
@@ -332,9 +344,11 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
     localStorage.setItem('webreview_role_permissions_v1', JSON.stringify(updated));
   };
 
-  const totalActiveComments = React.useMemo(() => {
-    return projects.reduce((acc, p) => acc + p.assets.reduce((a, ast) => a + (ast.pinCount || 0), 0), 0);
-  }, [projects]);
+  // Open pins across all projects in the workspace
+  const openPinCount = React.useMemo(() => {
+    const assetIds = new Set(projects.flatMap((p) => (p.assets || []).map((a) => a.id)));
+    return pins.filter((p) => assetIds.has(p.assetId) && p.status !== 'resolved' && p.status !== 'archived').length;
+  }, [projects, pins]);
 
   // Branding & Settings state
   const [customLogoText, setCustomLogoText] = useState(appName);
@@ -454,7 +468,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
 
   const copyGuestLinkForProject = (projId: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    const guestUrl = `${window.location.origin}/?project=${encodeURIComponent(projId)}&guest_mode=true`;
+    const guestUrl = projectUrl(projId, true);
     navigator.clipboard.writeText(guestUrl);
     setCopiedCardId(projId);
     setTimeout(() => setCopiedCardId(null), 2000);
@@ -564,25 +578,19 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
 
         </div>
 
-        {/* BOTTOM SIDEBAR STATS CARD */}
+        {/* BOTTOM SIDEBAR STATS CARD (real counts, no limits) */}
         <div className="p-4 border-t border-slate-200 bg-slate-50/50">
           <div className="bg-white rounded-2xl border border-slate-200 p-3.5 shadow-2xs space-y-2">
             <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-              Your workspace monthly usage
+              Workspace
             </div>
             <div className="flex justify-between items-center text-xs">
-              <span className="text-slate-600 font-medium">Projects created</span>
-              <span className="font-bold text-slate-900">{projects.length} / 50</span>
+              <span className="text-slate-600 font-medium">Projects</span>
+              <span className="font-bold text-slate-900">{projects.length}</span>
             </div>
             <div className="flex justify-between items-center text-xs">
-              <span className="text-slate-600 font-medium">Active feedback pins</span>
-              <span className="font-bold text-slate-900">{totalActiveComments}</span>
-            </div>
-            <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden mt-1">
-              <div 
-                className="bg-blue-600 h-full transition-all duration-300"
-                style={{ width: `${Math.min(100, Math.round((projects.length / 50) * 100))}%` }}
-              />
+              <span className="text-slate-600 font-medium">Open feedback pins</span>
+              <span className="font-bold text-slate-900">{openPinCount}</span>
             </div>
           </div>
         </div>
@@ -1923,7 +1931,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                 }`}
               >
                 <ShieldCheck className="w-4 h-4 text-indigo-600" />
-                <span>Domain & Seat Access Control</span>
+                <span>Access Control</span>
               </button>
             </div>
 
@@ -2168,7 +2176,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                       <span>Authorized Organization Email Domains</span>
                     </h2>
                     <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                      Users registering or logging in with email addresses matching these domains are automatically granted full <strong>Member</strong> workspace seats upon sign in.
+                      Anyone with an email on these domains can create an account and joins as a <strong>Member</strong>. People outside these domains can only sign in after you invite them from the <strong>Team</strong> page. Remove every domain to make the workspace invite-only.
                     </p>
                   </div>
 
@@ -2204,7 +2212,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                   <div className="space-y-3 pt-2">
                     <div className="flex items-center justify-between text-xs font-bold text-slate-700 border-b border-slate-100 pb-2">
                       <span>Currently Authorized Domains ({domains.length})</span>
-                      <span className="text-[11px] font-normal text-slate-500">Auto-Provisioning Active</span>
+
                     </div>
 
                     <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden">

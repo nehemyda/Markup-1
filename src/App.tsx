@@ -53,8 +53,9 @@ import { getAllowedDomains } from './utils/domains';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth } from './lib/firebase';
 import { ReviewSnapshot } from './lib/pageSnapshot';
-import { nextPinNumber } from './lib/pins';
-import { isEmailDomainAllowed, isMasterAdmin, getDefaultOrganization, loadOrCreateProfile, saveProfile } from './lib/userProfile';
+import { nextPinNumber, pinDevice, describeClient, PinDevice } from './lib/pins';
+import { parseRoute, buildPath, Route, DashboardTab, SettingsSubTab } from './lib/routes';
+import { checkWorkspaceAccess, accessDeniedMessage, isMasterAdmin, getDefaultOrganization, loadOrCreateProfile, saveProfile } from './lib/userProfile';
 
 export default function App() {
   // Authentication State
@@ -128,6 +129,17 @@ export default function App() {
   const [currentProject, setCurrentProject] = useState<Project>(() => projects[0] || INITIAL_PROJECTS[0]);
   const [currentAsset, setCurrentAsset] = useState<Asset>(() => (projects[0]?.assets?.[0]) || INITIAL_PROJECTS[0].assets[0]);
   const [selectedPin, setSelectedPin] = useState<Pin | null>(null);
+  // Comments sidebar: closed by default, opens when a pin is selected (clicked or just created)
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  // Device view (desktop / tablet / mobile): each shows only its own pins
+  const [device, setDevice] = useState<PinDevice>('desktop');
+  useEffect(() => {
+    if (selectedPin) {
+      setIsSidebarOpen(true);
+      // Opening a pin from a link, notification, Kanban or Table shows it on its own device
+      setDevice(pinDevice(selectedPin));
+    }
+  }, [selectedPin?.id]);
   const [activityLogs, setActivityLogs] = useState<ActivityItem[]>([]);
   // Teammates are the real signed-up users (Firestore users collection), see subscribeUsers below
   const [teammates, setTeammates] = useState<Teammate[]>([]);
@@ -179,8 +191,8 @@ export default function App() {
         setAuthReady(true);
         return;
       }
-      if (!isEmailDomainAllowed(fbUser.email)) {
-        // AuthPage shows the "domain not authorized" message
+      if (!(await checkWorkspaceAccess(fbUser.email))) {
+        setAuthNotice(accessDeniedMessage(fbUser.email || ''));
         await signOut(auth);
         return;
       }
@@ -231,26 +243,6 @@ export default function App() {
     };
   }, []);
 
-  // Open the project from a share link (?project=ID) once projects have loaded from Firestore.
-  // ?guest_mode=true lets visitors review without signing in; without it, the link requires sign-in.
-  const shareLinkHandled = useRef(false);
-  useEffect(() => {
-    if (shareLinkHandled.current || !projectsLoaded) return;
-    shareLinkHandled.current = true;
-
-    const projId = new URLSearchParams(window.location.search).get('project');
-    if (!projId) return;
-    const foundProj = projects.find((p) => p.id === projId);
-    if (foundProj) {
-      setCurrentProject(foundProj);
-      if (foundProj.assets && foundProj.assets.length > 0) {
-        setCurrentAsset(foundProj.assets[0]);
-      }
-      setViewMode('studio');
-    } else {
-      alert('This shared project no longer exists or the link is incorrect.');
-    }
-  }, [projects, projectsLoaded]);
 
   // Keep the selected project pointing at a real project (the initial value is only a placeholder)
   useEffect(() => {
@@ -299,7 +291,86 @@ export default function App() {
   };
 
   const [viewMode, setViewMode] = useState<ViewMode>('dashboard');
-  const [dashboardTab, setDashboardTab] = useState<'dashboard' | 'archive' | 'team' | 'settings'>('dashboard');
+  const [dashboardTab, setDashboardTab] = useState<DashboardTab>('dashboard');
+  const [settingsSubTab, setSettingsSubTab] = useState<SettingsSubTab>('details');
+
+  // ---------- URL routing: every page and project has its own address (see lib/routes.ts) ----------
+  const [routeReady, setRouteReady] = useState(false);
+  const pendingPinId = useRef<string | null>(null);
+
+  const applyRoute = (route: Route) => {
+    if (!route.projectId) {
+      setViewMode('dashboard');
+      setDashboardTab(route.dashboardTab || 'dashboard');
+      if (route.settingsSubTab) setSettingsSubTab(route.settingsSubTab);
+      setSelectedPin(null);
+      return;
+    }
+    const project = projects.find((p) => p.id === route.projectId);
+    if (!project) {
+      alert('This project no longer exists or the link is incorrect.');
+      window.history.replaceState(null, '', '/');
+      setViewMode('dashboard');
+      setDashboardTab('dashboard');
+      return;
+    }
+    const asset = project.assets?.find((a) => a.id === route.assetId) || project.assets?.[0];
+    setCurrentProject(project);
+    if (asset) setCurrentAsset(asset);
+    setViewMode(route.viewMode);
+    const pin = route.pinId ? pins.find((p) => p.id === route.pinId) : undefined;
+    setSelectedPin(pin || null);
+    setDevice(pin ? pinDevice(pin) : route.device || 'desktop');
+    // Pins can arrive after projects; select it once it loads
+    pendingPinId.current = route.pinId && !pin ? route.pinId : null;
+  };
+
+  // Open the page in the address bar once projects have loaded
+  useEffect(() => {
+    if (routeReady || !projectsLoaded) return;
+    applyRoute(parseRoute(window.location.pathname, window.location.search));
+    setRouteReady(true);
+  }, [projectsLoaded, routeReady]);
+
+  useEffect(() => {
+    if (!pendingPinId.current) return;
+    const pin = pins.find((p) => p.id === pendingPinId.current);
+    if (pin) {
+      pendingPinId.current = null;
+      setSelectedPin(pin);
+    }
+  }, [pins]);
+
+  // Browser back / forward
+  useEffect(() => {
+    const onPop = () => applyRoute(parseRoute(window.location.pathname, window.location.search));
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  });
+
+  // Keep the address bar in step with what is on screen
+  useEffect(() => {
+    if (!routeReady) return;
+    const inProject = viewMode !== 'dashboard' && projects.some((p) => p.id === currentProject.id);
+    const path = buildPath({
+      viewMode: inProject ? viewMode : 'dashboard',
+      dashboardTab,
+      settingsSubTab,
+      projectId: inProject ? currentProject.id : undefined,
+      assetId: currentAsset?.id,
+      isFirstAsset: currentProject.assets?.[0]?.id === currentAsset?.id,
+      pinId: inProject ? selectedPin?.id : undefined,
+      device,
+      guestMode: new URLSearchParams(window.location.search).get('guest_mode') === 'true',
+    });
+    const current = window.location.pathname + window.location.search;
+    if (path === current) return;
+    // Selecting a pin or switching asset replaces the entry; changing page adds a new one
+    const samePage = path.split('?')[0] === window.location.pathname;
+    const isLegacyLink = new URLSearchParams(window.location.search).has('project');
+    if (samePage || isLegacyLink) window.history.replaceState(null, '', path);
+    else window.history.pushState(null, '', path);
+  }, [routeReady, viewMode, dashboardTab, settingsSubTab, currentProject.id, currentAsset?.id, selectedPin?.id, device, projects]);
 
   const handleNavigateDashboardTab = (tab: 'dashboard' | 'archive' | 'team' | 'settings' = 'dashboard') => {
     setDashboardTab(tab);
@@ -447,6 +518,8 @@ export default function App() {
     assigneeId: string;
     screenshotUrl?: string;
     attachments?: Attachment[];
+    viewportWidth?: number;
+    selector?: string;
   }) => {
     const nextNum = nextPinNumber(pins, currentAsset.id);
     const assignee = teammates.find((t) => t.id === pinData.assigneeId);
@@ -468,11 +541,10 @@ export default function App() {
       screenshotUrl: pinData.screenshotUrl,
       attachments: pinData.attachments,
       metadata: {
-        browser: 'Chrome 124.0 (AI Studio Proxy)',
-        os: 'macOS Sonoma 14.4',
-        viewport: '1920x1080',
-        selector: `.element-target-coord-${pinData.x}-${pinData.y}`,
-        deviceType: 'desktop',
+        ...describeClient(),
+        viewport: pinData.viewportWidth ? `${pinData.viewportWidth}px wide` : device,
+        selector: pinData.selector || '',
+        deviceType: device,
       },
       comments: [
         {
@@ -668,7 +740,7 @@ export default function App() {
             os: snapshot.kind === 'page' ? 'Live page snapshot' : 'Uploaded image',
             viewport,
             selector: item.selector || '',
-            deviceType: 'desktop',
+            deviceType: device,
           },
           comments: [
             {
@@ -1022,6 +1094,7 @@ export default function App() {
             appIcon={appIcon}
             onUpdateBranding={handleUpdateBranding}
             projects={projects}
+            pins={pins}
             onSelectProject={handleSelectProject}
             onSelectAsset={handleSelectAsset}
             onOpenNewProjectModal={() => setShowNewProjectModal(true)}
@@ -1035,6 +1108,8 @@ export default function App() {
             onViewModeChange={setViewMode}
             initialTab={dashboardTab}
             onTabChange={setDashboardTab}
+            initialSettingsSubTab={settingsSubTab}
+            onSettingsSubTabChange={setSettingsSubTab}
             onAddNewUrlAsset={handleAddNewUrlAsset}
             onDeleteProject={handleDeleteProject}
             onDeleteTeammate={handleDeleteTeammate}
@@ -1085,21 +1160,39 @@ export default function App() {
               onRunAiAudit={handleRunAiAudit}
               isAuditing={isAuditing}
               isSimulatingPartner={isSimulatingPartner}
-            />
-            <SidebarDiscussion
-              pins={pins.filter((p) => p.assetId === currentAsset.id)}
-              selectedPin={selectedPin}
-              onSelectPin={setSelectedPin}
-              onUpdatePinStatus={handleUpdatePinStatus}
-              onUpdatePinAssignee={handleUpdatePinAssignee}
-              onAddComment={handleAddComment}
-              teammates={teammates}
-              currentUser={currentUser}
-              onNotify={handleNotifyMember}
-              rubricRules={rubricRules}
-              onUpdatePinQAError={handleUpdatePinQAError}
-              onDeletePin={handleDeletePin}
-              onDeleteComment={handleDeleteComment}
+              isSidebarOpen={isSidebarOpen}
+              viewport={device}
+              onViewportChange={(d) => {
+                setDevice(d);
+                if (selectedPin && pinDevice(selectedPin) !== d) setSelectedPin(null);
+              }}
+              onToggleSidebar={() => setIsSidebarOpen((open) => !open)}
+              // Comments sidebar slides over the canvas so the page width (and pin positions) never change
+              sidebar={
+                isSidebarOpen && (
+                  <div className="absolute top-0 right-0 bottom-0 z-30 flex shadow-2xl">
+                    <SidebarDiscussion
+                      pins={pins.filter((p) => p.assetId === currentAsset.id && pinDevice(p) === device)}
+                      selectedPin={selectedPin}
+                      onSelectPin={setSelectedPin}
+                      onUpdatePinStatus={handleUpdatePinStatus}
+                      onUpdatePinAssignee={handleUpdatePinAssignee}
+                      onAddComment={handleAddComment}
+                      teammates={teammates}
+                      currentUser={currentUser}
+                      onNotify={handleNotifyMember}
+                      rubricRules={rubricRules}
+                      onUpdatePinQAError={handleUpdatePinQAError}
+                      onDeletePin={handleDeletePin}
+                      onDeleteComment={handleDeleteComment}
+                      onClose={() => {
+                        setIsSidebarOpen(false);
+                        setSelectedPin(null);
+                      }}
+                    />
+                  </div>
+                )
+              }
             />
           </>
         )}

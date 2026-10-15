@@ -9,8 +9,8 @@ import {
   signOut,
 } from 'firebase/auth';
 import { auth } from '../lib/firebase';
-import { isEmailDomainAllowed } from '../lib/userProfile';
-import { getAllowedDomains } from '../utils/domains';
+import { checkWorkspaceAccess, accessDeniedMessage } from '../lib/userProfile';
+import { useAllowedDomains } from '../utils/domains';
 import { 
   Building2, 
   ShieldCheck, 
@@ -58,7 +58,7 @@ export const AuthPage: React.FC<{ notice?: string | null }> = ({ notice }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(notice || null);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
-  const [allowedDomains] = useState<string[]>(() => getAllowedDomains());
+  const allowedDomains = useAllowedDomains();
 
   // Messages from App after sign-in (e.g. access removed) arrive while this page is still open
   useEffect(() => {
@@ -67,11 +67,6 @@ export const AuthPage: React.FC<{ notice?: string | null }> = ({ notice }) => {
       setIsLoading(false);
     }
   }, [notice]);
-
-  const domainDeniedMessage = (addr: string) => {
-    const domain = addr.split('@')[1]?.toLowerCase().trim() || '';
-    return `Access Denied: Your email domain (@${domain}) is not authorized by the Super Admin. Allowed organization domains: ${allowedDomains.map(d => '@' + d).join(', ')}.`;
-  };
 
   const switchMode = (mode: 'signin' | 'signup') => {
     setAuthMode(mode);
@@ -85,12 +80,12 @@ export const AuthPage: React.FC<{ notice?: string | null }> = ({ notice }) => {
     setErrorMsg(null);
     setInfoMsg(null);
 
-    if (!isEmailDomainAllowed(email)) {
-      setErrorMsg(domainDeniedMessage(email));
+    setIsLoading(true);
+    if (!(await checkWorkspaceAccess(email))) {
+      setErrorMsg(accessDeniedMessage(email.trim()));
+      setIsLoading(false);
       return;
     }
-
-    setIsLoading(true);
     try {
       if (authMode === 'signup') {
         const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
@@ -111,12 +106,8 @@ export const AuthPage: React.FC<{ notice?: string | null }> = ({ notice }) => {
     setInfoMsg(null);
     setIsLoading(true);
     try {
-      const result = await signInWithPopup(auth, new GoogleAuthProvider());
-      if (!isEmailDomainAllowed(result.user.email)) {
-        await signOut(auth);
-        setErrorMsg(domainDeniedMessage(result.user.email || ''));
-        setIsLoading(false);
-      }
+      // App's onAuthStateChanged checks access and shows a message if this account is not allowed
+      await signInWithPopup(auth, new GoogleAuthProvider());
     } catch (err: any) {
       setErrorMsg(describeAuthError(err));
       setIsLoading(false);
@@ -399,7 +390,7 @@ export const AuthPage: React.FC<{ notice?: string | null }> = ({ notice }) => {
                 </span>
               </div>
               <p className="text-[11px] text-slate-400 leading-relaxed">
-                Only email addresses on these domains can sign in or create an account. Domains are managed by Super Admins inside workspace settings.
+                Anyone with an email on these domains can create an account. People outside these domains can sign in once a workspace admin invites them.
               </p>
               <div className="flex flex-wrap gap-1.5 pt-0.5">
                 {allowedDomains.map((dom) => (

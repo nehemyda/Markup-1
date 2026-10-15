@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Project, Asset, Teammate } from '../types';
+import { projectUrl } from '../lib/routes';
 import { 
   Plus, 
   X, 
@@ -287,8 +288,8 @@ export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, current
 
   if (!isOpen) return null;
 
-  const shareUrl = currentProject ? window.location.origin + `/?project=${encodeURIComponent(currentProject.id)}` : '';
-  const guestShareUrl = currentProject ? `${shareUrl}&guest_mode=true` : '';
+  const shareUrl = currentProject ? projectUrl(currentProject.id) : '';
+  const guestShareUrl = currentProject ? projectUrl(currentProject.id, true) : '';
 
   const copyLink = () => {
     navigator.clipboard.writeText(shareUrl);

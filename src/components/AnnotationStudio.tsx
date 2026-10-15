@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import html2canvas from 'html2canvas';
-import { capturePageSnapshot, captureImageSnapshot, ReviewSnapshot } from '../lib/pageSnapshot';
-import { nextPinNumber } from '../lib/pins';
+import { capturePageSnapshot, captureImageSnapshot, ReviewSnapshot, cssSelector } from '../lib/pageSnapshot';
+import { nextPinNumber, pinDevice, PinDevice } from '../lib/pins';
 import { Project, Asset, Pin, PinCategory, PinPriority, Teammate, FilterState, DeviceViewport, Attachment } from '../types';
 import { SearchableMemberSelect } from './SearchableMemberSelect';
 import { 
@@ -61,6 +61,8 @@ interface AnnotationStudioProps {
     assigneeId: string;
     screenshotUrl?: string;
     attachments?: Attachment[];
+    viewportWidth?: number;
+    selector?: string;
   }) => void;
   teammates: Teammate[];
   currentUser: Teammate;
@@ -69,6 +71,11 @@ interface AnnotationStudioProps {
   onRunAiAudit: (snapshot: ReviewSnapshot) => Promise<void>;
   isAuditing: boolean;
   isSimulatingPartner: boolean;
+  isSidebarOpen: boolean;
+  onToggleSidebar: () => void;
+  sidebar?: React.ReactNode;
+  viewport: PinDevice;
+  onViewportChange: (device: PinDevice) => void;
 }
 
 export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
@@ -86,9 +93,13 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
   onRunAiAudit,
   isAuditing,
   isSimulatingPartner,
+  isSidebarOpen,
+  onToggleSidebar,
+  sidebar,
+  viewport,
+  onViewportChange,
 }) => {
   const [mode, setMode] = useState<'browse' | 'comment'>('comment');
-  const [viewport, setViewport] = useState<DeviceViewport>('desktop');
   const [zoom, setZoom] = useState<number>(100);
   const [urlInput, setUrlInput] = useState(currentAsset.url);
   const [showUrlEditor, setShowUrlEditor] = useState(false);
@@ -199,6 +210,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
   // Filter Pins for Canvas
   const filteredPins = pins.filter((p) => {
     if (p.assetId !== currentAsset.id) return false;
+    if (pinDevice(p) !== viewport) return false;
     if (!filterState.showResolved && (p.status === 'resolved' || p.status === 'archived')) return false;
     if (filterState.category !== 'all' && p.category !== filterState.category) return false;
     if (filterState.status !== 'all' && p.status !== filterState.status) return false;
@@ -235,253 +247,249 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
     onSelectPin(null);
   };
 
-  // Helper to crop canvas around a specific pin position (Markup.io localized snippet style)
-  const cropCanvasAroundPin = (sourceCanvas: HTMLCanvasElement, pinXPercent: number, pinYPercent: number) => {
-    const cropWidth = Math.min(750, sourceCanvas.width);
-    const cropHeight = Math.min(420, sourceCanvas.height);
+  // ---------- Pin screenshots ----------
+  // Snippet size in page pixels around the pin
+  const SNIPPET_WIDTH = 800;
+  const SNIPPET_HEIGHT = 450;
 
-    const pinX = (pinXPercent / 100) * sourceCanvas.width;
-    const pinY = (pinYPercent / 100) * sourceCanvas.height;
-
-    let startX = Math.max(0, pinX - cropWidth / 2);
-    let startY = Math.max(0, pinY - cropHeight / 2);
-
-    if (startX + cropWidth > sourceCanvas.width) startX = Math.max(0, sourceCanvas.width - cropWidth);
-    if (startY + cropHeight > sourceCanvas.height) startY = Math.max(0, sourceCanvas.height - cropHeight);
-
-    const croppedCanvas = document.createElement('canvas');
-    croppedCanvas.width = cropWidth;
-    croppedCanvas.height = cropHeight;
-    const ctx = croppedCanvas.getContext('2d');
-    if (!ctx) return sourceCanvas.toDataURL('image/png');
-
-    ctx.drawImage(sourceCanvas, startX, startY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
-
-    // Draw localized pin highlight overlay
-    const relX = pinX - startX;
-    const relY = pinY - startY;
-
-    // Red targeted selection box
-    ctx.strokeStyle = '#ef4444';
-    ctx.lineWidth = 2.5;
-    ctx.setLineDash([5, 3]);
-    ctx.strokeRect(relX - 45, relY - 25, 90, 50);
-
-    // Target crosshairs
-    ctx.strokeStyle = 'rgba(239, 68, 68, 0.6)';
-    ctx.lineWidth = 1;
+  // Draw the pin marker (numbered dot) onto a captured snippet
+  const drawPinMarker = (ctx: CanvasRenderingContext2D, x: number, y: number, scale: number) => {
+    const r = 13 * scale;
+    ctx.save();
+    ctx.shadowColor = 'rgba(15, 23, 42, 0.35)';
+    ctx.shadowBlur = 6 * scale;
+    ctx.fillStyle = '#4f46e5';
     ctx.beginPath();
-    ctx.moveTo(relX - 15, relY); ctx.lineTo(relX + 15, relY);
-    ctx.moveTo(relX, relY - 15); ctx.lineTo(relX, relY + 15);
-    ctx.stroke();
-
-    // Pin badge
-    ctx.setLineDash([]);
-    ctx.fillStyle = '#6366f1';
-    ctx.beginPath();
-    ctx.arc(relX, relY, 14, 0, Math.PI * 2);
+    ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fill();
+    ctx.shadowBlur = 0;
     ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 2.5;
+    ctx.lineWidth = 3 * scale;
     ctx.stroke();
-
-    // Icon / Label inside pin
     ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 11px sans-serif';
+    ctx.font = `bold ${12 * scale}px sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('📍', relX, relY);
-
-    return croppedCanvas.toDataURL('image/png');
+    ctx.fillText(String(nextPinNumber(pins, currentAsset.id)), x, y + 0.5 * scale);
+    ctx.restore();
   };
 
-  // Real Screen/Tab Capture (via navigator.mediaDevices.getDisplayMedia)
-  const handleCaptureRealTabScreen = async () => {
+  // Crop a region centered on (cx, cy) out of a source image/canvas and mark the pin
+  const cropAroundPoint = (
+    source: CanvasImageSource,
+    sourceWidth: number,
+    sourceHeight: number,
+    cx: number,
+    cy: number,
+    cropW: number,
+    cropH: number,
+    markerScale: number
+  ): string => {
+    const w = Math.min(cropW, sourceWidth);
+    const h = Math.min(cropH, sourceHeight);
+    const sx = Math.min(Math.max(0, cx - w / 2), sourceWidth - w);
+    const sy = Math.min(Math.max(0, cy - h / 2), sourceHeight - h);
+    const out = document.createElement('canvas');
+    out.width = Math.round(w);
+    out.height = Math.round(h);
+    const ctx = out.getContext('2d');
+    if (!ctx) throw new Error('Canvas is not available in this browser.');
+    ctx.drawImage(source, sx, sy, w, h, 0, 0, w, h);
+    drawPinMarker(ctx, cx - sx, cy - sy, markerScale);
+    return out.toDataURL('image/png');
+  };
+
+  // CSS selector of the page element under the new pin (live pages only)
+  const elementSelectorAtPin = (): string | undefined => {
+    const iframe = iframeRef.current;
+    const doc = iframe?.contentDocument;
+    if (!canvasRef.current || !iframe || !doc || !newPinCoord) return undefined;
+    try {
+      const scale = zoom / 100;
+      const c = canvasRef.current.getBoundingClientRect();
+      const f = iframe.getBoundingClientRect();
+      const x = (newPinCoord.x / 100) * canvasRef.current.offsetWidth - (f.left - c.left) / scale;
+      const y = (newPinCoord.y / 100) * canvasRef.current.offsetHeight - (f.top - c.top) / scale;
+      // Skip invisible layers (e.g. a closed menu's overlay) and take the first visible element under the pin
+      const win = iframe.contentWindow!;
+      const el = doc
+        .elementsFromPoint(x - (win.scrollX || 0), y - (win.scrollY || 0))
+        .find((node) => {
+          if (node === doc.body || node === doc.documentElement) return false;
+          const st = win.getComputedStyle(node);
+          return st.visibility !== 'hidden' && Number(st.opacity) > 0.05 && st.pointerEvents !== 'none';
+        });
+      return el ? cssSelector(el) : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  // Pin position in unscaled canvas pixels
+  const pinCanvasPoint = () => {
+    const canvas = canvasRef.current!;
+    return {
+      x: ((newPinCoord?.x ?? 50) / 100) * canvas.offsetWidth,
+      y: ((newPinCoord?.y ?? 50) / 100) * canvas.offsetHeight,
+    };
+  };
+
+  // Area Snippet: render the real page (or image) around the pin
+  const handleCaptureScreenshot = async () => {
+    if (!canvasRef.current || !newPinCoord) return;
     setIsCapturingScreenshot(true);
     try {
-      if (!navigator.mediaDevices?.getDisplayMedia) {
-        throw new Error('Display media API not supported in this browser');
+      const canvas = canvasRef.current;
+      const scale = zoom / 100;
+      const canvasRect = canvas.getBoundingClientRect();
+      const pin = pinCanvasPoint();
+
+      if (currentAsset.type === 'image' || currentAsset.type === 'mockup') {
+        const img = imageRef.current;
+        if (!img || !img.naturalWidth) throw new Error('The image has not loaded yet.');
+        const imgRect = img.getBoundingClientRect();
+        // Pin inside the displayed image, then in the image's own pixels
+        const ratio = img.naturalWidth / (imgRect.width / scale);
+        const ix = (pin.x - (imgRect.left - canvasRect.left) / scale) * ratio;
+        const iy = (pin.y - (imgRect.top - canvasRect.top) / scale) * ratio;
+        setNewPinScreenshot(
+          cropAroundPoint(img, img.naturalWidth, img.naturalHeight, ix, iy, SNIPPET_WIDTH * ratio, SNIPPET_HEIGHT * ratio, ratio)
+        );
+        return;
       }
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { cursor: 'never' } as any,
-        audio: false,
+
+      const iframe = iframeRef.current;
+      const doc = iframe?.contentDocument;
+      if (!iframe || !doc?.body) throw new Error('The page has not finished loading yet.');
+      const iframeRect = iframe.getBoundingClientRect();
+      // Pin in the page's own coordinates (the iframe is as tall as the page, so it does not scroll)
+      const px = pin.x - (iframeRect.left - canvasRect.left) / scale + (iframe.contentWindow?.scrollX || 0);
+      const py = pin.y - (iframeRect.top - canvasRect.top) / scale + (iframe.contentWindow?.scrollY || 0);
+      const pageW = doc.documentElement.scrollWidth;
+      const pageH = doc.documentElement.scrollHeight;
+      const w = Math.min(SNIPPET_WIDTH, pageW);
+      const h = Math.min(SNIPPET_HEIGHT, pageH);
+      const rx = Math.min(Math.max(0, px - w / 2), pageW - w);
+      const ry = Math.min(Math.max(0, py - h / 2), pageH - h);
+      // Preferred: a real screenshot from the server's headless Chrome at the same page width
+      try {
+        const res = await fetch('/api/screenshot', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: currentAsset.url,
+            viewportWidth: doc.documentElement.clientWidth,
+            x: rx,
+            y: ry,
+            width: w,
+            height: h,
+          }),
+        });
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+        const blobUrl = URL.createObjectURL(await res.blob());
+        try {
+          const img = new Image();
+          img.src = blobUrl;
+          await img.decode();
+          const k = img.naturalWidth / w; // device pixels per page pixel
+          const out = document.createElement('canvas');
+          out.width = img.naturalWidth;
+          out.height = img.naturalHeight;
+          const octx = out.getContext('2d')!;
+          octx.drawImage(img, 0, 0);
+          drawPinMarker(octx, (px - rx) * k, (py - ry) * k, k);
+          setNewPinScreenshot(out.toDataURL('image/png'));
+          return;
+        } finally {
+          URL.revokeObjectURL(blobUrl);
+        }
+      } catch (err) {
+        console.warn('Real screenshot unavailable, falling back to an in-browser render:', err);
+      }
+
+      // Fallback: re-render in the browser (fonts and images from other sites may be missing)
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const shot = await html2canvas(doc.body, {
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#ffffff',
+        scale: dpr,
+        x: rx,
+        y: ry,
+        width: w,
+        height: h,
+        windowWidth: pageW,
+        windowHeight: pageH,
+        scrollX: 0,
+        scrollY: 0,
       });
-
-      const video = document.createElement('video');
-      video.srcObject = stream;
-      await new Promise((resolve) => (video.onloadedmetadata = resolve));
-      await video.play();
-
-      const fullCanvas = document.createElement('canvas');
-      fullCanvas.width = video.videoWidth;
-      fullCanvas.height = video.videoHeight;
-      const ctx = fullCanvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(video, 0, 0, fullCanvas.width, fullCanvas.height);
-      }
-
-      // Stop stream tracks
-      stream.getTracks().forEach((t) => t.stop());
-
-      if (fullCanvas.width > 0 && fullCanvas.height > 0) {
-        const pX = newPinCoord?.x || 50;
-        const pY = newPinCoord?.y || 50;
-        const croppedDataUrl = cropCanvasAroundPin(fullCanvas, pX, pY);
-        setNewPinScreenshot(croppedDataUrl);
-      }
-    } catch (err) {
-      console.warn('Real screen capture canceled or unavailable:', err);
-      // Fallback to DOM area snippet
-      handleCaptureScreenshot();
+      const ctx = shot.getContext('2d');
+      if (!ctx) throw new Error('Canvas is not available in this browser.');
+      drawPinMarker(ctx, (px - rx) * dpr, (py - ry) * dpr, dpr);
+      setNewPinScreenshot(shot.toDataURL('image/png'));
+    } catch (err: any) {
+      console.warn('Area snippet failed:', err);
+      alert(
+        err?.message?.includes('tainted')
+          ? 'This image is hosted on another site that does not allow capturing it. Use Real Tab Screen instead.'
+          : err?.message || 'Could not capture this area. Try Real Tab Screen instead.'
+      );
     } finally {
       setIsCapturingScreenshot(false);
     }
   };
 
-  // Standard / DOM Area Snippet capture
-  const handleCaptureScreenshot = async () => {
-    if (!canvasRef.current) return;
+  // Real Tab Screen: capture this browser tab's pixels and crop around the pin
+  const [hidePinFormForCapture, setHidePinFormForCapture] = useState(false);
+  const handleCaptureRealTabScreen = async () => {
+    if (!canvasRef.current || !newPinCoord) return;
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      alert('Screen capture is not supported in this browser. Use Area Snippet instead.');
+      return;
+    }
     setIsCapturingScreenshot(true);
-    const pX = newPinCoord?.x || 50;
-    const pY = newPinCoord?.y || 50;
-
+    let stream: MediaStream | null = null;
     try {
-      const canvas = await html2canvas(canvasRef.current, {
-        useCORS: true,
-        allowTaint: true,
-        scale: 1,
-        logging: false,
-        ignoreElements: (element) => element.classList.contains('pin-badge') || element.closest('.pin-badge') !== null,
-      });
-      
-      const croppedDataUrl = cropCanvasAroundPin(canvas, pX, pY);
-      setNewPinScreenshot(croppedDataUrl);
-    } catch (err) {
-      console.warn('DOM Screenshot capture fallback for iframe/cross-origin:', err);
-      
-      // Create high-fidelity clean webpage snippet matching the URL and targeted area
-      const realisticCanvas = document.createElement('canvas');
-      realisticCanvas.width = 800;
-      realisticCanvas.height = 480;
-      const ctx = realisticCanvas.getContext('2d');
-      if (ctx) {
-        // Clean white/slate background
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, 800, 480);
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { cursor: 'never', displaySurface: 'browser' } as any,
+        audio: false,
+        preferCurrentTab: true,
+        selfBrowserSurface: 'include',
+      } as any);
+      const track = stream.getVideoTracks()[0];
+      if ((track.getSettings() as any).displaySurface !== 'browser') {
+        throw new Error('Please choose "This tab" when asked, so the area around the pin can be found.');
+      }
 
-        // Header Navigation Bar
-        ctx.fillStyle = '#0f172a';
-        ctx.fillRect(0, 0, 800, 50);
+      // Hide the pin form so it does not cover the area, then grab a frame
+      setHidePinFormForCapture(true);
+      const video = document.createElement('video');
+      video.srcObject = stream;
+      video.muted = true;
+      await video.play();
+      await new Promise((resolve) => setTimeout(resolve, 350));
 
-        // Browser dots
-        ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(20, 25, 5, 0, Math.PI*2); ctx.fill();
-        ctx.fillStyle = '#f59e0b'; ctx.beginPath(); ctx.arc(36, 25, 5, 0, Math.PI*2); ctx.fill();
-        ctx.fillStyle = '#10b981'; ctx.beginPath(); ctx.arc(52, 25, 5, 0, Math.PI*2); ctx.fill();
+      const frame = document.createElement('canvas');
+      frame.width = video.videoWidth;
+      frame.height = video.videoHeight;
+      frame.getContext('2d')!.drawImage(video, 0, 0);
 
-        // Address bar
-        ctx.fillStyle = '#1e293b';
-        ctx.beginPath();
-        if (ctx.roundRect) ctx.roundRect(70, 12, 500, 26, 6);
-        else ctx.rect(70, 12, 500, 26);
-        ctx.fill();
-        ctx.fillStyle = '#38bdf8';
-        ctx.font = '12px monospace';
-        ctx.fillText(`🔒 ${currentAsset.url}`, 85, 29);
-
-        // Page Header & Navigation Links
-        ctx.fillStyle = '#f8fafc';
-        ctx.fillRect(0, 50, 800, 45);
-        ctx.strokeStyle = '#e2e8f0';
-        ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(0, 95); ctx.lineTo(800, 95); ctx.stroke();
-
-        ctx.fillStyle = '#0f172a';
-        ctx.font = 'bold 14px sans-serif';
-        const brandName = currentAsset.title || currentProject?.name || 'Website Preview';
-        ctx.fillText(`🌐 ${brandName}`, 20, 78);
-
-        ctx.fillStyle = '#64748b';
-        ctx.font = '12px sans-serif';
-        ctx.fillText('Home    Services    Portfolio    About    Contact', 500, 78);
-
-        // Page Hero Section
-        ctx.fillStyle = '#f1f5f9';
-        ctx.fillRect(20, 115, 760, 140);
-        
-        ctx.fillStyle = '#1e293b';
-        ctx.font = 'bold 20px sans-serif';
-        ctx.fillText(`${brandName} — Live Web Workspace`, 40, 155);
-
-        ctx.fillStyle = '#475569';
-        ctx.font = '13px sans-serif';
-        ctx.fillText(`Target Region at X: ${pX}%, Y: ${pY}% | Viewport: ${viewport.toUpperCase()}`, 40, 185);
-
-        ctx.fillStyle = '#4f46e5';
-        ctx.fillRect(40, 205, 120, 32);
-        ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 12px sans-serif';
-        ctx.fillText('Get Started', 68, 225);
-
-        // Content Grid
-        ctx.fillStyle = '#ffffff';
-        ctx.strokeStyle = '#cbd5e1';
-        ctx.lineWidth = 1;
-        
-        // Card 1
-        ctx.fillRect(20, 275, 240, 180);
-        ctx.strokeRect(20, 275, 240, 180);
-        ctx.fillStyle = '#0f172a';
-        ctx.font = 'bold 14px sans-serif';
-        ctx.fillText('⚡ Feature Section', 35, 305);
-        ctx.fillStyle = '#64748b'; ctx.font = '11px sans-serif';
-        ctx.fillText('High performance local analytics', 35, 330);
-
-        // Card 2
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(280, 275, 240, 180);
-        ctx.strokeRect(280, 275, 240, 180);
-        ctx.fillStyle = '#0f172a';
-        ctx.font = 'bold 14px sans-serif';
-        ctx.fillText('📊 Data Intelligence', 295, 305);
-
-        // Card 3
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(540, 275, 240, 180);
-        ctx.strokeRect(540, 275, 240, 180);
-        ctx.fillStyle = '#0f172a';
-        ctx.font = 'bold 14px sans-serif';
-        ctx.fillText('🚀 Client Portal', 555, 305);
-
-        // Calculate exact relative position for targeted area
-        const targetX = (pX / 100) * 800;
-        const targetY = (pY / 100) * 480;
-
-        // Draw targeted highlight box over exact pin area
-        ctx.strokeStyle = '#ef4444';
-        ctx.lineWidth = 3;
-        ctx.setLineDash([6, 4]);
-        ctx.strokeRect(targetX - 50, targetY - 30, 100, 60);
-
-        // Overlay pin badge
-        ctx.setLineDash([]);
-        ctx.fillStyle = '#6366f1';
-        ctx.beginPath();
-        ctx.arc(targetX, targetY, 15, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 2.5;
-        ctx.stroke();
-
-        ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 12px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('📍', targetX, targetY);
-
-        const croppedDataUrl = cropCanvasAroundPin(realisticCanvas, pX, pY);
-        setNewPinScreenshot(croppedDataUrl);
+      // Map the pin from page coordinates to the captured frame
+      const rect = canvasRef.current.getBoundingClientRect();
+      const ratio = video.videoWidth / window.innerWidth;
+      const cx = (rect.left + (newPinCoord.x / 100) * rect.width) * ratio;
+      const cy = (rect.top + (newPinCoord.y / 100) * rect.height) * ratio;
+      setNewPinScreenshot(
+        cropAroundPoint(frame, frame.width, frame.height, cx, cy, SNIPPET_WIDTH * ratio, SNIPPET_HEIGHT * ratio, ratio)
+      );
+    } catch (err: any) {
+      if (err?.name !== 'NotAllowedError') {
+        console.warn('Real tab capture failed:', err);
+        alert(err?.message || 'Could not capture this tab.');
       }
     } finally {
+      stream?.getTracks().forEach((t) => t.stop());
+      setHidePinFormForCapture(false);
       setIsCapturingScreenshot(false);
     }
   };
@@ -533,6 +541,8 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
       assigneeId: newPinAssignee,
       screenshotUrl: newPinScreenshot || undefined,
       attachments: newPinAttachments.length > 0 ? newPinAttachments : undefined,
+      viewportWidth: canvasRef.current?.offsetWidth,
+      selector: elementSelectorAtPin(),
     });
 
     setNewPinCoord(null);
@@ -612,28 +622,35 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
 
         {/* Center: Device Viewports & Zoom */}
         <div className="hidden md:flex items-center gap-3">
-          <div className="flex items-center bg-slate-100 p-1 rounded-md border border-slate-200 text-slate-500">
-            <button
-              onClick={() => setViewport('desktop')}
-              title="Desktop Viewport (Full Width)"
-              className={`p-1 rounded transition-colors ${viewport === 'desktop' ? 'bg-white text-slate-900 shadow-xs font-bold' : 'hover:text-slate-900 hover:bg-white'}`}
-            >
-              <Monitor className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => setViewport('tablet')}
-              title="Tablet Viewport (768px)"
-              className={`p-1 rounded transition-colors ${viewport === 'tablet' ? 'bg-white text-slate-900 shadow-xs font-bold' : 'hover:text-slate-900 hover:bg-white'}`}
-            >
-              <Tablet className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => setViewport('mobile')}
-              title="Mobile Viewport (375px)"
-              className={`p-1 rounded transition-colors ${viewport === 'mobile' ? 'bg-white text-slate-900 shadow-xs font-bold' : 'hover:text-slate-900 hover:bg-white'}`}
-            >
-              <Smartphone className="w-4 h-4" />
-            </button>
+          {/* Device views: each shows only its own pins. Badge = pin count (amber: some open, green: all resolved) */}
+          <div className="flex items-center gap-0.5 bg-slate-100 p-1 rounded-md border border-slate-200 text-slate-500">
+            {([
+              { device: 'desktop', label: 'Desktop', Icon: Monitor },
+              { device: 'tablet', label: 'Tablet (768px)', Icon: Tablet },
+              { device: 'mobile', label: 'Mobile (375px)', Icon: Smartphone },
+            ] as const).map(({ device, label, Icon }) => {
+              const devicePins = pins.filter((p) => p.assetId === currentAsset.id && pinDevice(p) === device);
+              const openCount = devicePins.filter((p) => p.status !== 'resolved' && p.status !== 'archived').length;
+              return (
+                <button
+                  key={device}
+                  onClick={() => onViewportChange(device)}
+                  title={`${label}: ${devicePins.length} ${devicePins.length === 1 ? 'pin' : 'pins'}${devicePins.length ? `, ${openCount} open` : ''}`}
+                  className={`relative px-1.5 py-1 rounded transition-colors ${viewport === device ? 'bg-white text-slate-900 shadow-xs font-bold' : 'hover:text-slate-900 hover:bg-white'}`}
+                >
+                  <Icon className="w-4 h-4" />
+                  {devicePins.length > 0 && (
+                    <span
+                      className={`absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-1 rounded-full text-[9px] font-bold leading-4 text-white text-center ring-2 ring-white ${
+                        openCount > 0 ? 'bg-amber-500' : 'bg-emerald-500'
+                      }`}
+                    >
+                      {openCount > 0 ? openCount : devicePins.length}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
 
           {/* Zoom Level Control */}
@@ -664,8 +681,21 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
 
         </div>
 
-        {/* Right: AI Website Auditor Trigger */}
+        {/* Right: AI Website Auditor Trigger + comments sidebar toggle */}
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onToggleSidebar}
+            title={isSidebarOpen ? 'Hide comments' : 'Show comments'}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold border transition-colors ${
+              isSidebarOpen
+                ? 'bg-indigo-50 border-indigo-200 text-indigo-700'
+                : 'bg-white border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+            }`}
+          >
+            <MessageSquarePlus className="w-3.5 h-3.5" />
+            <span>Comments ({pins.filter((p) => p.assetId === currentAsset.id && pinDevice(p) === viewport).length})</span>
+          </button>
           <button
             onClick={handleRunAiReview}
             disabled={isAuditing || isCapturingPage}
@@ -775,6 +805,8 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
 
       </div>
 
+      {/* Canvas area + comments sidebar (which slides over the canvas, below the toolbars) */}
+      <div className="flex-1 min-h-0 relative flex flex-col">
       {/* Main Canvas Scroll Area */}
       <div 
         ref={scrollContainerRef}
@@ -943,12 +975,27 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
               </div>
             )}
 
-            {/* 4. INLINE NEW PIN POPOVER FORM (When clicked on canvas) */}
+            {/* 4. NEW PIN: marker at the clicked point, form beside it (left side near the right edge) */}
             {newPinCoord && (
               <div
                 onClick={(e) => e.stopPropagation()}
                 style={{ left: `${newPinCoord.x}%`, top: `${newPinCoord.y}%` }}
-                className="absolute z-50 -translate-x-1/2 translate-y-3 bg-white border border-slate-200 text-slate-900 p-4 rounded-xl shadow-2xl w-80 animate-in fade-in zoom-in-95 duration-150"
+                className="absolute z-50 -translate-x-1/2 -translate-y-1/2 w-7 h-7 rounded-full bg-indigo-600 border-[3px] border-white shadow-lg flex items-center justify-center text-white font-bold text-[11px] pointer-events-none animate-in zoom-in-50 duration-150"
+              >
+                {nextPinNumber(pins, currentAsset.id)}
+              </div>
+            )}
+            {newPinCoord && (
+              <div
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  left: `${newPinCoord.x}%`,
+                  top: `${newPinCoord.y}%`,
+                  visibility: hidePinFormForCapture ? 'hidden' : 'visible',
+                }}
+                className={`absolute z-50 -translate-y-6 ${
+                  newPinCoord.x > 60 ? '-translate-x-[calc(100%+24px)]' : 'translate-x-6'
+                } bg-white border border-slate-200 text-slate-900 p-4 rounded-xl shadow-2xl w-80 animate-in fade-in zoom-in-95 duration-150`}
               >
                 <div className="flex items-center justify-between border-b border-slate-200 pb-2 mb-3">
                   <div className="flex items-center gap-1.5 font-bold text-xs text-indigo-600">
@@ -1172,6 +1219,8 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
           <span className="w-2 h-2 rounded-full bg-green-500" />
           <span className="text-slate-700">Real-time WebSocket Sync Active</span>
         </div>
+      </div>
+      {sidebar}
       </div>
 
     </div>
