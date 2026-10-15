@@ -1,0 +1,6 @@
+{
+  "name": "WebReview Pro",
+  "description": "Collaborative real-time website and visual asset annotation workspace with feedback pins, team discussion threads, project folders, and kanban task management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

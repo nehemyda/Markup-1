@@ -1,0 +1,1198 @@
+import React, { useState, useRef } from 'react';
+import { Pin, PinStatus, Teammate, Comment, Attachment, QARubricRule, QAPinError } from '../types';
+import { SearchableMemberSelect } from './SearchableMemberSelect';
+import { UserAvatar } from './UserAvatar';
+import { 
+  MessageSquare, 
+  Send, 
+  Sparkles, 
+  CheckCircle2, 
+  AlertCircle, 
+  Clock, 
+  UserCheck, 
+  Tag, 
+  Monitor, 
+  Terminal, 
+  Copy, 
+  Check, 
+  Mic, 
+  Paperclip, 
+  ChevronLeft, 
+  ChevronRight, 
+  Trash2, 
+  MoreVertical, 
+  Bug, 
+  Palette, 
+  FileText, 
+  HelpCircle,
+  ExternalLink,
+  Code,
+  FileSpreadsheet,
+  X,
+  Bell,
+  AtSign,
+  Award,
+  AlertTriangle,
+  Camera,
+  Image as ImageIcon,
+  Loader2,
+  Maximize2
+} from 'lucide-react';
+
+interface SidebarDiscussionProps {
+  pins: Pin[];
+  selectedPin: Pin | null;
+  onSelectPin: (pin: Pin | null) => void;
+  onUpdatePinStatus: (pinId: string, status: PinStatus) => void;
+  onUpdatePinAssignee: (pinId: string, assignee: Teammate) => void;
+  onAddComment: (pinId: string, text: string, attachments?: Attachment[], audioDuration?: string) => void;
+  teammates: Teammate[];
+  currentUser: Teammate;
+  onNotify?: (notification: { title: string; message: string; recipient: string; pinId?: string; assetId?: string }) => void;
+  rubricRules?: QARubricRule[];
+  onUpdatePinQAError?: (pinId: string, qaError?: QAPinError) => void;
+  onDeletePin?: (pinId: string) => void;
+  onDeleteComment?: (pinId: string, commentId: string) => void;
+}
+
+export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
+  pins,
+  selectedPin,
+  onSelectPin,
+  onUpdatePinStatus,
+  onUpdatePinAssignee,
+  onAddComment,
+  teammates,
+  currentUser,
+  onNotify,
+  rubricRules = [],
+  onUpdatePinQAError,
+  onDeletePin,
+  onDeleteComment
+}) => {
+  const [commentInput, setCommentInput] = useState('');
+  const [isRecording, setIsRecording] = useState(false);
+  const [copiedSelector, setCopiedSelector] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Comment Attachments & Lightbox Modal
+  const [commentAttachments, setCommentAttachments] = useState<Attachment[]>([]);
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
+  const commentFileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileUploadForComment = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    Array.from(files).forEach((file: File) => {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const url = event.target?.result as string;
+        const sizeFormatted = file.size > 1024 * 1024 
+          ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` 
+          : `${Math.round(file.size / 1024)} KB`;
+        
+        let type: Attachment['type'] = 'code';
+        if (file.type.startsWith('image/')) type = 'image';
+        else if (file.type.startsWith('video/')) type = 'video';
+        else if (file.type.includes('pdf')) type = 'pdf';
+
+        const newAtt: Attachment = {
+          id: `att_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+          name: file.name,
+          size: sizeFormatted,
+          type,
+          url,
+        };
+
+        setCommentAttachments((prev) => [...prev, newAtt]);
+      };
+      reader.readAsDataURL(file);
+    });
+
+    e.target.value = '';
+  };
+
+  // Mention Autocomplete States
+  const [showMentionMenu, setShowMentionMenu] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState('');
+  
+  // AI Assistant states
+  const [aiSummary, setAiSummary] = useState<any | null>(null);
+  const [aiTicket, setAiTicket] = useState<any | null>(null);
+  const [aiFix, setAiFix] = useState<any | null>(null);
+  const [loadingAi, setLoadingAi] = useState<string | null>(null);
+  const [ticketPlatform, setTicketPlatform] = useState<'jira' | 'linear' | 'github'>('linear');
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 4500);
+  };
+
+  const handleCommentInputChange = (text: string) => {
+    setCommentInput(text);
+
+    // Detect @ symbol for autocomplete popup
+    const lastAtIndex = text.lastIndexOf('@');
+    if (lastAtIndex !== -1) {
+      const query = text.slice(lastAtIndex + 1);
+      if (!query.includes('\n') && query.length <= 25) {
+        setMentionQuery(query.toLowerCase());
+        setShowMentionMenu(true);
+        return;
+      }
+    }
+    setShowMentionMenu(false);
+  };
+
+  const handleSelectMentionTeammate = (tm: Teammate) => {
+    const lastAtIndex = commentInput.lastIndexOf('@');
+    if (lastAtIndex !== -1) {
+      const before = commentInput.slice(0, lastAtIndex);
+      setCommentInput(`${before}@${tm.name} `);
+    } else {
+      setCommentInput((prev) => `${prev}@${tm.name} `);
+    }
+    setShowMentionMenu(false);
+  };
+
+  const handleSendComment = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedPin || (!commentInput.trim() && commentAttachments.length === 0)) return;
+
+    const trimmed = commentInput.trim() || (commentAttachments.length > 0 ? '📎 [Attached File(s)]' : '');
+    onAddComment(
+      selectedPin.id, 
+      trimmed, 
+      commentAttachments.length > 0 ? commentAttachments : undefined
+    );
+
+    setCommentInput('');
+    setCommentAttachments([]);
+
+    // Check if any teammate was @mentioned
+    const mentionedNames = teammates.filter(t => 
+      trimmed.toLowerCase().includes(`@${t.name.toLowerCase()}`) ||
+      trimmed.toLowerCase().includes(`@${t.name.split(' ')[0].toLowerCase()}`)
+    );
+
+    if (mentionedNames.length > 0) {
+      const recipientStr = mentionedNames.map(m => `@${m.name}`).join(', ');
+      showToast(`🔔 Notification Sent! ${recipientStr} received an instant in-app & email notification.`);
+      if (onNotify) {
+        onNotify({
+          title: `Tagged in Pin #${selectedPin.number}`,
+          message: `${currentUser.name} tagged you: "${trimmed.slice(0, 80)}"`,
+          recipient: recipientStr,
+          pinId: selectedPin.id,
+          assetId: selectedPin.assetId,
+        });
+      }
+    }
+
+    setCommentInput('');
+    setShowMentionMenu(false);
+  };
+
+  // Helper to format @mentions in comment text nicely
+  const renderFormattedCommentText = (text: string) => {
+    if (!text) return null;
+    
+    // Regex matching @Name or @Role mentions
+    const parts = text.split(/(@[A-Za-z0-9._\s\(\)]+?(?=\s|$|[,!?.]))/g);
+    
+    return parts.map((part, i) => {
+      if (part.startsWith('@')) {
+        const namePart = part.slice(1).trim();
+        const matchedTeammate = teammates.find(t => 
+          t.name.toLowerCase().includes(namePart.toLowerCase()) || 
+          namePart.toLowerCase().includes(t.name.split(' ')[0].toLowerCase())
+        );
+
+        return (
+          <span
+            key={i}
+            className="bg-indigo-100 hover:bg-indigo-200 text-indigo-900 font-extrabold px-1.5 py-0.5 rounded-md border border-indigo-200 text-[11px] inline-flex items-center gap-1 shadow-2xs my-0.5 transition-colors cursor-pointer"
+            title={matchedTeammate ? `Tagged ${matchedTeammate.name} (${matchedTeammate.role}) - Alert Sent` : 'Tagged teammate'}
+          >
+            <AtSign className="w-3 h-3 text-indigo-600 shrink-0" />
+            <span>{namePart}</span>
+            {matchedTeammate && (
+              <span className="text-[9px] bg-indigo-200/80 text-indigo-800 px-1 rounded font-semibold">
+                {matchedTeammate.role}
+              </span>
+            )}
+          </span>
+        );
+      }
+      return part;
+    });
+  };
+
+
+  const handleSimulateVoiceNote = () => {
+    if (!selectedPin) return;
+    setIsRecording(true);
+    setTimeout(() => {
+      setIsRecording(false);
+      onAddComment(selectedPin.id, '🎙️ [Voice Note Recorded: Reviewed padding and font weight on viewport.]', undefined, '0:24');
+    }, 1500);
+  };
+
+  const handleRunAiSummary = async () => {
+    if (!selectedPin) return;
+    setLoadingAi('summary');
+    try {
+      const res = await fetch('/api/ai/summarize-thread', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pinTitle: selectedPin.title,
+          category: selectedPin.category,
+          comments: selectedPin.comments.map(c => `${c.author.name} (${c.author.role}): ${c.text}`),
+        }),
+      });
+      const data = await res.json();
+      setAiSummary(data);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingAi(null);
+    }
+  };
+
+  const handleRunAiTicket = async () => {
+    if (!selectedPin) return;
+    setLoadingAi('ticket');
+    try {
+      const res = await fetch('/api/ai/convert-ticket', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pin: selectedPin,
+          comments: selectedPin.comments,
+          platform: ticketPlatform,
+        }),
+      });
+      const data = await res.json();
+      setAiTicket(data);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingAi(null);
+    }
+  };
+
+  const handleRunAiFix = async () => {
+    if (!selectedPin) return;
+    setLoadingAi('fix');
+    try {
+      const lastCmt = selectedPin.comments[selectedPin.comments.length - 1]?.text || selectedPin.title;
+      const res = await fetch('/api/ai/suggest-fix', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pinTitle: selectedPin.title,
+          category: selectedPin.category,
+          currentComment: lastCmt,
+          metadata: selectedPin.metadata,
+        }),
+      });
+      const data = await res.json();
+      setAiFix(data);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingAi(null);
+    }
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedSelector(true);
+    setTimeout(() => setCopiedSelector(false), 2000);
+  };
+
+  const getStatusBadge = (status: PinStatus) => {
+    switch (status) {
+      case 'open': return <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2 py-0.5 rounded-full text-[10px] font-bold">Open</span>;
+      case 'in_progress': return <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded-full text-[10px] font-bold">In Progress</span>;
+      case 'ready_for_review': return <span className="bg-purple-500/20 text-purple-300 border border-purple-500/40 px-2 py-0.5 rounded-full text-[10px] font-bold">In Review</span>;
+      case 'resolved': return <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2 py-0.5 rounded-full text-[10px] font-bold">Resolved</span>;
+      case 'archived': return <span className="bg-slate-500/20 text-slate-300 border border-slate-500/40 px-2 py-0.5 rounded-full text-[10px] font-bold">Archived</span>;
+    }
+  };
+
+  const getPriorityColor = (p: string) => {
+    switch (p) {
+      case 'high': return 'text-rose-400 font-bold';
+      case 'medium': return 'text-amber-400 font-medium';
+      case 'low': return 'text-emerald-400 font-normal';
+      default: return 'text-slate-400';
+    }
+  };
+
+  // IF NO PIN SELECTED: Show summary list of all pins on this asset
+  if (!selectedPin) {
+    const openPins = pins.filter(p => p.status !== 'resolved' && p.status !== 'archived');
+    const resolvedPins = pins.filter(p => p.status === 'resolved' || p.status === 'archived');
+
+    return (
+      <aside className="w-80 lg:w-96 min-w-[20rem] lg:min-w-[24rem] max-w-[20rem] lg:max-w-[24rem] bg-white border-l border-slate-200 flex flex-col h-full select-none shrink-0 shadow-xs overflow-hidden text-slate-900 z-10 relative">
+        <div className="p-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-2 font-bold text-xs text-slate-900">
+            <MessageSquare className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+            <span>Feedback Threads</span>
+          </div>
+          <span className="bg-slate-200 border border-slate-300 px-2 py-0.5 rounded text-[10px] text-slate-700 font-mono font-bold shrink-0">
+            {pins.length} total
+          </span>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-3 space-y-5">
+          {/* Open Threads Section */}
+          <div>
+            <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 mb-2.5 flex items-center justify-between">
+              <span>Open Issues ({openPins.length})</span>
+              <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
+            </div>
+
+            {openPins.length === 0 ? (
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-5 text-center text-xs text-slate-500">
+                🎉 No open feedback pins! You're all caught up.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {openPins.map((pin) => (
+                  <div
+                    key={pin.id}
+                    onClick={() => onSelectPin(pin)}
+                    className="bg-white hover:bg-slate-50 border border-slate-200 hover:border-slate-300 p-3 rounded-lg cursor-pointer transition-all shadow-xs group"
+                  >
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <span className="w-5 h-5 rounded-full bg-indigo-600 text-white font-extrabold text-[10px] flex items-center justify-center shadow-xs shrink-0">
+                          {pin.number}
+                        </span>
+                        <span className="text-xs font-bold text-slate-900 group-hover:text-indigo-600 line-clamp-1">
+                          {pin.title}
+                        </span>
+                      </div>
+                      <div className="shrink-0">{getStatusBadge(pin.status)}</div>
+                    </div>
+
+                    <div className="text-xs text-slate-600 line-clamp-2 pl-7 font-normal">
+                      {pin.comments[0]?.text || 'No description provided.'}
+                    </div>
+
+                    <div className="mt-2 pt-2 border-t border-slate-100 pl-7 flex items-center justify-between text-[10px] text-slate-500">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <img src={pin.author.avatar} alt={pin.author.name} className="w-4 h-4 rounded-full object-cover border border-slate-200 shrink-0" />
+                        <span className="truncate">{pin.author.name.split(' ')[0]}</span>
+                      </div>
+                      <div className="flex items-center gap-2.5 shrink-0">
+                        <span className="flex items-center gap-1">
+                          <MessageSquare className="w-3 h-3" />
+                          <span>{pin.comments.length}</span>
+                        </span>
+                        <span>{pin.createdAt}</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Resolved Threads Section */}
+          {resolvedPins.length > 0 && (
+            <div>
+              <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 mb-2.5 flex items-center justify-between">
+                <span>Resolved & Approved ({resolvedPins.length})</span>
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              </div>
+              <div className="space-y-2 opacity-75 hover:opacity-100 transition-opacity">
+                {resolvedPins.map((pin) => (
+                  <div
+                    key={pin.id}
+                    onClick={() => onSelectPin(pin)}
+                    className="bg-slate-50 hover:bg-slate-100 border border-slate-200 p-2.5 rounded-lg cursor-pointer transition-all"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 line-through text-slate-500 min-w-0 flex-1">
+                        <span className="w-4.5 h-4.5 rounded-full bg-emerald-600 text-white font-bold text-[9px] flex items-center justify-center shrink-0">
+                          {pin.number}
+                        </span>
+                        <span className="text-xs font-semibold truncate">{pin.title}</span>
+                      </div>
+                      <span className="text-[10px] text-emerald-600 font-bold shrink-0">Resolved</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </aside>
+    );
+  }
+
+  // IF PIN IS SELECTED: Render rich discussion thread, technical metadata, and AI assistant tools
+  return (
+    <aside className="w-80 lg:w-96 min-w-[20rem] lg:min-w-[24rem] max-w-[20rem] lg:max-w-[24rem] bg-white border-l border-slate-200 flex flex-col h-full select-none shrink-0 shadow-xs overflow-hidden animate-in slide-in-from-right duration-200 text-slate-900 z-10 relative">
+      
+      {/* Top Header: Pin #, Back Button, Status Changer */}
+      <div className="p-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between gap-2">
+        <button
+          onClick={() => onSelectPin(null)}
+          className="flex items-center gap-1 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-white px-2 py-1 rounded-md border border-slate-200 transition-colors shadow-xs"
+        >
+          <ChevronLeft className="w-3.5 h-3.5" />
+          <span>All Pins</span>
+        </button>
+
+        <div className="flex items-center gap-2">
+          <span className="w-5 h-5 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-extrabold text-[10px] flex items-center justify-center shadow-xs">
+            #{selectedPin.number}
+          </span>
+          
+          {/* Status Dropdown */}
+          <select
+            value={selectedPin.status}
+            onChange={(e) => onUpdatePinStatus(selectedPin.id, e.target.value as PinStatus)}
+            className="bg-white hover:bg-slate-50 text-slate-900 text-xs font-bold px-2 py-1 rounded-md border border-slate-200 focus:outline-none focus:border-indigo-600 cursor-pointer capitalize shadow-xs"
+          >
+            <option value="open">🔴 Open</option>
+            <option value="in_progress">🟡 In Progress</option>
+            <option value="ready_for_review">🟣 In Review</option>
+            <option value="resolved">🟢 Resolved</option>
+            <option value="archived">⚪ Archived</option>
+          </select>
+
+          {/* Delete Pin Button */}
+          {onDeletePin && (() => {
+            const isOwnerOrAdmin = currentUser.role === 'Admin' || currentUser.role === 'Owner' || currentUser.email === 'nehemiahc@yourdigitalagents.com' || currentUser.id === 'usr_nehemiah';
+            const isPinCreator = selectedPin.author?.id === currentUser.id || selectedPin.author?.email === currentUser.email || selectedPin.author?.name === currentUser.name;
+            const canDeletePin = isOwnerOrAdmin || isPinCreator;
+
+            return (
+              <button
+                onClick={() => {
+                  if (!canDeletePin) {
+                    alert('Permission Denied: Members can only delete pins they created.');
+                    return;
+                  }
+                  if (window.confirm(`Are you sure you want to delete Pin #${selectedPin.number}?`)) {
+                    onDeletePin(selectedPin.id);
+                  }
+                }}
+                className={`p-1.5 rounded-md border text-xs font-bold transition-colors shadow-xs flex items-center justify-center cursor-pointer ${
+                  canDeletePin
+                    ? 'bg-white hover:bg-red-50 text-slate-500 hover:text-red-600 border-slate-200 hover:border-red-200'
+                    : 'bg-slate-50 text-slate-300 border-slate-200 cursor-not-allowed'
+                }`}
+                title={
+                  canDeletePin
+                    ? `Delete Pin #${selectedPin.number}`
+                    : 'Members can only delete pins they created'
+                }
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            );
+          })()}
+        </div>
+      </div>
+
+      {/* Scrollable Discussion & Metadata Area */}
+      <div className="flex-1 overflow-y-auto p-3 space-y-4">
+        
+        {/* Pin Title & Attributes */}
+        <div>
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <span className="text-[10px] uppercase font-extrabold tracking-wider bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded border border-indigo-200">
+              {selectedPin.category}
+            </span>
+            <span className={`text-xs capitalize ${getPriorityColor(selectedPin.priority)}`}>
+              ⚡ {selectedPin.priority} Priority
+            </span>
+          </div>
+          <h2 className="text-sm font-extrabold text-slate-900 leading-snug mt-1">
+            {selectedPin.title}
+          </h2>
+        </div>
+
+        {/* Pin Screenshot & Attachments Block */}
+        {(selectedPin.screenshotUrl || (selectedPin.attachments && selectedPin.attachments.length > 0)) && (
+          <div className="bg-slate-900 text-white p-2.5 rounded-xl border border-slate-800 space-y-2 shadow-xs">
+            <div className="flex items-center justify-between text-[10px] font-extrabold uppercase tracking-wider text-indigo-300">
+              <span className="flex items-center gap-1">
+                <Camera className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Pin Screenshot & Files</span>
+              </span>
+              <span className="text-slate-400 text-[9px]">Click image to view</span>
+            </div>
+
+            {selectedPin.screenshotUrl && (
+              <div 
+                onClick={() => setPreviewImageUrl(selectedPin.screenshotUrl!)}
+                className="relative group cursor-pointer overflow-hidden rounded-lg border border-slate-700 bg-slate-950"
+              >
+                <img 
+                  src={selectedPin.screenshotUrl} 
+                  alt="Pin Viewport Screenshot" 
+                  className="w-full h-32 object-cover transition-transform group-hover:scale-105"
+                />
+                <div className="absolute inset-0 bg-slate-950/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1 text-xs font-bold text-white">
+                  <Maximize2 className="w-4 h-4 text-indigo-400" />
+                  <span>View Full Screenshot</span>
+                </div>
+              </div>
+            )}
+
+            {selectedPin.attachments && selectedPin.attachments.length > 0 && (
+              <div className="space-y-1 pt-1">
+                {selectedPin.attachments.map((att) => (
+                  <div
+                    key={att.id}
+                    className="flex items-center justify-between bg-slate-800 border border-slate-700 p-2 rounded-lg text-xs"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      {att.type === 'image' ? (
+                        <ImageIcon className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                      ) : (
+                        <Paperclip className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                      )}
+                      <span className="truncate font-semibold text-slate-200">{att.name}</span>
+                      <span className="text-[10px] text-slate-400 font-mono">({att.size})</span>
+                    </div>
+
+                    {att.type === 'image' ? (
+                      <button
+                        onClick={() => setPreviewImageUrl(att.url)}
+                        className="text-[10px] bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-0.5 rounded font-bold transition-colors shrink-0"
+                      >
+                        View Image
+                      </button>
+                    ) : (
+                      <a
+                        href={att.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-[10px] bg-slate-700 hover:bg-slate-600 text-slate-200 px-2 py-0.5 rounded font-bold transition-colors shrink-0"
+                      >
+                        Download
+                      </a>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Assignee Card with Searchable Member Select (1000+ support) */}
+        <div className="bg-slate-50 border border-slate-200 p-2.5 rounded-lg space-y-1.5">
+          <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-slate-500">
+            <span>Assigned Teammate</span>
+            <span className="text-indigo-600 font-extrabold flex items-center gap-1">
+              <UserCheck className="w-3 h-3" />
+              <span>1000+ Directory</span>
+            </span>
+          </div>
+
+          <SearchableMemberSelect
+            selectedMember={selectedPin.assignedTo}
+            teammates={teammates}
+            onSelect={(tm) => {
+              onUpdatePinAssignee(selectedPin.id, tm);
+              showToast(`🔔 Assigned Pin #${selectedPin.number} to ${tm.name}. Notification sent!`);
+              if (onNotify) {
+                onNotify({
+                  title: `Assigned Pin #${selectedPin.number}`,
+                  message: `${currentUser.name} assigned Pin #${selectedPin.number} (${selectedPin.title}) to you.`,
+                  recipient: tm.name,
+                  pinId: selectedPin.id,
+                  assetId: selectedPin.assetId,
+                });
+              }
+            }}
+            placeholder="Search 1000+ team members (e.g. Akshat, Anju, QA)..."
+          />
+        </div>
+
+        {/* QA Error & Weightage Classifier Card */}
+        <div className="bg-slate-900 text-white border border-slate-800 p-3 rounded-xl space-y-2 shadow-xs">
+          <div className="flex items-center justify-between text-[10px] font-extrabold uppercase tracking-wider text-indigo-300">
+            <span className="flex items-center gap-1">
+              <Award className="w-3.5 h-3.5 text-indigo-400" />
+              <span>QA Error & Weightage Rating</span>
+            </span>
+            <span className="text-slate-400">Score Impact</span>
+          </div>
+
+          {selectedPin.qaError ? (
+            <div className="p-2.5 bg-slate-800 border border-slate-700 rounded-lg space-y-1.5 text-xs">
+              <div className="flex items-center justify-between">
+                <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold ${
+                  selectedPin.qaError.source === 'internal_qa' 
+                    ? 'bg-rose-900/80 text-rose-200 border border-rose-700' 
+                    : 'bg-indigo-900/80 text-indigo-200 border border-indigo-700'
+                }`}>
+                  {selectedPin.qaError.source === 'internal_qa' ? '⚠️ Internal QA Error' : '✨ Client Requested Edit'}
+                </span>
+
+                {selectedPin.qaError.source === 'internal_qa' ? (
+                  <span className="text-rose-400 font-extrabold text-xs">
+                    -{selectedPin.qaError.weightage || 0} pts penalty
+                  </span>
+                ) : (
+                  <span className="text-emerald-400 font-bold text-[10px]">
+                    0% QA Penalty
+                  </span>
+                )}
+              </div>
+
+              <div className="font-bold text-white leading-snug">
+                {selectedPin.qaError.ruleName || 'Custom Error'}
+              </div>
+              <div className="text-[10px] text-slate-400">
+                Category: <strong className="text-slate-200">{selectedPin.qaError.category || 'General'}</strong>
+              </div>
+
+              <button
+                onClick={() => {
+                  if (onUpdatePinQAError) onUpdatePinQAError(selectedPin.id, undefined);
+                }}
+                className="text-[10px] text-rose-400 hover:text-rose-300 underline pt-1 block"
+              >
+                Remove QA Classification
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-[11px] text-slate-300">
+                Tag this issue with a QA Rubric Error (deducts QA score) or flag as Client Edit (0% penalty):
+              </p>
+
+              <select
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (!val) return;
+                  if (val === 'client_edit') {
+                    if (onUpdatePinQAError) {
+                      onUpdatePinQAError(selectedPin.id, {
+                        source: 'client_edit',
+                        ruleName: 'Client Requested Modification',
+                        category: 'Content',
+                        weightage: 0
+                      });
+                    }
+                  } else {
+                    const rule = rubricRules.find(r => r.id === val);
+                    if (rule && onUpdatePinQAError) {
+                      onUpdatePinQAError(selectedPin.id, {
+                        source: 'internal_qa',
+                        rubricRuleId: rule.id,
+                        category: rule.category,
+                        ruleName: rule.ruleName,
+                        weightage: rule.weightage
+                      });
+                    }
+                  }
+                }}
+                defaultValue=""
+                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 font-medium cursor-pointer"
+              >
+                <option value="" disabled>-- Tag QA Error Category & Weightage --</option>
+                <option value="client_edit">✨ Client Requested Edit (0 Penalty)</option>
+                {rubricRules.filter(r => r.isActive).map((rule) => (
+                  <option key={rule.id} value={rule.id}>
+                    [{rule.category}] {rule.ruleName} (-{rule.weightage} pts)
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+
+        {/* Auto-Captured Technical Metadata Block */}
+        <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs space-y-2">
+          <div className="flex items-center justify-between text-[10px] font-bold text-slate-600 uppercase tracking-wider pb-1 border-b border-slate-200">
+            <span className="flex items-center gap-1"><Monitor className="w-3 h-3" /> Tech Environment</span>
+            <span>Auto-Captured</span>
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-800">
+            <div>
+              <span className="text-slate-500 block">Browser / OS:</span>
+              <span className="font-semibold">{selectedPin.metadata.browser}</span>
+              <span className="block text-slate-500 text-[10px]">{selectedPin.metadata.os}</span>
+            </div>
+            <div>
+              <span className="text-slate-500 block">Viewport Size:</span>
+              <span className="font-mono font-semibold text-indigo-700">{selectedPin.metadata.viewport}</span>
+            </div>
+          </div>
+
+          {selectedPin.metadata.selector && (
+            <div className="pt-1.5 border-t border-slate-200 flex items-center justify-between">
+              <span className="font-mono text-[10px] text-slate-600 truncate max-w-[200px]">
+                {selectedPin.metadata.selector}
+              </span>
+              <button
+                onClick={() => copyToClipboard(selectedPin.metadata.selector || '')}
+                className="text-[10px] bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 px-2 py-0.5 rounded font-mono flex items-center gap-1 shrink-0 shadow-xs"
+              >
+                {copiedSelector ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                <span>{copiedSelector ? 'Copied' : 'Copy'}</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* ✨ AI MAGIC ACTIONS TOOLBAR */}
+        <div className="bg-gradient-to-br from-indigo-50 via-purple-50/50 to-indigo-50/80 border border-indigo-200 rounded-lg p-3 shadow-xs space-y-2">
+          <div className="flex items-center justify-between text-xs font-bold text-indigo-950">
+            <span className="flex items-center gap-1.5">
+              <Sparkles className="w-4 h-4 text-amber-500 animate-pulse" />
+              <span>Gemini AI Feedback Actions</span>
+            </span>
+            <span className="text-[10px] bg-indigo-100 px-1.5 py-0.5 rounded text-indigo-800 font-mono">v3.6</span>
+          </div>
+
+          <div className="grid grid-cols-3 gap-1.5">
+            <button
+              onClick={handleRunAiSummary}
+              disabled={loadingAi !== null}
+              className="bg-white hover:bg-indigo-50 border border-slate-200 hover:border-indigo-300 text-slate-800 p-2 rounded-md text-[11px] font-semibold flex flex-col items-center gap-1 transition-all text-center disabled:opacity-50 shadow-xs"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-blue-600" />
+              <span>{loadingAi === 'summary' ? 'Synthesizing...' : 'Summarize'}</span>
+            </button>
+
+            <button
+              onClick={handleRunAiTicket}
+              disabled={loadingAi !== null}
+              className="bg-white hover:bg-indigo-50 border border-slate-200 hover:border-indigo-300 text-slate-800 p-2 rounded-md text-[11px] font-semibold flex flex-col items-center gap-1 transition-all text-center disabled:opacity-50 shadow-xs"
+            >
+              <Code className="w-3.5 h-3.5 text-purple-600" />
+              <span>{loadingAi === 'ticket' ? 'Converting...' : 'Dev Ticket'}</span>
+            </button>
+
+            <button
+              onClick={handleRunAiFix}
+              disabled={loadingAi !== null}
+              className="bg-white hover:bg-indigo-50 border border-slate-200 hover:border-indigo-300 text-slate-800 p-2 rounded-md text-[11px] font-semibold flex flex-col items-center gap-1 transition-all text-center disabled:opacity-50 shadow-xs"
+            >
+              <Terminal className="w-3.5 h-3.5 text-emerald-600" />
+              <span>{loadingAi === 'fix' ? 'Suggesting...' : 'Suggest Fix'}</span>
+            </button>
+          </div>
+
+          {/* AI Output Panes */}
+          {aiSummary && (
+            <div className="bg-white border border-blue-200 rounded-md p-2.5 text-xs space-y-2 animate-in fade-in duration-150 shadow-xs">
+              <div className="font-bold text-blue-700 flex items-center justify-between">
+                <span>📋 Executive Summary</span>
+                <button onClick={() => setAiSummary(null)} className="text-slate-400 hover:text-slate-700"><X className="w-3 h-3" /></button>
+              </div>
+              <p className="text-slate-700 leading-relaxed text-[11px]">{aiSummary.summary}</p>
+              <div className="font-semibold text-slate-900 text-[11px] pt-1">Next Steps:</div>
+              <ul className="list-disc list-inside text-[11px] text-slate-600 space-y-0.5">
+                {aiSummary.actionItems?.map((item: string, i: number) => (
+                  <li key={i}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {aiTicket && (
+            <div className="bg-white border border-purple-200 rounded-md p-2.5 text-xs space-y-2 animate-in fade-in duration-150 shadow-xs">
+              <div className="flex items-center justify-between font-bold text-purple-700">
+                <div className="flex items-center gap-1.5">
+                  <span>🎟️ {aiTicket.ticketId}: {aiTicket.title}</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button 
+                    onClick={() => copyToClipboard(`## [${aiTicket.ticketId}] ${aiTicket.title}\n\n**Priority**: ${aiTicket.priority}\n**Effort**: ${aiTicket.estimatedEffort}\n\n${aiTicket.description}`)}
+                    className="bg-purple-600 hover:bg-purple-700 text-white px-2 py-0.5 rounded text-[10px]"
+                  >
+                    Copy Markdown
+                  </button>
+                  <button onClick={() => setAiTicket(null)} className="text-slate-400 hover:text-slate-700"><X className="w-3 h-3" /></button>
+                </div>
+              </div>
+              <div className="bg-slate-50 border border-slate-200 p-2 rounded text-[11px] text-slate-800 font-mono whitespace-pre-wrap max-h-48 overflow-y-auto">
+                {aiTicket.description}
+              </div>
+              <div className="flex items-center justify-between text-[10px] text-slate-600 pt-1">
+                <span>Priority: <strong className="text-slate-900 uppercase">{aiTicket.priority}</strong></span>
+                <span>Est: <strong className="text-slate-900">{aiTicket.estimatedEffort}</strong></span>
+              </div>
+            </div>
+          )}
+
+          {aiFix && (
+            <div className="bg-white border border-emerald-200 rounded-md p-2.5 text-xs space-y-2 animate-in fade-in duration-150 shadow-xs">
+              <div className="font-bold text-emerald-700 flex items-center justify-between">
+                <span>💡 {aiFix.fixType === 'code_snippet' ? 'Recommended Tailwind / CSS Fix' : 'Copywriting Suggestion'}</span>
+                <button onClick={() => setAiFix(null)} className="text-slate-400 hover:text-slate-700"><X className="w-3 h-3" /></button>
+              </div>
+              <p className="text-slate-700 text-[11px]">{aiFix.explanation}</p>
+              <div className="relative">
+                <pre className="bg-slate-900 p-2.5 rounded text-[11px] text-emerald-300 font-mono overflow-x-auto whitespace-pre-wrap border border-slate-800">
+                  {aiFix.codeOrCopy}
+                </pre>
+                <button
+                  onClick={() => copyToClipboard(aiFix.codeOrCopy)}
+                  className="absolute top-1.5 right-1.5 bg-slate-800 hover:bg-slate-700 text-white px-2 py-0.5 rounded text-[10px]"
+                >
+                  Copy
+                </button>
+              </div>
+              {aiFix.additionalTip && (
+                <div className="text-[10px] text-amber-700 font-medium italic pt-1 border-t border-slate-100">
+                  ⚡ Pro Tip: {aiFix.additionalTip}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Discussion Timeline */}
+        <div className="space-y-3 pt-1">
+          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 flex items-center justify-between">
+            <span>Discussion Timeline ({selectedPin.comments.length})</span>
+            <span className="text-[10px] text-slate-500">Oldest to Newest</span>
+          </div>
+
+          <div className="space-y-2.5">
+            {selectedPin.comments.map((cmt) => (
+              <div
+                key={cmt.id}
+                className="bg-white border border-slate-200 p-2.5 rounded-lg space-y-2 shadow-xs"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                    <UserAvatar
+                      name={cmt.author.name}
+                      email={cmt.author.email}
+                      avatar={cmt.author.avatar}
+                      size={20}
+                    />
+                    <span className="text-xs font-bold text-slate-900 truncate">{cmt.author.name}</span>
+                    <span className="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-600 font-medium shrink-0">{cmt.author.role}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className="text-[10px] text-slate-500">{cmt.createdAt}</span>
+                    {onDeleteComment && (() => {
+                      const isOwnerOrAdmin = currentUser.role === 'Admin' || currentUser.role === 'Owner' || currentUser.email === 'nehemiahc@yourdigitalagents.com' || currentUser.id === 'usr_nehemiah';
+                      const isCommentCreator = cmt.author?.id === currentUser.id || cmt.author?.email === currentUser.email || cmt.author?.name === currentUser.name;
+                      const canDeleteComment = isOwnerOrAdmin || isCommentCreator;
+
+                      return (
+                        <button
+                          onClick={() => {
+                            if (!canDeleteComment) {
+                              alert('Permission Denied: Members can only delete comments they created.');
+                              return;
+                            }
+                            if (window.confirm('Are you sure you want to delete this comment?')) {
+                              onDeleteComment(selectedPin.id, cmt.id);
+                            }
+                          }}
+                          className={`p-1 rounded transition-colors cursor-pointer ${
+                            canDeleteComment
+                              ? 'text-slate-400 hover:text-red-600 hover:bg-red-50'
+                              : 'text-slate-300 cursor-not-allowed'
+                          }`}
+                          title={
+                            canDeleteComment
+                              ? 'Delete comment'
+                              : 'Members can only delete comments they created'
+                          }
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      );
+                    })()}
+                  </div>
+                </div>
+
+                <div className="text-xs text-slate-700 leading-relaxed pl-7 whitespace-pre-wrap">
+                  {renderFormattedCommentText(cmt.text)}
+                </div>
+
+                {/* Voice Note Simulation Playback */}
+                {cmt.audioDuration && (
+                  <div className="ml-7 bg-indigo-50 border border-indigo-200 rounded-md p-1.5 flex items-center gap-2 max-w-[220px]">
+                    <button className="w-5 h-5 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white flex items-center justify-center text-[10px] shadow-xs">
+                      ▶
+                    </button>
+                    <div className="flex-1 h-1.5 bg-indigo-200 rounded-full overflow-hidden">
+                      <div className="w-1/3 h-full bg-indigo-600 animate-pulse" />
+                    </div>
+                    <span className="text-[10px] font-mono font-bold text-indigo-800">{cmt.audioDuration}</span>
+                  </div>
+                )}
+
+                {/* Attachments */}
+                {cmt.attachments && cmt.attachments.length > 0 && (
+                  <div className="ml-7 pt-1.5 flex flex-wrap gap-2">
+                    {cmt.attachments.map((att) => {
+                      const isImage = att.type === 'image' || att.url.startsWith('data:image') || att.url.includes('.png') || att.url.includes('.jpg') || att.url.includes('.jpeg') || att.url.includes('.webp');
+                      return (
+                        <div key={att.id} className="inline-block">
+                          {isImage ? (
+                            <div 
+                              onClick={() => setPreviewImageUrl(att.url)}
+                              className="relative group cursor-pointer border border-slate-200 rounded-lg overflow-hidden bg-slate-100 max-w-[180px] shadow-xs"
+                            >
+                              <img src={att.url} alt={att.name} className="w-full h-24 object-cover" />
+                              <div className="absolute inset-0 bg-slate-950/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-[10px] text-white font-bold gap-1">
+                                <Maximize2 className="w-3.5 h-3.5 text-indigo-300" />
+                                <span>Expand</span>
+                              </div>
+                              <div className="p-1 bg-white border-t border-slate-100 text-[9px] font-medium text-slate-700 truncate">
+                                📸 {att.name}
+                              </div>
+                            </div>
+                          ) : (
+                            <a
+                              href={att.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 px-2.5 py-1 rounded-md text-[11px] text-indigo-600 hover:text-indigo-800 transition-colors font-medium shadow-2xs"
+                            >
+                              <Paperclip className="w-3.5 h-3.5" />
+                              <span className="truncate max-w-[130px]">{att.name}</span>
+                              <span className="text-[10px] text-slate-400 font-mono">({att.size})</span>
+                            </a>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Reactions */}
+                {cmt.reactions && (
+                  <div className="ml-7 flex flex-wrap gap-1 pt-1">
+                    {Object.entries(cmt.reactions).map(([emoji, users]) => {
+                      const userList = users as string[];
+                      return (
+                        <span
+                          key={emoji}
+                          title={`Reacted by: ${userList.join(', ')}`}
+                          className="bg-slate-50 border border-slate-200 text-[11px] px-2 py-0.5 rounded-full text-slate-700 flex items-center gap-1 font-medium"
+                        >
+                          <span>{emoji}</span>
+                          <span className="text-[10px] text-slate-500 font-bold">{userList.length}</span>
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+      </div>
+
+      {/* Notification Toast Alert Banner */}
+      {toastMessage && (
+        <div className="mx-3 my-2 p-2.5 bg-indigo-900 text-white text-xs font-semibold rounded-lg shadow-lg flex items-center justify-between gap-2 animate-in fade-in slide-in-from-bottom-2 duration-150 z-20">
+          <div className="flex items-center gap-2 min-w-0">
+            <Bell className="w-4 h-4 text-amber-400 shrink-0 animate-bounce" />
+            <span className="truncate">{toastMessage}</span>
+          </div>
+          <button onClick={() => setToastMessage(null)} className="text-slate-300 hover:text-white p-0.5">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Bottom Comment Composer Input */}
+      <div className="p-3 bg-slate-50 border-t border-slate-200 space-y-2 relative">
+        {/* Quick Tag Teammates Bar */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-[11px] no-scrollbar">
+          <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wide shrink-0">Tag QA / Team:</span>
+          {teammates.slice(0, 8).map((tm) => (
+            <button
+              key={tm.id}
+              type="button"
+              onClick={() => {
+                const tagText = `@${tm.name} `;
+                if (!commentInput.includes(tagText)) {
+                  setCommentInput((prev) => prev + tagText);
+                }
+              }}
+              className="bg-white hover:bg-indigo-50 border border-slate-200 hover:border-indigo-300 text-slate-700 hover:text-indigo-700 px-2 py-0.5 rounded-full text-[10px] font-semibold shrink-0 flex items-center gap-1 transition-colors cursor-pointer"
+            >
+              <img src={tm.avatar} alt={tm.name} className="w-3.5 h-3.5 rounded-full shrink-0 object-cover" />
+              <span>@{tm.name.split(' ')[0]} ({tm.role})</span>
+            </button>
+          ))}
+        </div>
+
+        {/* Floating @Mention Autocomplete Menu */}
+        {showMentionMenu && (
+          <div className="absolute left-3 right-3 bottom-full mb-2 bg-white border border-slate-200 rounded-xl shadow-2xl z-50 overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-150">
+            <div className="p-2 bg-indigo-50 border-b border-indigo-100 flex items-center justify-between text-[10px] font-bold text-indigo-900">
+              <span className="flex items-center gap-1">
+                <AtSign className="w-3 h-3 text-indigo-600" />
+                <span>Mention Teammate (Notifies via email & in-app push)</span>
+              </span>
+              <button onClick={() => setShowMentionMenu(false)} className="text-slate-400 hover:text-slate-700">
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+            
+            <div className="max-h-48 overflow-y-auto divide-y divide-slate-100 p-1">
+              {teammates
+                .filter(t => t.name.toLowerCase().includes(mentionQuery) || t.role.toLowerCase().includes(mentionQuery))
+                .slice(0, 6)
+                .map((tm) => (
+                  <button
+                    key={tm.id}
+                    type="button"
+                    onClick={() => handleSelectMentionTeammate(tm)}
+                    className="w-full text-left p-2 hover:bg-indigo-50 rounded-lg flex items-center justify-between transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <img src={tm.avatar} alt={tm.name} className="w-6 h-6 rounded-full object-cover border border-slate-200 shrink-0" />
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-slate-900 truncate">@{tm.name}</div>
+                        <div className="text-[10px] text-slate-500 font-mono truncate">{tm.email}</div>
+                      </div>
+                    </div>
+                    <span className="text-[9px] bg-slate-100 text-slate-600 border border-slate-200 px-1.5 py-0.5 rounded font-bold uppercase shrink-0">
+                      {tm.role}
+                    </span>
+                  </button>
+                ))}
+
+              {teammates.filter(t => t.name.toLowerCase().includes(mentionQuery)).length === 0 && (
+                <div className="p-3 text-center text-xs text-slate-500">
+                  No matching teammate found for "{mentionQuery}"
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        <form onSubmit={handleSendComment} className="space-y-2">
+          <input
+            ref={commentFileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={handleFileUploadForComment}
+          />
+
+          {/* Comment Attachments Preview Chips */}
+          {commentAttachments.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 p-2 bg-indigo-50/80 border border-indigo-200 rounded-lg max-h-28 overflow-y-auto">
+              {commentAttachments.map((att) => (
+                <div
+                  key={att.id}
+                  className="flex items-center gap-1.5 bg-white border border-indigo-200 px-2 py-1 rounded text-xs text-indigo-950 font-medium shadow-2xs"
+                >
+                  <Paperclip className="w-3 h-3 text-indigo-600 shrink-0" />
+                  <span className="truncate max-w-[120px]">{att.name}</span>
+                  <span className="text-[9px] text-slate-400 font-mono">({att.size})</span>
+                  <button
+                    type="button"
+                    onClick={() => setCommentAttachments(prev => prev.filter(a => a.id !== att.id))}
+                    className="text-slate-400 hover:text-red-600 p-0.5 ml-0.5 cursor-pointer"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="relative">
+            <textarea
+              rows={2}
+              placeholder="Reply to discussion... (@mention teammates, attach screenshots/files)"
+              value={commentInput}
+              onChange={(e) => handleCommentInputChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSendComment(e);
+                }
+              }}
+              className="w-full bg-white border border-slate-300 rounded-lg pl-3 pr-28 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-indigo-600 resize-none shadow-xs"
+            />
+            
+            <div className="absolute right-2 bottom-2 flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => commentFileInputRef.current?.click()}
+                title="Attach file or screenshot"
+                className="p-1.5 rounded-md text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 transition-colors cursor-pointer"
+              >
+                <Paperclip className="w-3.5 h-3.5" />
+              </button>
+
+              <button
+                type="button"
+                onClick={handleSimulateVoiceNote}
+                title="Record instant voice note"
+                className={`p-1.5 rounded-md transition-colors cursor-pointer ${
+                  isRecording ? 'bg-rose-600 text-white animate-pulse' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <Mic className="w-3.5 h-3.5" />
+              </button>
+              
+              <button
+                type="submit"
+                disabled={!commentInput.trim() && commentAttachments.length === 0}
+                className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white p-1.5 rounded-md shadow-xs transition-all cursor-pointer"
+              >
+                <Send className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+          <div className="flex items-center justify-between text-[10px] text-slate-500 px-1 pt-0.5 font-medium">
+            <span>Press Enter to send, Shift+Enter for newline</span>
+            <span className="text-indigo-600 font-semibold flex items-center gap-1">
+              <Sparkles className="w-3 h-3" />
+              <span>Attach screenshots & files</span>
+            </span>
+          </div>
+        </form>
+      </div>
+
+      {/* Lightbox Image Preview Modal */}
+      {previewImageUrl && (
+        <div 
+          onClick={() => setPreviewImageUrl(null)}
+          className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-in fade-in duration-200"
+        >
+          <div className="relative max-w-4xl w-full max-h-[90vh] flex flex-col items-center justify-center">
+            <button
+              onClick={() => setPreviewImageUrl(null)}
+              className="absolute -top-12 right-0 text-white bg-slate-800 hover:bg-slate-700 p-2 rounded-full transition-colors shadow-lg cursor-pointer flex items-center gap-1 text-xs font-bold px-3"
+            >
+              <X className="w-4 h-4" />
+              <span>Close Preview</span>
+            </button>
+            <img 
+              src={previewImageUrl} 
+              alt="Screenshot / Attachment Full Preview" 
+              className="max-w-full max-h-[85vh] object-contain rounded-xl shadow-2xl border border-slate-700" 
+              onClick={(e) => e.stopPropagation()}
+            />
+          </div>
+        </div>
+      )}
+
+    </aside>
+  );
+};
