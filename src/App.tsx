@@ -365,6 +365,10 @@ export default function App() {
   // WordPress site linked to the open project (members only; guests never see it)
   const [wpSite, setWpSite] = useState<WpSite | null>(null);
   const [showWordPressModal, setShowWordPressModal] = useState(false);
+  // Reload the live page after an AI fix is applied/undone; CSS of a fix being previewed
+  const [siteVersion, setSiteVersion] = useState(0);
+  const [previewCss, setPreviewCss] = useState<string | null>(null);
+  const isWorkspaceAdmin = !!authUser && ['Owner', 'Admin'].includes(normalizeRole(authUser.role));
   useEffect(() => {
     setWpSite(null);
     if (accessKey !== 'member' || !currentProject?.id) return;
@@ -1361,6 +1365,8 @@ export default function App() {
         {viewMode === 'studio' && (
           <>
             <AnnotationStudio
+              siteVersion={siteVersion}
+              previewCss={previewCss}
               currentProject={currentProject}
               currentAsset={currentAsset}
               onNavigatePage={handleNavigatePage}
@@ -1417,6 +1423,16 @@ export default function App() {
                       onUpdatePinQAError={handleUpdatePinQAError}
                       onDeletePin={handleDeletePin}
                       onDeleteComment={handleDeleteComment}
+                      wpFix={
+                        accessKey === 'member' && wpSite?.status === 'connected' && selectedPin
+                          ? {
+                              projectId: currentProject.id,
+                              isAdmin: isWorkspaceAdmin,
+                              onSiteChanged: () => setSiteVersion((v) => v + 1),
+                              onPreviewCss: setPreviewCss,
+                            }
+                          : undefined
+                      }
                       onClose={() => {
                         setIsSidebarOpen(false);
                         setSelectedPin(null);
@@ -1541,7 +1557,7 @@ export default function App() {
         project={currentProject}
         pageUrl={currentAsset?.type === 'url' ? currentAsset.url : undefined}
         site={wpSite}
-        isAdmin={!!authUser && ['Owner', 'Admin'].includes(normalizeRole(authUser.role))}
+        isAdmin={isWorkspaceAdmin}
       />
       <DomainSecurityModal
         isOpen={showDomainModal}

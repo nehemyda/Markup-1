@@ -11,7 +11,7 @@ import {
   orderBy
 } from 'firebase/firestore';
 import { db, firebaseConfig } from './firebase';
-import { Project, Pin, QARubricRule, Teammate, AuthUser, Folder, WpSite } from '../types';
+import { Project, Pin, QARubricRule, Teammate, AuthUser, Folder, WpSite, WpFix } from '../types';
 
 // One project (guests can only read the project in their link)
 export function subscribeProject(projectId: string, onUpdate: (project: Project | null) => void): () => void {
@@ -30,6 +30,18 @@ export function subscribeWpSite(projectId: string, onUpdate: (site: WpSite | nul
   }, (error) => {
     console.warn("WordPress site subscription error:", error);
     onUpdate(null);
+  });
+}
+
+// AI fix proposals for one pin, newest first
+export function subscribeWpFixes(pinId: string, onUpdate: (fixes: WpFix[]) => void): () => void {
+  return onSnapshot(query(collection(db, 'wpFixes'), where('pinId', '==', pinId)), (snap) => {
+    const fixes = snap.docs.map((d) => ({ ...(d.data() as WpFix), id: d.id }));
+    const time = (f: WpFix) => (f.proposedAt?.toMillis ? f.proposedAt.toMillis() : 0);
+    onUpdate(fixes.sort((a, b) => time(b) - time(a)));
+  }, (error) => {
+    console.warn("AI fixes subscription error:", error);
+    onUpdate([]);
   });
 }
 

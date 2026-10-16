@@ -81,6 +81,11 @@ service cloud.firestore {
     match /wpSiteSecrets/{siteId} {
       allow read, write: if false;
     }
+    // AI fix proposals: made, applied and undone by the server only
+    match /wpFixes/{fixId} {
+      allow read: if isMember();
+      allow write: if false;
+    }
 
     // Everything else is closed
     match /{document=**} {

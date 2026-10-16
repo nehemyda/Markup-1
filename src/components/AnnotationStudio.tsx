@@ -82,6 +82,10 @@ interface AnnotationStudioProps {
   viewport: PinDevice;
   onViewportChange: (device: PinDevice) => void;
   isGuest?: boolean;
+  // Bumped after a fix is applied or undone on the live site, to reload the page
+  siteVersion?: number;
+  // CSS of an AI fix being previewed (shown on the page only, nothing is saved)
+  previewCss?: string | null;
 }
 
 export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
@@ -106,6 +110,8 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
   viewport,
   onViewportChange,
   isGuest = false,
+  siteVersion = 0,
+  previewCss = null,
 }) => {
   const [mode, setMode] = useState<'browse' | 'comment'>('comment');
   const [zoom, setZoom] = useState<number>(100);
@@ -136,6 +142,25 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
   const canvasRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  // Show a CSS fix preview on the live page (re-added whenever the page reloads)
+  useEffect(() => {
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+    const apply = () => {
+      const doc = iframe.contentDocument;
+      if (!doc?.head) return;
+      doc.getElementById('webreview-fix-preview')?.remove();
+      if (!previewCss) return;
+      const style = doc.createElement('style');
+      style.id = 'webreview-fix-preview';
+      style.textContent = previewCss;
+      doc.head.appendChild(style);
+    };
+    apply();
+    iframe.addEventListener('load', apply);
+    return () => iframe.removeEventListener('load', apply);
+  }, [previewCss, currentAsset.url]);
   const stageRef = useRef<HTMLDivElement>(null);
 
   // Fixed render width per device; the stage is scaled down to fit the space available (then by the zoom control)
@@ -880,7 +905,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
                   ref={iframeRef}
                   src={
                     currentAsset.url.startsWith('http')
-                      ? `/api/proxy-site?url=${encodeURIComponent(currentAsset.url)}`
+                      ? `/api/proxy-site?url=${encodeURIComponent(currentAsset.url)}${siteVersion ? `&v=${siteVersion}` : ''}`
                       : currentAsset.url
                   }
                   title={currentAsset.title}

@@ -222,3 +222,30 @@ export interface WpSite {
   lastError?: string | null;
   connectedBy?: string;
 }
+
+// "Fix with AI" proposal for a pin on a connected WordPress page (created and changed by the server)
+export interface WpFix {
+  id: string;
+  projectId: string;
+  pinId: string;
+  pinNumber?: number;
+  pageUrl: string;
+  pageTitle?: string;
+  builder: string;
+  kind: 'elementor_settings' | 'content_replace' | 'css' | 'none';
+  status: 'proposed' | 'applying' | 'applied' | 'undoing' | 'reverted' | 'rejected' | 'stale' | 'not_possible';
+  summary: string;
+  explanation: string;
+  reason?: string;
+  elementId?: string;
+  elementType?: string;
+  settingsJson?: string;
+  beforeJson?: string;
+  find?: string;
+  replace?: string;
+  css?: string;
+  lastError?: string | null;
+  proposedBy?: { uid: string; name: string; email: string };
+  appliedBy?: { uid: string; name: string; email: string };
+  proposedAt?: any;
+}

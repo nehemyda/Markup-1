@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WebReview Connector
  * Description: Lets WebReview Pro read pages and apply approved fixes (Elementor, Divi, Gutenberg, site CSS) safely, with a backup before every change and one-click undo.
- * Version: 0.1.0
+ * Version: 0.2.0
  * Requires at least: 5.6
  * Requires PHP: 7.4
  * Author: YourDigitalAgents
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 	exit;
 }
 
-define('WEBREVIEW_CONNECTOR_VERSION', '0.1.0');
+define('WEBREVIEW_CONNECTOR_VERSION', '0.2.0');
 const WEBREVIEW_CAP = 'webreview_agent';
 const WEBREVIEW_SNAPSHOT_TYPE = 'webreview_snapshot';
 const WEBREVIEW_CSS_OPTION = 'webreview_custom_css';
@@ -131,6 +131,39 @@ function webreview_clear_elementor_css($post_id) {
 	}
 }
 
+// Fingerprint of what a change edits (page builder data, page content or site CSS). WebReview sends the fingerprint it
+// saw; if the page changed since, the change is refused instead of overwriting someone else's edit.
+function webreview_target_hash($kind, $post_id = 0) {
+	if ($kind === 'css') {
+		return md5((string) get_option(WEBREVIEW_CSS_OPTION, ''));
+	}
+	if ($kind === 'elementor') {
+		$raw = get_post_meta($post_id, '_elementor_data', true);
+		return md5(is_string($raw) ? $raw : wp_json_encode($raw));
+	}
+	$post = get_post($post_id);
+	return md5($post ? (string) $post->post_content : '');
+}
+
+function webreview_check_expected_hash(WP_REST_Request $request, $kind, $post_id = 0) {
+	$expected = (string) $request['expected_hash'];
+	if ($expected !== '' && !hash_equals(webreview_target_hash($kind, $post_id), $expected)) {
+		return new WP_Error('webreview_changed', 'The page changed after this fix was prepared. Prepare the fix again.', array('status' => 409));
+	}
+	return true;
+}
+
+// Text that ends up in the page: remove scripts and other unsafe HTML unless the user may post raw HTML
+function webreview_clean_settings($value) {
+	if (is_array($value)) {
+		return array_map('webreview_clean_settings', $value);
+	}
+	if (is_string($value) && !current_user_can('unfiltered_html')) {
+		return wp_kses_post($value);
+	}
+	return $value;
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Snapshots: a backup is taken before every change so any change can be undone.
 // ---------------------------------------------------------------------------------------------------------------------
@@ -164,6 +197,11 @@ function webreview_create_snapshot($kind, array $data, $summary, $request_id = '
 		update_post_meta($snapshot_id, '_webreview_request_id', sanitize_text_field($request_id));
 	}
 	return $snapshot_id;
+}
+
+// After a change: remember the fingerprint it produced, so undo can tell if someone edited the page since
+function webreview_mark_snapshot_applied($snapshot_id, $kind, $post_id = 0) {
+	update_post_meta($snapshot_id, '_webreview_after_hash', webreview_target_hash($kind, $post_id));
 }
 
 function webreview_snapshot_to_array($post) {
@@ -257,6 +295,9 @@ add_action('rest_api_init', function () {
 				'title' => get_the_title($post),
 				'builder' => $builder,
 				'modified' => get_post_modified_time('c', true, $post),
+				'hash' => webreview_target_hash($builder === 'elementor' ? 'elementor' : 'content', $post_id),
+				// WordPress adds this class to <body>, so CSS can be limited to this page
+				'body_class' => ($post->post_type === 'page' ? 'page-id-' : 'postid-') . $post_id,
 			);
 			if ($builder === 'elementor') {
 				$response['elementor'] = webreview_elementor_data($post_id);
@@ -283,6 +324,10 @@ add_action('rest_api_init', function () {
 			if (webreview_page_builder($post_id) !== 'elementor') {
 				return new WP_Error('webreview_wrong_builder', 'This page is not built with Elementor.', array('status' => 400));
 			}
+			$unchanged = webreview_check_expected_hash($request, 'elementor', $post_id);
+			if (is_wp_error($unchanged)) {
+				return $unchanged;
+			}
 			$raw_before = get_post_meta($post_id, '_elementor_data', true);
 			$data = webreview_elementor_data($post_id);
 			$element = &webreview_find_elementor_element($data, (string) $request['element_id']);
@@ -297,9 +342,10 @@ add_action('rest_api_init', function () {
 				return $snapshot_id;
 			}
 			$settings = isset($element['settings']) && is_array($element['settings']) ? $element['settings'] : array();
-			$element['settings'] = array_merge($settings, (array) $request['settings']);
+			$element['settings'] = array_merge($settings, webreview_clean_settings((array) $request['settings']));
 			update_post_meta($post_id, '_elementor_data', wp_slash(wp_json_encode($data)));
 			webreview_clear_elementor_css($post_id);
+			webreview_mark_snapshot_applied($snapshot_id, 'elementor', $post_id);
 			return array('ok' => true, 'snapshot_id' => $snapshot_id, 'element' => $element);
 		},
 	));
@@ -314,6 +360,10 @@ add_action('rest_api_init', function () {
 			if (webreview_page_builder($post_id) === 'elementor') {
 				return new WP_Error('webreview_wrong_builder', 'Elementor pages are edited per element.', array('status' => 400));
 			}
+			$unchanged = webreview_check_expected_hash($request, 'content', $post_id);
+			if (is_wp_error($unchanged)) {
+				return $unchanged;
+			}
 			$post = get_post($post_id);
 			$snapshot_id = webreview_create_snapshot('content', array(
 				'post_id' => $post_id,
@@ -326,6 +376,7 @@ add_action('rest_api_init', function () {
 			if (is_wp_error($result)) {
 				return $result;
 			}
+			webreview_mark_snapshot_applied($snapshot_id, 'content', $post_id);
 			return array('ok' => true, 'snapshot_id' => $snapshot_id);
 		},
 	));
@@ -336,7 +387,7 @@ add_action('rest_api_init', function () {
 			'methods' => 'GET',
 			'permission_callback' => 'webreview_permission',
 			'callback' => function () {
-				return array('css' => (string) get_option(WEBREVIEW_CSS_OPTION, ''));
+				return array('css' => (string) get_option(WEBREVIEW_CSS_OPTION, ''), 'hash' => webreview_target_hash('css'));
 			},
 		),
 		array(
@@ -344,6 +395,10 @@ add_action('rest_api_init', function () {
 			'permission_callback' => 'webreview_permission',
 			'args' => array('css' => array('required' => true, 'type' => 'string')),
 			'callback' => function (WP_REST_Request $request) {
+				$unchanged = webreview_check_expected_hash($request, 'css');
+				if (is_wp_error($unchanged)) {
+					return $unchanged;
+				}
 				$snapshot_id = webreview_create_snapshot('css', array(
 					'post_id' => 0,
 					'css' => (string) get_option(WEBREVIEW_CSS_OPTION, ''),
@@ -352,6 +407,7 @@ add_action('rest_api_init', function () {
 					return $snapshot_id;
 				}
 				update_option(WEBREVIEW_CSS_OPTION, wp_strip_all_tags((string) $request['css']), false);
+				webreview_mark_snapshot_applied($snapshot_id, 'css');
 				return array('ok' => true, 'snapshot_id' => $snapshot_id);
 			},
 		),
@@ -385,6 +441,14 @@ add_action('rest_api_init', function () {
 			$post_id = isset($data['post_id']) ? (int) $data['post_id'] : 0;
 			if ($post_id && !current_user_can('edit_post', $post_id)) {
 				return new WP_Error('webreview_forbidden', 'This user cannot edit that page.', array('status' => 403));
+			}
+			if (get_post_meta($snapshot->ID, '_webreview_reverted', true)) {
+				return new WP_Error('webreview_already_undone', 'This change was already undone.', array('status' => 409));
+			}
+			// Undo restores the whole page as it was; refuse if someone edited it after this change (unless forced)
+			$after_hash = (string) get_post_meta($snapshot->ID, '_webreview_after_hash', true);
+			if ($after_hash !== '' && empty($request['force']) && !hash_equals(webreview_target_hash($kind, $post_id), $after_hash)) {
+				return new WP_Error('webreview_changed', 'The page was edited after this change, so undoing it would also remove those later edits.', array('status' => 409));
 			}
 			if ($kind === 'elementor') {
 				update_post_meta($post_id, '_elementor_data', wp_slash($data['elementor_data']));

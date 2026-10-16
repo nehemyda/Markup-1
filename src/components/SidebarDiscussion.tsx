@@ -1,4 +1,5 @@
 import { apiFetch } from '../lib/api';
+import { WpFixPanel } from './WpFixPanel';
 import { filesToAttachments, rejectedFilesMessage } from '../lib/attachments';
 import React, { useState, useRef } from 'react';
 import { Pin, PinStatus, Teammate, Comment, Attachment, QARubricRule, QAPinError, FilterState } from '../types';
@@ -66,6 +67,13 @@ interface SidebarDiscussionProps {
   currentPageId?: string;
   isPinned?: boolean;
   onTogglePinned?: () => void;
+  // Set when the project is connected to WordPress: shows "Fix with AI" for members
+  wpFix?: {
+    projectId: string;
+    isAdmin: boolean;
+    onSiteChanged: () => void;
+    onPreviewCss: (css: string | null) => void;
+  };
 }
 
 export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
@@ -89,6 +97,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
   currentPageId = '',
   isPinned = true,
   onTogglePinned,
+  wpFix,
 }) => {
   const [commentInput, setCommentInput] = useState('');
   const [isRecording, setIsRecording] = useState(false);
@@ -307,9 +316,10 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
         }),
       });
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'The AI could not suggest a fix.');
       setAiFix(data);
-    } catch (err) {
-      console.error(err);
+    } catch (err: any) {
+      showToast(err.message || 'The AI could not suggest a fix.');
     } finally {
       setLoadingAi(null);
     }
@@ -702,6 +712,18 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
           </div>
         )}
 
+        {/* Fix with AI on the connected WordPress site (team only) */}
+        {!isGuest && wpFix && (
+          <WpFixPanel
+            projectId={wpFix.projectId}
+            pin={selectedPin}
+            isAdmin={wpFix.isAdmin}
+            currentUserId={currentUser.id}
+            onSiteChanged={wpFix.onSiteChanged}
+            onPreviewCss={wpFix.onPreviewCss}
+          />
+        )}
+
         {/* Assignee (hidden for guests: they never see the team list) */}
         {!isGuest && (
         <div className="bg-slate-50 border border-slate-200 p-2.5 rounded-lg space-y-1.5">
@@ -883,7 +905,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
             <span className="text-[10px] bg-indigo-100 px-1.5 py-0.5 rounded text-indigo-800 font-mono">v3.6</span>
           </div>
 
-          <div className="grid grid-cols-3 gap-1.5">
+          <div className={`grid gap-1.5 ${wpFix ? 'grid-cols-2' : 'grid-cols-3'}`}>
             <button
               onClick={handleRunAiSummary}
               disabled={loadingAi !== null}
@@ -902,6 +924,8 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
               <span>{loadingAi === 'ticket' ? 'Converting...' : 'Dev Ticket'}</span>
             </button>
 
+            {/* On WordPress projects "Fix with AI" above replaces this */}
+            {!wpFix && (
             <button
               onClick={handleRunAiFix}
               disabled={loadingAi !== null}
@@ -910,6 +934,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
               <Terminal className="w-3.5 h-3.5 text-emerald-600" />
               <span>{loadingAi === 'fix' ? 'Suggesting...' : 'Suggest Fix'}</span>
             </button>
+            )}
           </div>
 
           {/* AI Output Panes */}

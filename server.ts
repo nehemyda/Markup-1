@@ -1,9 +1,10 @@
 import express from 'express';
 import crypto from 'crypto';
 import { adminAuth, adminDb } from './server/firebaseAdmin';
-import { checkAccess, startSession } from './server/access';
+import { checkAccess, isAdminRole, startSession } from './server/access';
 import { requireAdmin, requireMember, requireSignedIn, AuthedRequest } from './server/auth';
 import { checkSite, connectSite, disconnectSite, resolvePage, WpError } from './server/wordpress';
+import { applyFix, prepareFix, rejectFix, undoFix, PinTarget } from './server/wpFixes';
 import { logAudit } from './server/audit';
 import { addProjectIdToPins } from './server/migrations';
 import path from 'path';
@@ -84,6 +85,47 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
   process.once(signal, () => {
     closeBrowser().finally(() => process.exit(0));
   });
+}
+
+// What the page shows under a pin: open the page fresh (not from the snippet cache, it may have just been edited)
+// and read the element at the pin's saved CSS selector, plus the Elementor element it belongs to
+async function inspectPinTarget(url: string, width: number, selector: string): Promise<PinTarget | null> {
+  const browser = await getBrowser();
+  const page = await browser.newPage();
+  try {
+    await page.setViewport({ width, height: 900 });
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+    return await page.evaluate((sel: string) => {
+      let el: Element | null = null;
+      try { el = document.querySelector(sel); } catch { return null; }
+      if (!el) return null;
+      const st = getComputedStyle(el);
+      const styles: Record<string, string> = {};
+      for (const prop of ['color', 'backgroundColor', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'textAlign', 'padding', 'margin', 'width', 'height', 'borderRadius']) {
+        styles[prop] = (st as any)[prop];
+      }
+      const parents: string[] = [];
+      let node = el.closest('.elementor-element[data-id]');
+      const own = node?.getAttribute('data-id') || null;
+      const ownType = node ? (node.getAttribute('data-widget_type') || node.getAttribute('data-element_type')) : null;
+      while (node && parents.length < 4) {
+        node = node.parentElement?.closest('.elementor-element[data-id]') || null;
+        if (node) parents.push(node.getAttribute('data-id')!);
+      }
+      return {
+        tag: el.tagName.toLowerCase(),
+        text: ((el as HTMLElement).innerText || '').trim().slice(0, 400),
+        html: el.outerHTML.slice(0, 1500),
+        classes: typeof el.className === 'string' ? el.className : '',
+        styles,
+        elementorId: own,
+        elementorType: ownType,
+        elementorParents: parents,
+      };
+    }, selector);
+  } finally {
+    await page.close().catch(() => {});
+  }
 }
 
 // Reuse a loaded page for the same URL + width so repeated snippets are fast
@@ -195,6 +237,61 @@ async function startServer() {
       const result = await disconnectSite(projectId);
       await logAudit(req, 'wordpress.disconnect', { projectId, keyRevoked: result.revoked });
       res.json(result);
+    } catch (err) {
+      wpFail(res, err);
+    }
+  });
+
+  // ---------- Fix with AI (members ask for a fix; admins apply, undo; admins or the asker dismiss) ----------
+
+  const actorOf = (req: AuthedRequest) => ({
+    uid: req.token!.uid,
+    email: req.member?.email || req.token?.email || '',
+    name: req.member?.name || req.token?.email || 'Member',
+  });
+
+  app.post('/api/wp/:projectId/fixes', requireMember, async (req: AuthedRequest, res) => {
+    const { projectId } = req.params;
+    const pinId = String(req.body?.pinId || '');
+    try {
+      const fix = await prepareFix({ projectId, pinId, actor: actorOf(req), ai: getAIClient(), inspect: inspectPinTarget });
+      await logAudit(req, 'wordpress.fix_prepared', { projectId, pinId, fixId: fix.id, kind: fix.kind });
+      res.json({ fix });
+    } catch (err) {
+      if (!(err instanceof WpError)) console.error('Fix with AI failed:', err);
+      wpFail(res, err instanceof WpError ? err : new WpError('The AI could not prepare a fix. Try again.', 502));
+    }
+  });
+
+  app.post('/api/wp/:projectId/fixes/:fixId/apply', requireAdmin, async (req: AuthedRequest, res) => {
+    const { projectId, fixId } = req.params;
+    try {
+      const result = await applyFix(projectId, fixId, actorOf(req));
+      await logAudit(req, 'wordpress.fix_applied', { projectId, fixId, snapshotId: result.snapshotId });
+      res.json(result);
+    } catch (err) {
+      await logAudit(req, 'wordpress.fix_apply_failed', { projectId, fixId, error: (err as Error).message });
+      wpFail(res, err);
+    }
+  });
+
+  app.post('/api/wp/:projectId/fixes/:fixId/undo', requireAdmin, async (req: AuthedRequest, res) => {
+    const { projectId, fixId } = req.params;
+    try {
+      await undoFix(projectId, fixId, actorOf(req), req.body?.force === true);
+      await logAudit(req, 'wordpress.fix_undone', { projectId, fixId, forced: req.body?.force === true });
+      res.json({ ok: true });
+    } catch (err) {
+      wpFail(res, err);
+    }
+  });
+
+  app.post('/api/wp/:projectId/fixes/:fixId/reject', requireMember, async (req: AuthedRequest, res) => {
+    const { projectId, fixId } = req.params;
+    try {
+      await rejectFix(projectId, fixId, actorOf(req), isAdminRole(req.member?.role));
+      await logAudit(req, 'wordpress.fix_dismissed', { projectId, fixId });
+      res.json({ ok: true });
     } catch (err) {
       wpFail(res, err);
     }
@@ -373,16 +470,9 @@ Provide an instant technical fix or copywriting alternative. If it's a styling/U
         return res.json(JSON.parse(text));
       }
     } catch (error: any) {
-      console.warn('AI Suggest Fix Error (falling back to code snippet):', error?.message || error);
+      console.warn('AI Suggest Fix Error:', error?.message || error);
     }
-
-    // Fallback code fix response
-    return res.json({
-      fixType: 'code_snippet',
-      explanation: 'Apply high-contrast Tailwind classes with smooth transitions and explicit focus rings for WCAG 2.1 AA accessibility.',
-      codeOrCopy: 'className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-5 py-2.5 rounded-xl shadow-md transition-all focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 hover:-translate-y-0.5 cursor-pointer"',
-      additionalTip: 'Ensure interactive touch targets maintain a minimum hit box of 44px by 44px on mobile break points.'
-    });
+    return res.status(503).json({ error: 'The AI could not suggest a fix right now. Try again.' });
   });
 
   // 4. AI Automated Website Auditor

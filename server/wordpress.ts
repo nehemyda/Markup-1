@@ -124,7 +124,7 @@ export async function wpRequest<T = any>(creds: WpCredentials, route: string, in
       throw new WpError('WordPress did not accept the username or Application Password.', 401);
     }
     if (code === 'rest_no_route') throw new WpError('The WebReview Connector plugin is not installed or not active on this site.', 404);
-    if (res.status === 403 && route.startsWith('/webreview/v1/')) {
+    if (code === 'webreview_forbidden' && /not allowed to use/.test(data?.message || '')) {
       throw new WpError('This WordPress user is not allowed yet. A WordPress admin can allow it under Settings → WebReview Connector.', 403);
     }
     throw new WpError(data?.message || `WordPress returned an error (${res.status}).`, res.status >= 500 ? 502 : res.status);
