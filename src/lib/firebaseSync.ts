@@ -10,7 +10,7 @@ import {
   orderBy
 } from 'firebase/firestore';
 import { db, firebaseConfig } from './firebase';
-import { Project, Pin, QARubricRule, Teammate, AuthUser } from '../types';
+import { Project, Pin, QARubricRule, Teammate, AuthUser, Folder } from '../types';
 
 export interface FirebaseConnectionInfo {
   isConnected: boolean;
@@ -254,5 +254,37 @@ export async function removeMember(id: string): Promise<void> {
     }
   } catch (err) {
     console.warn("Failed removing member in Firestore:", err);
+  }
+}
+
+// ---------- Folders (group projects, e.g. per partner) ----------
+export function subscribeFolders(onFoldersUpdate: (folders: Folder[]) => void): () => void {
+  try {
+    return onSnapshot(collection(db, 'folders'), (snapshot) => {
+      const folders: Folder[] = [];
+      snapshot.forEach((docSnap) => folders.push({ ...(docSnap.data() as Folder), id: docSnap.id }));
+      onFoldersUpdate(folders);
+    }, (error) => {
+      console.warn("Folders Firestore subscription error:", error);
+    });
+  } catch (e) {
+    console.warn("Failed to subscribe to folders collection:", e);
+    return () => {};
+  }
+}
+
+export async function saveFolder(folder: Folder): Promise<void> {
+  try {
+    await setDoc(doc(db, 'folders', folder.id), folder, { merge: true });
+  } catch (err) {
+    console.warn("Failed saving folder to Firestore:", err);
+  }
+}
+
+export async function deleteFolderDoc(folderId: string): Promise<void> {
+  try {
+    await deleteDoc(doc(db, 'folders', folderId));
+  } catch (err) {
+    console.warn("Failed deleting folder from Firestore:", err);
   }
 }

@@ -1,8 +1,10 @@
 import { Pin } from '../types';
 
-// Next pin number on an asset: one past the highest existing number, so deleted pins never cause duplicates
-export function nextPinNumber(pins: Pin[], assetId: string): number {
-  return pins.filter((p) => p.assetId === assetId).reduce((max, p) => Math.max(max, p.number || 0), 0) + 1;
+// Next pin number for a project: one past the highest number on any of its pages (and devices), so numbers run
+// continuously across the whole website and deleted pins never cause duplicates
+export function nextPinNumber(pins: Pin[], pageIds: string | string[]): number {
+  const ids = new Set(Array.isArray(pageIds) ? pageIds : [pageIds]);
+  return pins.filter((p) => ids.has(p.assetId)).reduce((max, p) => Math.max(max, p.number || 0), 0) + 1;
 }
 
 export type PinDevice = 'desktop' | 'tablet' | 'mobile';

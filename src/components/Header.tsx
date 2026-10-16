@@ -1,7 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Project, ViewMode, Teammate, Asset, AuthUser, Organization, NotificationItem } from '../types';
 import { UserAvatar } from './UserAvatar';
-import { firebaseConfig, useEmulator } from '../lib/firebase';
 import { 
   Layers, 
   Kanban, 
@@ -96,15 +95,11 @@ export const Header: React.FC<HeaderProps> = ({
   const [showAssetDropdown, setShowAssetDropdown] = useState(false);
   const [showUserDropdown, setShowUserDropdown] = useState(false);
   const [showNotificationDropdown, setShowNotificationDropdown] = useState(false);
-  const [showTeamDropdown, setShowTeamDropdown] = useState(false);
-  const [teamSearchQuery, setTeamSearchQuery] = useState('');
-  const [copiedEmailId, setCopiedEmailId] = useState<string | null>(null);
 
   const notificationRef = useRef<HTMLDivElement>(null);
   const userRef = useRef<HTMLDivElement>(null);
-  const teamRef = useRef<HTMLDivElement>(null);
 
-  // Click outside listener for Popovers (Notifications, User profile, Team directory)
+  // Click outside listener for Popovers (Notifications, User profile)
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Node;
@@ -114,9 +109,6 @@ export const Header: React.FC<HeaderProps> = ({
       if (userRef.current && !userRef.current.contains(target)) {
         setShowUserDropdown(false);
       }
-      if (teamRef.current && !teamRef.current.contains(target)) {
-        setShowTeamDropdown(false);
-      }
     };
 
     document.addEventListener('mousedown', handleClickOutside);
@@ -124,23 +116,6 @@ export const Header: React.FC<HeaderProps> = ({
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, []);
-
-  const handleCopyEmail = (email: string, id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    navigator.clipboard.writeText(email);
-    setCopiedEmailId(id);
-    setTimeout(() => setCopiedEmailId(null), 2000);
-  };
-
-  const filteredTeammates = teammates.filter((tm) => {
-    const q = teamSearchQuery.toLowerCase().trim();
-    if (!q) return true;
-    return (
-      tm.name.toLowerCase().includes(q) ||
-      tm.email.toLowerCase().includes(q) ||
-      tm.role.toLowerCase().includes(q)
-    );
-  });
 
   const getAssetIcon = (type: Asset['type']) => {
     switch (type) {
@@ -270,156 +245,9 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Right Controls */}
         <div className="flex items-center gap-2.5">
-          {/* Firebase Connection Status Badge */}
-          <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/10 border border-amber-500/30 text-amber-700 rounded-lg text-xs font-bold" title={useEmulator ? `Connected to the local Firebase Emulator (${firebaseConfig.projectId})` : `Connected to Firebase Cloud Firestore (${firebaseConfig.projectId})`}>
-            <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
-            <span className="text-[11px]">Firebase: <span className="font-extrabold text-amber-900">{useEmulator ? 'Local Emulator' : firebaseConfig.projectId}</span></span>
-          </div>
-
-          {/* Active Collaborators & Share (Only shown inside studio views, not for guests) */}
+          {/* Share (only inside a project, not for guests) */}
           {viewMode !== 'dashboard' && !isGuestMode && (
             <>
-              {/* Interactive Teammate Avatars Stack */}
-              <div ref={teamRef} className="relative shrink-0">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowTeamDropdown(!showTeamDropdown);
-                    setShowNotificationDropdown(false);
-                    setShowUserDropdown(false);
-                  }}
-                  className="hidden sm:flex items-center -space-x-2 overflow-hidden mr-1 p-1 rounded-xl hover:bg-slate-100 border border-transparent hover:border-slate-200 transition-all cursor-pointer group"
-                  title="Click to view Active Team Members & Directory"
-                >
-                  {teammates.slice(0, 4).map((tm) => (
-                    <div
-                      key={tm.id}
-                      className="relative inline-block w-8 h-8 rounded-full border-2 border-white overflow-hidden shadow-xs group-hover:scale-105 transition-transform shrink-0"
-                    >
-                      <img src={tm.avatar} alt={tm.name} className="w-full h-full object-cover" />
-                      <span 
-                        className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border border-white ${
-                          tm.status === 'online' ? 'bg-emerald-500' : tm.status === 'busy' ? 'bg-amber-500' : 'bg-slate-400'
-                        }`}
-                      />
-                    </div>
-                  ))}
-                  {teammates.length > 4 && (
-                    <div className="w-8 h-8 rounded-full bg-indigo-50 text-indigo-700 border-2 border-white flex items-center justify-center text-[10px] font-extrabold shadow-xs">
-                      +{teammates.length - 4}
-                    </div>
-                  )}
-                </button>
-
-                {/* Team Collaborators Directory Popover */}
-                {showTeamDropdown && (
-                  <div className="absolute right-0 top-full mt-2 w-80 sm:w-96 bg-white border border-slate-200 rounded-2xl shadow-2xl z-50 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-150 text-slate-900">
-                    
-                    {/* Popover Header */}
-                    <div className="p-3 bg-slate-900 text-white flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <Users className="w-4 h-4 text-indigo-400" />
-                        <div>
-                          <div className="text-xs font-extrabold text-white">Team Directory & Online Presence</div>
-                          <div className="text-[10px] text-slate-400">{teammates.length} {teammates.length === 1 ? 'Member' : 'Members'}</div>
-                        </div>
-                      </div>
-                      <button 
-                        onClick={() => setShowTeamDropdown(false)}
-                        className="p-1 text-slate-400 hover:text-white rounded-lg transition-colors cursor-pointer"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    </div>
-
-                    {/* Search Bar */}
-                    <div className="p-2.5 bg-slate-50 border-b border-slate-200">
-                      <div className="relative">
-                        <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-400" />
-                        <input
-                          type="text"
-                          value={teamSearchQuery}
-                          onChange={(e) => setTeamSearchQuery(e.target.value)}
-                          placeholder="Search members by name, email, role..."
-                          className="w-full bg-white border border-slate-300 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-indigo-600 shadow-xs"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Member List */}
-                    <div className="max-h-72 overflow-y-auto divide-y divide-slate-100 p-1">
-                      {filteredTeammates.length > 0 ? (
-                        filteredTeammates.map((tm) => (
-                          <div
-                            key={tm.id}
-                            className="p-2 rounded-lg hover:bg-slate-50 flex items-center justify-between gap-2 transition-colors group/item"
-                          >
-                            <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                              <div className="relative shrink-0">
-                                <img
-                                  src={tm.avatar}
-                                  alt={tm.name}
-                                  className="w-8 h-8 rounded-full object-cover border border-slate-200"
-                                />
-                                <span
-                                  className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border border-white ${
-                                    tm.status === 'online' ? 'bg-emerald-500' : 'bg-amber-500'
-                                  }`}
-                                />
-                              </div>
-                              <div className="min-w-0 flex-1">
-                                <div className="text-xs font-bold text-slate-900 truncate flex items-center gap-1.5">
-                                  <span className="truncate">{tm.name}</span>
-                                  <span className="text-[9px] bg-slate-100 text-slate-600 border border-slate-200 px-1.5 py-0.2 rounded font-bold uppercase shrink-0">
-                                    {tm.role}
-                                  </span>
-                                </div>
-                                <div className="text-[10px] text-slate-400 font-mono truncate">{tm.email}</div>
-                              </div>
-                            </div>
-
-                            <button
-                              type="button"
-                              onClick={(e) => handleCopyEmail(tm.email, tm.id, e)}
-                              className="p-1.5 rounded-md hover:bg-slate-200 text-slate-500 hover:text-slate-900 transition-colors text-[10px] font-semibold flex items-center gap-1 shrink-0 cursor-pointer"
-                              title="Copy Email Address"
-                            >
-                              {copiedEmailId === tm.id ? (
-                                <Check className="w-3.5 h-3.5 text-emerald-600" />
-                              ) : (
-                                <Copy className="w-3.5 h-3.5 text-slate-400 group-hover/item:text-slate-700" />
-                              )}
-                            </button>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="p-6 text-center text-xs text-slate-500">
-                          No team members found matching "{teamSearchQuery}".
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Footer */}
-                    <div className="p-2.5 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-xs">
-                      <span className="text-[10px] text-slate-500 font-semibold">
-                        Showing {filteredTeammates.length} members
-                      </span>
-                      <button
-                        onClick={() => {
-                          setShowTeamDropdown(false);
-                          onOpenShareModal();
-                        }}
-                        className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] px-3 py-1 rounded-lg flex items-center gap-1 transition-colors cursor-pointer shadow-xs"
-                      >
-                        <UserPlus className="w-3.5 h-3.5" />
-                        <span>Invite Teammates</span>
-                      </button>
-                    </div>
-
-                  </div>
-                )}
-              </div>
-
               <button
                 onClick={onOpenShareModal}
                 className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-3.5 py-1.5 rounded-md shadow-sm transition-colors shrink-0 cursor-pointer"

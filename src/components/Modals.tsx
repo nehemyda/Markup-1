@@ -508,3 +508,4 @@ export const GuestNameModal: React.FC<{
     </div>
   );
 };
+

@@ -1,3 +1,4 @@
+import { compressImage } from '../lib/attachments';
 import React, { useState, useEffect, useRef } from 'react';
 import { UserAvatar } from './UserAvatar';
 import { getGoogleWorkspaceAvatarUrl } from '../utils/avatar';
@@ -88,14 +89,18 @@ export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      if (file.size > 5 * 1024 * 1024) {
-        alert('File size exceeds 5MB limit. Please select a smaller image file.');
+      if (!file.type.startsWith('image/')) {
+        alert('Please choose an image file.');
         return;
       }
+      // The avatar is copied into every pin and comment, so keep it small: 256px JPEG (about 15 KB)
       const reader = new FileReader();
-      reader.onload = (event) => {
-        if (event.target?.result) {
-          setAvatar(event.target.result as string);
+      reader.onload = async (event) => {
+        if (!event.target?.result) return;
+        try {
+          setAvatar(await compressImage(event.target.result as string, 0.85, 256));
+        } catch {
+          alert('Could not read this image. Please try another one.');
         }
       };
       reader.readAsDataURL(file);

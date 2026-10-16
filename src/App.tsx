@@ -16,7 +16,8 @@ import {
   Organization,
   NotificationItem,
   QARubricRule,
-  QAPinError
+  QAPinError,
+  Folder
 } from './types';
 import { 
   INITIAL_PROJECTS, 
@@ -31,6 +32,9 @@ import {
   deletePinFromFirestore, 
   deletePinsForAssets,
   subscribeTeam,
+  subscribeFolders,
+  saveFolder,
+  deleteFolderDoc,
   inviteMember,
   updateMemberRole,
   removeMember,
@@ -167,11 +171,22 @@ export default function App() {
       setIsSidebarOpen(true);
       // Opening a pin from a link, notification, Kanban or Table shows it on its own device
       setDevice(pinDevice(selectedPin));
+      // ...under the matching Active / Resolved tab
+      const resolved = selectedPin.status === 'resolved' || selectedPin.status === 'archived';
+      setFilterState((prev) => (prev.showResolved === resolved ? prev : { ...prev, showResolved: resolved }));
+      // ...and on its own page (the sidebar lists comments from every page of the website)
+      if (selectedPin.assetId !== currentAsset.id) {
+        const page = projects.flatMap((p) => p.assets || []).find((a) => a.id === selectedPin.assetId);
+        if (page) setCurrentAsset(page);
+      }
     }
   }, [selectedPin?.id]);
   const [activityLogs, setActivityLogs] = useState<ActivityItem[]>([]);
   // Teammates are the real signed-up users (Firestore users collection), see subscribeUsers below
   const [teammates, setTeammates] = useState<Teammate[]>([]);
+  // Folders group projects (e.g. per partner); currentFolderId is the folder open on the dashboard
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
 
   // Notifications State
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
@@ -256,6 +271,8 @@ export default function App() {
       }
     });
 
+    const unsubFolders = subscribeFolders(setFolders);
+
     const unsubTeam = subscribeTeam((team) => {
       setTeammates(team);
       // Keep the signed-in user's role in step when an admin changes it
@@ -269,6 +286,7 @@ export default function App() {
       unsubProjects();
       unsubPins();
       unsubTeam();
+      unsubFolders();
     };
   }, []);
 
@@ -331,6 +349,7 @@ export default function App() {
     if (!route.projectId) {
       setViewMode('dashboard');
       setDashboardTab(route.dashboardTab || 'dashboard');
+      setCurrentFolderId(route.folderId || null);
       if (route.settingsSubTab) setSettingsSubTab(route.settingsSubTab);
       setSelectedPin(null);
       return;
@@ -343,7 +362,15 @@ export default function App() {
       setDashboardTab('dashboard');
       return;
     }
-    const asset = project.assets?.find((a) => a.id === route.assetId) || project.assets?.[0];
+    // Page: ?page=<path> (may be a page nobody has commented on yet), or the older ?asset=<id>
+    const startPage = project.assets?.[0];
+    let asset = project.assets?.find((a) => a.id === route.assetId) || startPage;
+    if (route.pagePath && startPage) {
+      const target = new URL(route.pagePath, startPage.url).href;
+      asset =
+        project.assets.find((a) => normalizePageUrl(a.url) === normalizePageUrl(target)) ||
+        makePage(new URL(target), project.id);
+    }
     setCurrentProject(project);
     if (asset) setCurrentAsset(asset);
     setViewMode(route.viewMode);
@@ -399,8 +426,9 @@ export default function App() {
       viewMode: inProject ? viewMode : 'dashboard',
       dashboardTab,
       settingsSubTab,
+      folderId: currentFolderId,
       projectId: inProject ? currentProject.id : undefined,
-      assetId: currentAsset?.id,
+      pagePath: pagePathOf(currentAsset?.url),
       isFirstAsset: currentProject.assets?.[0]?.id === currentAsset?.id,
       pinId: inProject ? selectedPin?.id : undefined,
       device,
@@ -413,7 +441,7 @@ export default function App() {
     const isLegacyLink = new URLSearchParams(window.location.search).has('project');
     if (samePage || isLegacyLink) window.history.replaceState(null, '', path);
     else window.history.pushState(null, '', path);
-  }, [routeReady, viewMode, dashboardTab, settingsSubTab, currentProject.id, currentAsset?.id, selectedPin?.id, device, projects]);
+  }, [routeReady, viewMode, dashboardTab, settingsSubTab, currentProject.id, currentAsset?.id, selectedPin?.id, device, projects, currentFolderId]);
 
   const handleNavigateDashboardTab = (tab: 'dashboard' | 'archive' | 'team' | 'settings' = 'dashboard') => {
     setDashboardTab(tab);
@@ -474,6 +502,7 @@ export default function App() {
     };
 
     const newProject: Project = {
+      folderId: currentFolderId,
       id: projId,
       name: domainTitle,
       client: 'YourDigitalAgents Enterprise',
@@ -507,7 +536,7 @@ export default function App() {
     priority: 'all',
     assigneeId: 'all',
     search: '',
-    showResolved: true,
+    showResolved: false,
   });
 
   // Modal toggles
@@ -535,42 +564,64 @@ export default function App() {
     setSelectedPin(null);
   };
 
-  // Add a page (another URL of the website) to the current project, or switch to it if it is already there.
-  // Each page keeps its own pins.
-  const handleAddPage = (rawUrl: string) => {
+  // ---------- Pages (URLs of the website) in the current project; each page keeps its own pins ----------
+  const pagePathOf = (url?: string) => {
+    try {
+      const u = new URL(url || '');
+      return u.pathname + u.search;
+    } catch {
+      return undefined;
+    }
+  };
+  const normalizePageUrl = (u: string) => u.replace(/#.*$/, '').replace(/\/+$/, '').toLowerCase();
+  const parsePageUrl = (rawUrl: string): URL | null => {
     let url = rawUrl.trim();
     if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
-    let parsed: URL;
     try {
-      parsed = new URL(url);
+      const parsed = new URL(url);
+      parsed.hash = '';
+      return parsed;
     } catch {
-      alert('That does not look like a valid page URL.');
-      return;
+      return null;
     }
-    const normalize = (u: string) => u.replace(/\/+$/, '').toLowerCase();
-    const existing = currentProject.assets.find((a) => normalize(a.url) === normalize(parsed.href));
-    if (existing) {
-      setCurrentAsset(existing);
-      setSelectedPin(null);
-      return;
-    }
-    const isImage = /\.(jpe?g|png|gif|svg|webp)$/i.test(parsed.pathname);
-    const newPage: Asset = {
-      id: `asset_${Date.now()}`,
-      projectId: currentProject.id,
-      title: parsed.pathname === '/' ? parsed.hostname : parsed.pathname,
-      type: isImage ? 'image' : 'url',
-      url: parsed.href,
-      status: 'in_review',
-      pinCount: 0,
-      resolvedCount: 0,
-    };
-    const updatedProject = { ...currentProject, assets: [...currentProject.assets, newPage] };
+  };
+  const makePage = (parsed: URL, projectId = currentProject.id): Asset => ({
+    id: `asset_${Date.now()}`,
+    projectId,
+    title: parsed.pathname === '/' ? parsed.hostname : parsed.pathname,
+    type: /\.(jpe?g|png|gif|svg|webp)$/i.test(parsed.pathname) ? 'image' : 'url',
+    url: parsed.href,
+    status: 'in_review',
+    pinCount: 0,
+    resolvedCount: 0,
+  });
+
+  // Every page of the current project (plus the page being browsed): pin numbers and counts span all of them
+  const projectPageIds = [...(currentProject.assets || []).map((a) => a.id), currentAsset.id];
+
+  // Browsing works like Markup.io: following a link just shows that page. A page is only saved to the
+  // project once someone drops a pin on it (see ensurePageSaved), so no page list has to be managed.
+  const findPage = (url: string) =>
+    currentProject.assets.find((a) => normalizePageUrl(a.url) === normalizePageUrl(url));
+
+  const openPageUrl = (url: string) => {
+    const parsed = parsePageUrl(url);
+    if (!parsed) return;
+    const page = findPage(parsed.href) || makePage(parsed);
+    setCurrentAsset(page);
+    setSelectedPin(null);
+  };
+
+  // A link was clicked inside the page (Browse mode)
+  const handleNavigatePage = (url: string) => openPageUrl(url);
+
+  // Save the current page to the project if it is not there yet (first pin on a newly browsed page)
+  const ensurePageSaved = (page: Asset) => {
+    if (currentProject.assets.some((a) => a.id === page.id)) return;
+    const updatedProject = { ...currentProject, assets: [...currentProject.assets, page] };
     setProjects((prev) => prev.map((p) => (p.id === updatedProject.id ? updatedProject : p)));
     saveProjectToFirestore(updatedProject);
     setCurrentProject(updatedProject);
-    setCurrentAsset(newPage);
-    setSelectedPin(null);
   };
 
   // Add a new annotation pin
@@ -587,7 +638,8 @@ export default function App() {
     viewportWidth?: number;
     selector?: string;
   }) => {
-    const nextNum = nextPinNumber(pins, currentAsset.id);
+    ensurePageSaved(currentAsset);
+    const nextNum = nextPinNumber(pins, projectPageIds);
     const assignee = teammates.find((t) => t.id === pinData.assigneeId);
 
     const pinId = `pin_${Date.now()}`;
@@ -773,6 +825,7 @@ export default function App() {
         alert('The AI review found no clear issues on this page.');
         return;
       }
+      ensurePageSaved(currentAsset);
 
       const aiReviewer: Teammate = {
         id: 'ai_gemini',
@@ -784,7 +837,7 @@ export default function App() {
         cursorColor: '#F59E0B',
       };
       const viewport = snapshot.kind === 'page' ? `${snapshot.pageWidth}x${snapshot.pageHeight}` : 'Image';
-      const firstNumber = nextPinNumber(pins, currentAsset.id);
+      const firstNumber = nextPinNumber(pins, projectPageIds);
       const stamp = Date.now();
 
       const newPins: Pin[] = findings.map((item, idx) => {
@@ -845,6 +898,43 @@ export default function App() {
     }
   };
 
+  // ---------- Folders ----------
+  const handleCreateFolder = (name: string) => {
+    const folder: Folder = {
+      id: `folder_${Date.now()}`,
+      name: name.trim() || 'Untitled folder',
+      createdAt: new Date().toISOString(),
+      createdBy: currentUser.id,
+    };
+    setFolders((prev) => [...prev, folder]);
+    saveFolder(folder);
+    return folder;
+  };
+
+  const handleRenameFolder = (folderId: string, name: string) => {
+    const folder = folders.find((f) => f.id === folderId);
+    if (!folder || !name.trim()) return;
+    const updated = { ...folder, name: name.trim() };
+    setFolders((prev) => prev.map((f) => (f.id === folderId ? updated : f)));
+    saveFolder(updated);
+  };
+
+  const handleMoveProject = (projectId: string, folderId: string | null) => {
+    const project = projects.find((p) => p.id === projectId);
+    if (!project) return;
+    const updated = { ...project, folderId };
+    setProjects((prev) => prev.map((p) => (p.id === projectId ? updated : p)));
+    saveProjectToFirestore(updated);
+  };
+
+  // Deleting a folder keeps its projects: they move back to the main list
+  const handleDeleteFolder = (folderId: string) => {
+    projects.filter((p) => p.folderId === folderId).forEach((p) => handleMoveProject(p.id, null));
+    setFolders((prev) => prev.filter((f) => f.id !== folderId));
+    deleteFolderDoc(folderId);
+    if (currentFolderId === folderId) setCurrentFolderId(null);
+  };
+
   // Create Project
   const handleCreateProject = (
     name: string,
@@ -886,6 +976,7 @@ export default function App() {
     };
 
     const newProj: Project = {
+      folderId: currentFolderId,
       id: projId,
       name,
       client,
@@ -1054,6 +1145,16 @@ export default function App() {
     return <AuthPage notice={authNotice} />;
   }
 
+  // Until the page in the address bar has been opened, show a neutral loading screen. Otherwise the dashboard
+  // (the starting view) flashes for a moment, which for a guest would briefly reveal the list of all projects.
+  if (!routeReady) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <span className="w-8 h-8 border-2 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin" />
+      </div>
+    );
+  }
+
   const effectiveGuestMode = isGuestMode || (!authUser && isGuestShareLink);
 
   const headerUser: AuthUser | undefined = authUser ? authUser : effectiveGuestMode ? {
@@ -1181,6 +1282,13 @@ export default function App() {
             onUpdateBranding={handleUpdateBranding}
             projects={projects}
             pins={pins}
+            folders={folders}
+            currentFolderId={currentFolderId}
+            onOpenFolder={setCurrentFolderId}
+            onCreateFolder={handleCreateFolder}
+            onRenameFolder={handleRenameFolder}
+            onDeleteFolder={handleDeleteFolder}
+            onMoveProject={handleMoveProject}
             onSelectProject={handleSelectProject}
             onSelectAsset={handleSelectAsset}
             onOpenNewProjectModal={() => setShowNewProjectModal(true)}
@@ -1234,9 +1342,8 @@ export default function App() {
             <AnnotationStudio
               currentProject={currentProject}
               currentAsset={currentAsset}
-              pages={currentProject.assets || []}
-              onSelectPage={handleSelectAsset}
-              onAddPage={handleAddPage}
+              onNavigatePage={handleNavigatePage}
+              projectPageIds={projectPageIds}
               pins={pins}
               selectedPin={selectedPin}
               onSelectPin={setSelectedPin}
@@ -1267,7 +1374,16 @@ export default function App() {
                     }
                   >
                     <SidebarDiscussion
-                      pins={pins.filter((p) => p.assetId === currentAsset.id && pinDevice(p) === device)}
+                      pins={pins.filter(
+                        (p) => (currentProject.assets.some((a) => a.id === p.assetId) || p.assetId === currentAsset.id) && pinDevice(p) === device
+                      )}
+                      pages={[
+                        ...currentProject.assets,
+                        ...(currentProject.assets.some((a) => a.id === currentAsset.id) ? [] : [currentAsset]),
+                      ]}
+                      currentPageId={currentAsset.id}
+                      filterState={filterState}
+                      onUpdateFilter={handleUpdateFilter}
                       selectedPin={selectedPin}
                       onSelectPin={setSelectedPin}
                       onUpdatePinStatus={handleUpdatePinStatus}
@@ -1283,6 +1399,8 @@ export default function App() {
                       onClose={() => {
                         setIsSidebarOpen(false);
                         setSelectedPin(null);
+                        // Filters live in the sidebar; clear them when it closes so no pins stay hidden
+                        handleUpdateFilter({ category: 'all', search: '', showResolved: false });
                       }}
                       isPinned={isSidebarPinned}
                       onTogglePinned={toggleSidebarPinned}

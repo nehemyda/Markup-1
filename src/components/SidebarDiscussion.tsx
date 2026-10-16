@@ -1,5 +1,6 @@
+import { filesToAttachments, rejectedFilesMessage } from '../lib/attachments';
 import React, { useState, useRef } from 'react';
-import { Pin, PinStatus, Teammate, Comment, Attachment, QARubricRule, QAPinError } from '../types';
+import { Pin, PinStatus, Teammate, Comment, Attachment, QARubricRule, QAPinError, FilterState } from '../types';
 import { SearchableMemberSelect } from './SearchableMemberSelect';
 import { UserAvatar } from './UserAvatar';
 import { 
@@ -31,6 +32,7 @@ import {
   X,
   Pin as PinIcon,
   ChevronDown,
+  Search,
   PinOff,
   Bell,
   AtSign,
@@ -57,6 +59,10 @@ interface SidebarDiscussionProps {
   onDeletePin?: (pinId: string) => void;
   onDeleteComment?: (pinId: string, commentId: string) => void;
   onClose?: () => void;
+  pages?: { id: string; url: string }[];
+  filterState?: FilterState;
+  onUpdateFilter?: (updates: Partial<FilterState>) => void;
+  currentPageId?: string;
   isPinned?: boolean;
   onTogglePinned?: () => void;
 }
@@ -76,12 +82,20 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
   onDeletePin,
   onDeleteComment,
   onClose,
+  pages = [],
+  filterState,
+  onUpdateFilter,
+  currentPageId = '',
   isPinned = true,
   onTogglePinned,
 }) => {
   const [commentInput, setCommentInput] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const [showMoreDetails, setShowMoreDetails] = useState(false);
+  const listTab: 'active' | 'resolved' = filterState?.showResolved ? 'resolved' : 'active';
+  const setListTab = (tab: 'active' | 'resolved') => onUpdateFilter?.({ showResolved: tab === 'resolved' });
+  const [showSearch, setShowSearch] = useState(false);
+  const [collapsedPages, setCollapsedPages] = useState<Set<string>>(new Set());
   const isGuest = currentUser.role === 'Guest';
   const [copiedSelector, setCopiedSelector] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -95,30 +109,10 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    Array.from(files).forEach((file: File) => {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const url = event.target?.result as string;
-        const sizeFormatted = file.size > 1024 * 1024 
-          ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` 
-          : `${Math.round(file.size / 1024)} KB`;
-        
-        let type: Attachment['type'] = 'code';
-        if (file.type.startsWith('image/')) type = 'image';
-        else if (file.type.startsWith('video/')) type = 'video';
-        else if (file.type.includes('pdf')) type = 'pdf';
-
-        const newAtt: Attachment = {
-          id: `att_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
-          name: file.name,
-          size: sizeFormatted,
-          type,
-          url,
-        };
-
-        setCommentAttachments((prev) => [...prev, newAtt]);
-      };
-      reader.readAsDataURL(file);
+    // Images are compressed; other files over the size limit are refused (see lib/attachments)
+    filesToAttachments(Array.from(files)).then(({ attachments, rejected }) => {
+      if (attachments.length) setCommentAttachments((prev) => [...prev, ...attachments]);
+      if (rejected.length) alert(rejectedFilesMessage(rejected));
     });
 
     e.target.value = '';
@@ -347,8 +341,14 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
 
   // IF NO PIN SELECTED: Show summary list of all pins on this asset
   if (!selectedPin) {
-    const openPins = pins.filter(p => p.status !== 'resolved' && p.status !== 'archived');
-    const resolvedPins = pins.filter(p => p.status === 'resolved' || p.status === 'archived');
+    const q = (filterState?.search || '').trim().toLowerCase();
+    const matching = pins.filter(
+      (p) =>
+        (!filterState || filterState.category === 'all' || p.category === filterState.category) &&
+        (!q || p.title.toLowerCase().includes(q) || p.comments.some((c) => c.text.toLowerCase().includes(q)))
+    );
+    const openPins = matching.filter(p => p.status !== 'resolved' && p.status !== 'archived');
+    const resolvedPins = matching.filter(p => p.status === 'resolved' || p.status === 'archived');
 
     return (
       <aside className="w-80 lg:w-96 min-w-[20rem] lg:min-w-[24rem] max-w-[20rem] lg:max-w-[24rem] bg-white border-l border-slate-200 flex flex-col h-full shrink-0 shadow-xs overflow-hidden text-slate-900 z-10 relative">
@@ -384,89 +384,144 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-3 space-y-5">
-          {/* Open Threads Section */}
-          <div>
-            <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 mb-2.5 flex items-center justify-between">
-              <span>Open Issues ({openPins.length})</span>
-              <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
-            </div>
-
-            {openPins.length === 0 ? (
-              <div className="bg-slate-50 border border-slate-200 rounded-lg p-5 text-center text-xs text-slate-500">
-                🎉 No open feedback pins! You're all caught up.
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {openPins.map((pin) => (
-                  <div
-                    key={pin.id}
-                    onClick={() => onSelectPin(pin)}
-                    className="bg-white hover:bg-slate-50 border border-slate-200 hover:border-slate-300 p-3 rounded-lg cursor-pointer transition-all shadow-xs group"
-                  >
-                    <div className="flex items-center justify-between gap-2 mb-1">
-                      <div className="flex items-center gap-2 min-w-0 flex-1">
-                        <span className="w-5 h-5 rounded-full bg-indigo-600 text-white font-extrabold text-[10px] flex items-center justify-center shadow-xs shrink-0">
-                          {pin.number}
-                        </span>
-                        <span className="text-xs font-bold text-slate-900 group-hover:text-indigo-600 line-clamp-1">
-                          {pin.title}
-                        </span>
-                      </div>
-                      <div className="shrink-0">{getStatusBadge(pin.status)}</div>
-                    </div>
-
-                    <div className="text-xs text-slate-600 line-clamp-2 pl-7 font-normal">
-                      {pin.comments[0]?.text || 'No description provided.'}
-                    </div>
-
-                    <div className="mt-2 pt-2 border-t border-slate-100 pl-7 flex items-center justify-between text-[10px] text-slate-500">
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <img src={pin.author.avatar} alt={pin.author.name} className="w-4 h-4 rounded-full object-cover border border-slate-200 shrink-0" />
-                        <span className="truncate">{pin.author.name.split(' ')[0]}</span>
-                      </div>
-                      <div className="flex items-center gap-2.5 shrink-0">
-                        <span className="flex items-center gap-1">
-                          <MessageSquare className="w-3 h-3" />
-                          <span>{pin.comments.length}</span>
-                        </span>
-                        <span>{pin.createdAt}</span>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Resolved Threads Section */}
-          {resolvedPins.length > 0 && (
-            <div>
-              <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 mb-2.5 flex items-center justify-between">
-                <span>Resolved & Approved ({resolvedPins.length})</span>
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-              </div>
-              <div className="space-y-2 opacity-75 hover:opacity-100 transition-opacity">
-                {resolvedPins.map((pin) => (
-                  <div
-                    key={pin.id}
-                    onClick={() => onSelectPin(pin)}
-                    className="bg-slate-50 hover:bg-slate-100 border border-slate-200 p-2.5 rounded-lg cursor-pointer transition-all"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 line-through text-slate-500 min-w-0 flex-1">
-                        <span className="w-4.5 h-4.5 rounded-full bg-emerald-600 text-white font-bold text-[9px] flex items-center justify-center shrink-0">
-                          {pin.number}
-                        </span>
-                        <span className="text-xs font-semibold truncate">{pin.title}</span>
-                      </div>
-                      <span className="text-[10px] text-emerald-600 font-bold shrink-0">Resolved</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
+        {/* Active / Resolved tabs (like Markup.io) */}
+        <div className="flex items-center gap-4 px-3 border-b border-slate-200 text-xs shrink-0">
+          {(['active', 'resolved'] as const).map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => setListTab(tab)}
+              className={`py-2.5 border-b-2 -mb-px font-semibold transition-colors ${
+                listTab === tab ? 'border-indigo-600 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-700'
+              }`}
+            >
+              {tab === 'active' ? openPins.length : resolvedPins.length} {tab === 'active' ? 'Active' : 'Resolved'}
+            </button>
+          ))}
+          {filterState && onUpdateFilter && (
+            <div className="ml-auto flex items-center gap-1">
+              <label className="relative flex items-center" title="Filter by type">
+                <span className="sr-only">Filter by type</span>
+                <select
+                  value={filterState.category}
+                  onChange={(e) => onUpdateFilter({ category: e.target.value as FilterState['category'] })}
+                  className={`appearance-none bg-transparent pl-1.5 pr-5 py-1 rounded-md text-[11px] font-semibold cursor-pointer hover:bg-slate-100 focus:outline-none ${
+                    filterState.category === 'all' ? 'text-slate-500' : 'text-indigo-600'
+                  }`}
+                >
+                  {(['all', 'bug', 'design', 'content', 'question', 'approved'] as const).map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat === 'all' ? 'All types' : cat[0].toUpperCase() + cat.slice(1)}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="w-3 h-3 text-slate-400 absolute right-1 pointer-events-none" />
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  if (showSearch) onUpdateFilter({ search: '' });
+                  setShowSearch((open) => !open);
+                }}
+                title="Search comments"
+                className={`p-1 rounded-md hover:bg-slate-100 ${showSearch || filterState.search ? 'text-indigo-600' : 'text-slate-400'}`}
+              >
+                <Search className="w-3.5 h-3.5" />
+              </button>
             </div>
           )}
+        </div>
+        {showSearch && filterState && onUpdateFilter && (
+          <div className="px-3 py-2 border-b border-slate-200 shrink-0">
+            <input
+              autoFocus
+              value={filterState.search}
+              onChange={(e) => onUpdateFilter({ search: e.target.value })}
+              placeholder="Search comments..."
+              className="w-full border border-slate-300 rounded-md px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-500"
+            />
+          </div>
+        )}
+
+        {/* Comments for the whole website, grouped by page (current page first) */}
+        <div className="flex-1 overflow-y-auto">
+          {(() => {
+            const shown = listTab === 'active' ? openPins : resolvedPins;
+            if (shown.length === 0) {
+              return (
+                <div className="m-3 bg-slate-50 border border-slate-200 rounded-lg p-5 text-center text-xs text-slate-500">
+                  {listTab === 'active' ? 'No open comments. Switch to Comment mode and click the page to add one.' : 'No resolved comments yet.'}
+                </div>
+              );
+            }
+            const pageOrder = [currentPageId, ...pages.map((pg) => pg.id).filter((id) => id !== currentPageId)];
+            return pageOrder
+              .map((pageId) => ({ page: pages.find((pg) => pg.id === pageId), items: shown.filter((p) => p.assetId === pageId).sort((a, b) => a.number - b.number) }))
+              .filter((group) => group.items.length > 0)
+              .map(({ page, items }) => {
+                const pageId = items[0].assetId;
+                const collapsed = collapsedPages.has(pageId);
+                const label = page ? page.url.replace(/^https?:\/\//, '') : 'Page';
+                return (
+                  <div key={pageId} className="border-b border-slate-100">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCollapsedPages((prev) => {
+                          const next = new Set(prev);
+                          next.has(pageId) ? next.delete(pageId) : next.add(pageId);
+                          return next;
+                        })
+                      }
+                      className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-slate-600 hover:bg-slate-50"
+                      title={page?.url}
+                    >
+                      <span className={`truncate flex-1 text-left ${pageId === currentPageId ? 'font-bold text-slate-900' : ''}`}>{label}</span>
+                      <span className="shrink-0 text-slate-400">{items.length}</span>
+                      <ChevronDown className={`w-3.5 h-3.5 shrink-0 transition-transform ${collapsed ? '-rotate-90' : ''}`} />
+                    </button>
+                    {!collapsed && (
+                      <div className="px-3 pb-3 space-y-2">
+                        {items.map((pin) => (
+                          <div
+                            key={pin.id}
+                            onClick={() => onSelectPin(pin)}
+                            className={`border p-3 rounded-lg cursor-pointer transition-all group ${
+                              listTab === 'active'
+                                ? 'bg-white hover:bg-slate-50 border-slate-200 hover:border-slate-300 shadow-xs'
+                                : 'bg-slate-50 hover:bg-slate-100 border-slate-200'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2 mb-1 min-w-0">
+                              <span
+                                className={`w-5 h-5 rounded-full text-white font-extrabold text-[10px] flex items-center justify-center shrink-0 ${
+                                  listTab === 'active' ? 'bg-indigo-600' : 'bg-emerald-600'
+                                }`}
+                              >
+                                {pin.number}
+                              </span>
+                              <span className={`text-xs font-bold line-clamp-1 ${listTab === 'active' ? 'text-slate-900 group-hover:text-indigo-600' : 'text-slate-500 line-through'}`}>
+                                {pin.title}
+                              </span>
+                            </div>
+                            {listTab === 'active' && (
+                              <div className="text-xs text-slate-600 line-clamp-2 pl-7">{pin.comments[0]?.text || ''}</div>
+                            )}
+                            <div className="mt-1.5 pl-7 flex items-center justify-between text-[10px] text-slate-500">
+                              <span className="truncate">{pin.author.name}</span>
+                              <span className="flex items-center gap-1 shrink-0">
+                                <MessageSquare className="w-3 h-3" />
+                                {pin.comments.length}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              });
+          })()}
         </div>
       </aside>
     );

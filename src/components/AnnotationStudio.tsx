@@ -1,3 +1,4 @@
+import { filesToAttachments, rejectedFilesMessage } from '../lib/attachments';
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import html2canvas from 'html2canvas';
@@ -49,9 +50,8 @@ import {
 interface AnnotationStudioProps {
   currentProject?: Project;
   currentAsset: Asset;
-  pages: Asset[];
-  onSelectPage: (page: Asset) => void;
-  onAddPage: (url: string) => void;
+  onNavigatePage: (url: string) => void;
+  projectPageIds: string[];
   pins: Pin[];
   selectedPin: Pin | null;
   onSelectPin: (pin: Pin | null) => void;
@@ -86,9 +86,8 @@ interface AnnotationStudioProps {
 export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
   currentProject,
   currentAsset,
-  pages,
-  onSelectPage,
-  onAddPage,
+  onNavigatePage,
+  projectPageIds,
   pins,
   selectedPin,
   onSelectPin,
@@ -109,8 +108,6 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
 }) => {
   const [mode, setMode] = useState<'browse' | 'comment'>('comment');
   const [zoom, setZoom] = useState<number>(100);
-  const [urlInput, setUrlInput] = useState(currentAsset.url);
-  const [showUrlEditor, setShowUrlEditor] = useState(false);
   const [iframeError, setIframeError] = useState(false);
   // Full page height, reported by the proxied page (see /api/proxy-site); a normal screen height until it reports
   const [pageCanvasHeight, setPageCanvasHeight] = useState<number>(1000);
@@ -187,7 +184,6 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
   };
 
   useEffect(() => {
-    setShowUrlEditor(false);
     setIframeError(false);
     heightHistory.current = [];
   }, [currentAsset]);
@@ -223,6 +219,38 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
     window.addEventListener('message', handleHeightMsg);
     return () => window.removeEventListener('message', handleHeightMsg);
   }, []);
+
+  // A link was clicked inside the page (Browse mode): open that page of the website in the app
+  const onNavigatePageRef = useRef(onNavigatePage);
+  onNavigatePageRef.current = onNavigatePage;
+  useEffect(() => {
+    const handleNavigate = (e: MessageEvent) => {
+      if (e.source !== iframeRef.current?.contentWindow) return;
+      if (e.data?.type === 'MARKUP_NAVIGATE' && typeof e.data.url === 'string') {
+        onNavigatePageRef.current(e.data.url);
+      }
+    };
+    window.addEventListener('message', handleNavigate);
+    return () => window.removeEventListener('message', handleNavigate);
+  }, []);
+
+  // Opening a comment (sidebar, link, notification) scrolls the canvas to its pin. Runs again shortly after,
+  // because a newly opened page is still loading and settling its height.
+  useEffect(() => {
+    if (!selectedPin || selectedPin.assetId !== currentAsset.id) return;
+    const scrollToPin = () => {
+      const container = scrollContainerRef.current;
+      const canvas = canvasRef.current;
+      if (!container || !canvas) return;
+      const c = container.getBoundingClientRect();
+      const r = canvas.getBoundingClientRect();
+      const pinTop = r.top - c.top + container.scrollTop + (selectedPin.y / 100) * r.height;
+      container.scrollTo({ top: Math.max(0, pinTop - container.clientHeight / 3), behavior: 'smooth' });
+    };
+    scrollToPin();
+    const later = setTimeout(scrollToPin, 1500);
+    return () => clearTimeout(later);
+  }, [selectedPin?.id, currentAsset.id]);
 
   // Keyboard shortcuts: C = Drop Pin Mode, V = Browse / Scroll (ignored while typing)
   useEffect(() => {
@@ -267,7 +295,9 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
   const filteredPins = pins.filter((p) => {
     if (p.assetId !== currentAsset.id) return false;
     if (pinDevice(p) !== viewport) return false;
-    if (!filterState.showResolved && (p.status === 'resolved' || p.status === 'archived')) return false;
+    // The sidebar's Active / Resolved tab decides which pins show on the page
+    const isResolved = p.status === 'resolved' || p.status === 'archived';
+    if (filterState.showResolved !== isResolved) return false;
     if (filterState.category !== 'all' && p.category !== filterState.category) return false;
     if (filterState.status !== 'all' && p.status !== filterState.status) return false;
     if (filterState.priority !== 'all' && p.priority !== filterState.priority) return false;
@@ -362,7 +392,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
     ctx.font = `bold ${12 * scale}px sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(String(nextPinNumber(pins, currentAsset.id)), x, y + 0.5 * scale);
+    ctx.fillText(String(nextPinNumber(pins, projectPageIds)), x, y + 0.5 * scale);
     ctx.restore();
   };
 
@@ -388,7 +418,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
     if (!ctx) throw new Error('Canvas is not available in this browser.');
     ctx.drawImage(source, sx, sy, w, h, 0, 0, w, h);
     drawPinMarker(ctx, cx - sx, cy - sy, markerScale);
-    return out.toDataURL('image/png');
+    return out.toDataURL('image/jpeg', 0.82);
   };
 
   // CSS selector of the page element under the new pin (live pages only)
@@ -488,7 +518,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
           const octx = out.getContext('2d')!;
           octx.drawImage(img, 0, 0);
           drawPinMarker(octx, (px - rx) * k, (py - ry) * k, k);
-          setNewPinScreenshot(out.toDataURL('image/png'));
+          setNewPinScreenshot(out.toDataURL('image/jpeg', 0.82));
           return;
         } finally {
           URL.revokeObjectURL(blobUrl);
@@ -516,7 +546,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
       const ctx = shot.getContext('2d');
       if (!ctx) throw new Error('Canvas is not available in this browser.');
       drawPinMarker(ctx, (px - rx) * dpr, (py - ry) * dpr, dpr);
-      setNewPinScreenshot(shot.toDataURL('image/png'));
+      setNewPinScreenshot(shot.toDataURL('image/jpeg', 0.82));
     } catch (err: any) {
       console.warn('Area snippet failed:', err);
       alert(
@@ -588,30 +618,10 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    Array.from(files).forEach((file: File) => {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const url = event.target?.result as string;
-        const sizeFormatted = file.size > 1024 * 1024 
-          ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` 
-          : `${Math.round(file.size / 1024)} KB`;
-        
-        let type: Attachment['type'] = 'code';
-        if (file.type.startsWith('image/')) type = 'image';
-        else if (file.type.startsWith('video/')) type = 'video';
-        else if (file.type.includes('pdf')) type = 'pdf';
-
-        const newAtt: Attachment = {
-          id: `att_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
-          name: file.name,
-          size: sizeFormatted,
-          type,
-          url,
-        };
-
-        setNewPinAttachments((prev) => [...prev, newAtt]);
-      };
-      reader.readAsDataURL(file);
+    // Images are compressed; other files over the size limit are refused (see lib/attachments)
+    filesToAttachments(Array.from(files)).then(({ attachments, rejected }) => {
+      if (attachments.length) setNewPinAttachments((prev) => [...prev, ...attachments]);
+      if (rejected.length) alert(rejectedFilesMessage(rejected));
     });
 
     e.target.value = '';
@@ -776,7 +786,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
             }`}
           >
             <MessageSquarePlus className="w-3.5 h-3.5" />
-            <span>Comments ({pins.filter((p) => p.assetId === currentAsset.id && pinDevice(p) === viewport).length})</span>
+            <span>Comments ({pins.filter((p) => projectPageIds.includes(p.assetId) && pinDevice(p) === viewport).length})</span>
           </button>
           {!isGuest && (
           <button
@@ -788,142 +798,6 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
             <span>{isCapturingPage ? 'Reading page...' : isAuditing ? 'AI reviewing page...' : 'Run AI Website Review'}</span>
           </button>
           )}
-        </div>
-
-      </div>
-
-      {/* Sub-toolbar: URL Bar & Filter Chips */}
-      <div className="bg-slate-50 border-b border-slate-200 px-4 py-1.5 flex flex-wrap items-center justify-between gap-3 text-xs z-10 text-slate-700 min-w-0">
-        
-        {/* Page bar: which page of the project is shown, switch pages, or add a page (each page has its own pins) */}
-        <div className="flex items-center gap-2 flex-1 max-w-xl min-w-[200px] sm:min-w-[280px]">
-          <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-md px-2.5 py-1 text-slate-700 w-full shadow-xs">
-            <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" />
-            <LinkIcon className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-            {showUrlEditor ? (
-              <form 
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  if (!urlInput.trim()) return;
-                  onAddPage(urlInput.trim());
-                  setShowUrlEditor(false);
-                }}
-                className="flex-1 flex items-center gap-1"
-              >
-                <input
-                  type="text"
-                  value={urlInput}
-                  onChange={(e) => setUrlInput(e.target.value)}
-                  placeholder="Page URL to add, e.g. https://example.com/contact"
-                  className="bg-transparent text-slate-900 text-xs w-full focus:outline-none"
-                  autoFocus
-                />
-                <button type="submit" className="text-indigo-600 font-semibold hover:text-indigo-700 shrink-0">Add</button>
-                <button type="button" onClick={() => setShowUrlEditor(false)} className="text-slate-400 hover:text-slate-600"><X className="w-3.5 h-3.5" /></button>
-              </form>
-            ) : (
-              <>
-                {pages.length > 1 ? (
-                  <label className="relative flex-1 min-w-0 flex items-center">
-                    <span className="sr-only">Page</span>
-                    <select
-                      value={currentAsset.id}
-                      onChange={(e) => {
-                        const page = pages.find((a) => a.id === e.target.value);
-                        if (page) onSelectPage(page);
-                      }}
-                      className="appearance-none w-full bg-transparent font-mono text-[11px] text-slate-700 pr-5 truncate focus:outline-none cursor-pointer"
-                      title={currentAsset.url}
-                    >
-                      {pages.map((page) => {
-                        const pagePins = pins.filter((p) => p.assetId === page.id);
-                        return (
-                          <option key={page.id} value={page.id}>
-                            {page.url} ({pagePins.length} {pagePins.length === 1 ? 'pin' : 'pins'})
-                          </option>
-                        );
-                      })}
-                    </select>
-                    <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-0 pointer-events-none" />
-                  </label>
-                ) : (
-                  <span className="flex-1 min-w-0 truncate font-mono text-[11px] text-slate-600" title={currentAsset.url}>{currentAsset.url}</span>
-                )}
-                {currentAsset.type === 'url' && !isGuest && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setUrlInput('');
-                      setShowUrlEditor(true);
-                    }}
-                    title="Add another page of this website to the project"
-                    className="text-[10px] text-indigo-600 font-semibold bg-indigo-50 hover:bg-indigo-100 px-1.5 py-0.5 rounded border border-indigo-200 shrink-0 flex items-center gap-0.5"
-                  >
-                    <Plus className="w-3 h-3" />
-                    Add page
-                  </button>
-                )}
-              </>
-            )}
-            <a 
-              href={currentAsset.url} 
-              target="_blank" 
-              rel="noreferrer"
-              title="Open this page in a new browser tab" 
-              className="text-slate-400 hover:text-slate-600 ml-1 shrink-0"
-            >
-              <ExternalLink className="w-3.5 h-3.5" />
-            </a>
-          </div>
-        </div>
-
-        {/* Filter Chips & Search */}
-        <div className="flex items-center gap-2 overflow-x-auto py-1">
-          {/* Pin type filter (counts are for this page on the current device) */}
-          <label className="relative flex items-center">
-            <span className="sr-only">Filter pins by type</span>
-            <select
-              value={filterState.category}
-              onChange={(e) => onUpdateFilter({ category: e.target.value as FilterState['category'] })}
-              className="appearance-none bg-white border border-slate-200 rounded-md pl-2.5 pr-7 py-1 text-[11px] font-semibold text-slate-700 shadow-xs hover:border-slate-300 focus:outline-none focus:border-indigo-500 cursor-pointer"
-            >
-              {(['all', 'bug', 'design', 'content', 'question', 'approved'] as const).map((cat) => {
-                const count = pins.filter(
-                  (p) => p.assetId === currentAsset.id && pinDevice(p) === viewport && (cat === 'all' || p.category === cat)
-                ).length;
-                return (
-                  <option key={cat} value={cat}>
-                    {cat === 'all' ? 'All pins' : cat[0].toUpperCase() + cat.slice(1)} ({count})
-                  </option>
-                );
-              })}
-            </select>
-            <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2 pointer-events-none" />
-          </label>
-
-          <button
-            onClick={() => onUpdateFilter({ showResolved: !filterState.showResolved })}
-            className={`flex items-center gap-1 px-2.5 py-1 rounded-md border text-[11px] font-semibold transition-all ${
-              filterState.showResolved
-                ? 'bg-white border-slate-300 text-slate-900 shadow-xs'
-                : 'bg-slate-100 border-slate-200 text-slate-500 hover:text-slate-900'
-            }`}
-          >
-            {filterState.showResolved ? <Eye className="w-3 h-3 text-green-600" /> : <EyeOff className="w-3 h-3" />}
-            <span>Resolved ({pins.filter(p => p.assetId === currentAsset.id && (p.status === 'resolved' || p.status === 'archived')).length})</span>
-          </button>
-
-          {/* Search Box */}
-          <div className="relative hidden xl:block">
-            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2" />
-            <input
-              type="text"
-              placeholder="Search pins..."
-              value={filterState.search}
-              onChange={(e) => onUpdateFilter({ search: e.target.value })}
-              className="bg-white border border-slate-200 rounded-md pl-8 pr-3 py-1 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-indigo-500 w-36 shadow-xs"
-            />
-          </div>
         </div>
 
       </div>
@@ -956,13 +830,23 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
             
             {/* Simulated Browser Bar */}
             <div className="bg-slate-50 border-b border-slate-200 px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600 rounded-t-lg">
-              <div className="flex items-center gap-1.5 min-w-[220px]">
-                <div className="w-3 h-3 rounded-full bg-rose-400" />
-                <div className="w-3 h-3 rounded-full bg-amber-400" />
-                <div className="w-3 h-3 rounded-full bg-green-400" />
-                <span className="ml-2 font-mono text-[11px] text-slate-500 truncate max-w-[260px]">
+              <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                <div className="w-3 h-3 rounded-full bg-rose-400 shrink-0" />
+                <div className="w-3 h-3 rounded-full bg-amber-400 shrink-0" />
+                <div className="w-3 h-3 rounded-full bg-green-400 shrink-0" />
+                {/* The page address (the only address bar; links in Browse mode change it) */}
+                <span className="ml-2 font-mono text-[11px] text-slate-600 truncate flex-1 min-w-0" title={currentAsset.url}>
                   {currentAsset.url}
                 </span>
+                <a
+                  href={currentAsset.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Open this page in a new browser tab"
+                  className="text-slate-400 hover:text-slate-700 shrink-0"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
               </div>
             </div>
 
@@ -1102,7 +986,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
                 style={{ left: `${newPinCoord.x}%`, top: `${newPinCoord.y}%` }}
                 className="absolute z-50 -translate-x-1/2 -translate-y-1/2 w-7 h-7 rounded-full bg-indigo-600 border-[3px] border-white shadow-lg flex items-center justify-center text-white font-bold text-[11px] pointer-events-none animate-in zoom-in-50 duration-150"
               >
-                {nextPinNumber(pins, currentAsset.id)}
+                {nextPinNumber(pins, projectPageIds)}
               </div>
             )}
             {/* The form is drawn above everything (not inside the page frame), so it is never clipped
@@ -1122,7 +1006,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
                 <div className="flex items-center justify-between border-b border-slate-200 pb-2 mb-3">
                   <div className="flex items-center gap-1.5 font-bold text-xs text-indigo-600">
                     <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center font-mono text-[10px]">
-                      #{nextPinNumber(pins, currentAsset.id)}
+                      #{nextPinNumber(pins, projectPageIds)}
                     </span>
                     <span>New Annotation Pin</span>
                   </div>
@@ -1320,7 +1204,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
                       className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-3.5 py-1.5 rounded-md text-xs shadow-sm transition-all active:scale-95"
                     >
                       <Send className="w-3 h-3" />
-                      <span>Post Pin #{nextPinNumber(pins, currentAsset.id)}</span>
+                      <span>Post Pin #{nextPinNumber(pins, projectPageIds)}</span>
                     </button>
                   </div>
                 </form>
@@ -1335,17 +1219,6 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
 
       </div>
 
-      {/* Bottom Status Info Bar */}
-      <div className="bg-white border-t border-slate-200 px-4 py-1.5 flex items-center justify-between text-[11px] text-slate-500">
-        <div className="flex items-center gap-4">
-          <span>🎯 Active Pins: <strong className="text-slate-900">{filteredPins.length}</strong></span>
-          <span>✅ Resolved: <strong className="text-green-600">{pins.filter(p => p.assetId === currentAsset.id && p.status === 'resolved').length}</strong></span>
-        </div>
-        <div className="flex items-center gap-2 font-medium">
-          <span className="w-2 h-2 rounded-full bg-green-500" />
-          <span className="text-slate-700">Real-time WebSocket Sync Active</span>
-        </div>
-      </div>
       </div>
       {sidebar}
       </div>

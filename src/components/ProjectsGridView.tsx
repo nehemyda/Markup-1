@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Project, Asset, Teammate, ViewMode, Pin } from '../types';
+import { Project, Asset, Teammate, ViewMode, Pin, Folder } from '../types';
 import { projectUrl } from '../lib/routes';
 import { copyText } from '../lib/clipboard';
 import { ARCHIVED_PROJECTS } from '../data/mockData';
@@ -49,7 +49,11 @@ import {
   RefreshCw,
   AlertCircle,
   KeyRound,
-  X
+  X,
+  FolderPlus,
+  Folder as FolderIcon,
+  ChevronRight,
+  Pencil
 } from 'lucide-react';
 
 interface ProjectsGridViewProps {
@@ -58,6 +62,13 @@ interface ProjectsGridViewProps {
   onUpdateBranding?: (newName: string, newIcon: string) => void;
   projects: Project[];
   pins?: Pin[];
+  folders?: Folder[];
+  currentFolderId?: string | null;
+  onOpenFolder?: (folderId: string | null) => void;
+  onCreateFolder?: (name: string) => Folder;
+  onRenameFolder?: (folderId: string, name: string) => void;
+  onDeleteFolder?: (folderId: string) => void;
+  onMoveProject?: (projectId: string, folderId: string | null) => void;
   onSelectProject: (project: Project) => void;
   onSelectAsset: (asset: Asset) => void;
   onOpenNewProjectModal: () => void;
@@ -184,6 +195,13 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
   onUpdateBranding,
   projects,
   pins = [],
+  folders = [],
+  currentFolderId = null,
+  onOpenFolder,
+  onCreateFolder,
+  onRenameFolder,
+  onDeleteFolder,
+  onMoveProject,
   onSelectProject,
   onSelectAsset,
   onOpenNewProjectModal,
@@ -442,21 +460,13 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
     setUrlInput('');
   };
 
+  // Enter in the search box opens the folder when exactly one folder matches (search never creates projects)
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!searchQuery.trim()) return;
-
-    let target = searchQuery.trim();
-    if (!target.startsWith('http://') && !target.startsWith('https://')) {
-      if (target.includes('.')) {
-        target = 'https://' + target;
-      } else {
-        target = `https://${target.toLowerCase().replace(/[^a-z0-9]/g, '-')}.com`;
-      }
+    if (visibleFolders.length === 1 && isSearching) {
+      onOpenFolder?.(visibleFolders[0].id);
+      setSearchQuery('');
     }
-
-    onAddNewUrlAsset(target);
-    setSearchQuery('');
   };
 
   const handleSaveBranding = () => {
@@ -477,16 +487,39 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
   };
 
   // Filter and sort projects based on owner filter, search, and sortBy state
+  // ---------- Folders ----------
+  const query = searchQuery.trim().toLowerCase();
+  const isSearching = query !== '';
+  const folderIds = new Set(folders.map((f) => f.id));
+  const currentFolder = folders.find((f) => f.id === currentFolderId) || null;
+  const folderOf = (project: Project) => folders.find((f) => f.id === project.folderId) || null;
+  const projectCountIn = (folderId: string) => projects.filter((p) => p.folderId === folderId).length;
+  // Searching looks everywhere: folder names (e.g. a partner ID like "PRBS") and projects in any folder
+  const visibleFolders = isSearching
+    ? folders.filter((f) => f.name.toLowerCase().includes(query))
+    : currentFolder
+    ? []
+    : [...folders].sort((a, b) => a.name.localeCompare(b.name));
+  const [folderDialog, setFolderDialog] = useState<{ mode: 'create' | 'rename'; folderId?: string; value: string } | null>(null);
+  const [activeFolderMenuId, setActiveFolderMenuId] = useState<string | null>(null);
+  const [moveMenuProjectId, setMoveMenuProjectId] = useState<string | null>(null);
+
   const filteredProjects = React.useMemo(() => {
     return projects
       .filter((project) => {
-        const matchesSearch = searchQuery === '' || 
-          project.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          project.client?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          project.assets.some(a => a.title.toLowerCase().includes(searchQuery.toLowerCase()) || a.url.toLowerCase().includes(searchQuery.toLowerCase()));
+        // Without a search, show the open folder's projects, or (at the top level) projects not in a folder
+        if (!isSearching) {
+          const inFolder = project.folderId && folderIds.has(project.folderId) ? project.folderId : null;
+          if (inFolder !== (currentFolderId || null)) return false;
+        }
+        const matchesSearch = !isSearching ||
+          project.name.toLowerCase().includes(query) ||
+          project.client?.toLowerCase().includes(query) ||
+          (folderOf(project)?.name.toLowerCase().includes(query) ?? false) ||
+          project.assets.some(a => a.title.toLowerCase().includes(query) || a.url.toLowerCase().includes(query));
 
         if (filterOwner === 'mine') {
-          return matchesSearch && (project.ownerId === currentUser.id || project.name.toLowerCase().includes('agent') || project.name.toLowerCase().includes('my'));
+          return matchesSearch && (project.ownerId === currentUser.id || project.createdBy === currentUser.id);
         } else if (filterOwner !== 'all') {
           return matchesSearch && project.ownerId === filterOwner;
         }
@@ -503,7 +536,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
         if (sortBy === 'oldest') return a.id.localeCompare(b.id);
         return b.id.localeCompare(a.id);
       });
-  }, [projects, searchQuery, filterOwner, sortBy, currentUser]);
+  }, [projects, searchQuery, filterOwner, sortBy, currentUser, folders, currentFolderId]);
 
   return (
     <div className="flex-1 min-w-0 flex bg-slate-100/70 text-slate-900 overflow-hidden h-[calc(100vh-3.5rem)]">
@@ -637,10 +670,20 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search or enter URL + Enter..."
+                    placeholder="Search folders and projects..."
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-8 pr-3 py-2 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-blue-600 transition-all"
                   />
                 </form>
+
+                {onCreateFolder && !currentFolderId && (
+                  <button
+                    onClick={() => setFolderDialog({ mode: 'create', value: '' })}
+                    className="bg-white hover:bg-slate-50 border border-slate-300 text-slate-800 font-bold text-xs px-4 py-2 rounded-xl transition-all shadow-2xs flex items-center gap-1.5 shrink-0 cursor-pointer"
+                  >
+                    <FolderPlus className="w-4 h-4" />
+                    <span>New Folder</span>
+                  </button>
+                )}
 
                 <button
                   onClick={onOpenNewProjectModal}
@@ -659,14 +702,44 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
               {/* Workspace Title & Owner Filter Sub-header */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200/80 pb-4">
                 <div>
-                  <h1 className="text-xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
-                    <span>{appName} Workspace</span>
+                  <h1 className="text-xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2 flex-wrap">
+                    {isSearching ? (
+                      <span>Results for "{searchQuery.trim()}"</span>
+                    ) : currentFolder ? (
+                      <>
+                        <button
+                          onClick={() => onOpenFolder?.(null)}
+                          className="text-slate-400 hover:text-slate-700 font-bold cursor-pointer"
+                        >
+                          All projects
+                        </button>
+                        <ChevronRight className="w-4 h-4 text-slate-400" />
+                        <span>{currentFolder.name}</span>
+                        {onRenameFolder && (
+                          <button
+                            onClick={() => setFolderDialog({ mode: 'rename', folderId: currentFolder.id, value: currentFolder.name })}
+                            className="text-slate-400 hover:text-slate-700 p-1 rounded cursor-pointer"
+                            title="Rename folder"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <span>All projects</span>
+                    )}
                     <span className="text-xs bg-slate-200 text-slate-700 font-bold px-2 py-0.5 rounded-full">
-                      {filteredProjects.length} Projects
+                      {isSearching
+                        ? `${visibleFolders.length} ${visibleFolders.length === 1 ? 'folder' : 'folders'}, ${filteredProjects.length} ${filteredProjects.length === 1 ? 'project' : 'projects'}`
+                        : `${filteredProjects.length} ${filteredProjects.length === 1 ? 'project' : 'projects'}`}
                     </span>
                   </h1>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    Click any thumbnail or project card to open live studio annotation.
+                    {isSearching
+                      ? 'Searching folder names and projects in every folder.'
+                      : currentFolder
+                      ? 'New projects you create here go into this folder.'
+                      : 'Group projects into folders, e.g. one folder per partner.'}
                   </p>
                 </div>
 
@@ -729,40 +802,81 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
 
               {/* PROJECTS GRID DISPLAY */}
               <div className={`grid ${gridColumnClass} gap-6`}>
-                {filteredProjects.length === 0 && searchQuery && (
-                  <div className="col-span-full bg-blue-50/80 border-2 border-dashed border-blue-300 rounded-3xl p-8 text-center space-y-4 my-2">
-                    <div className="w-14 h-14 rounded-2xl bg-blue-600 text-white flex items-center justify-center mx-auto text-2xl shadow-md">
-                      🌐
-                    </div>
-                    <div>
-                      <h3 className="text-lg font-extrabold text-slate-900">
-                        No project found matching "{searchQuery}"
-                      </h3>
-                      <p className="text-xs text-slate-600 max-w-md mx-auto mt-1">
-                        Would you like to automatically create a new project and open studio for <strong className="text-blue-700">{searchQuery}</strong>?
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        let target = searchQuery.trim();
-                        if (!target.startsWith('http://') && !target.startsWith('https://')) {
-                          if (target.includes('.')) {
-                            target = 'https://' + target;
-                          } else {
-                            target = `https://${target.toLowerCase().replace(/[^a-z0-9]/g, '-')}.com`;
-                          }
-                        }
-                        onAddNewUrlAsset(target);
-                        setSearchQuery('');
-                      }}
-                      className="bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs px-6 py-3 rounded-xl transition-all shadow-md inline-flex items-center gap-2 cursor-pointer active:scale-95"
-                    >
-                      <Plus className="w-4 h-4" />
-                      <span>Create Project & Annotate "{searchQuery}"</span>
-                    </button>
+                {isSearching && filteredProjects.length === 0 && visibleFolders.length === 0 && (
+                  <div className="col-span-full bg-white border border-dashed border-slate-300 rounded-2xl p-8 text-center text-sm text-slate-500">
+                    No folders or projects match "{searchQuery.trim()}".
                   </div>
                 )}
+
+                {!isSearching && currentFolder && filteredProjects.length === 0 && (
+                  <div className="col-span-full bg-white border border-dashed border-slate-300 rounded-2xl p-8 text-center text-sm text-slate-500">
+                    This folder is empty. Create a project here, or use <strong>Move to folder</strong> in a project's menu.
+                  </div>
+                )}
+
+                {/* FOLDER CARDS */}
+                {visibleFolders.map((folder) => {
+                  const count = projectCountIn(folder.id);
+                  return (
+                    <div
+                      key={folder.id}
+                      onClick={() => {
+                        setSearchQuery('');
+                        onOpenFolder?.(folder.id);
+                      }}
+                      className="relative cursor-pointer group pt-3"
+                    >
+                      {/* folder tab */}
+                      <div className="absolute top-0 left-0 w-2/5 h-6 bg-slate-200 group-hover:bg-blue-100 rounded-t-xl transition-colors" />
+                      <div className="relative bg-white border border-slate-200 group-hover:border-blue-300 rounded-2xl rounded-tl-none shadow-2xs group-hover:shadow-lg transition-all p-5 min-h-[140px] flex flex-col justify-between">
+                        <div className="flex items-start justify-between gap-2">
+                          <FolderIcon className="w-8 h-8 text-blue-500 shrink-0" />
+                          <div className="relative" onClick={(e) => e.stopPropagation()}>
+                            <button
+                              onClick={() => setActiveFolderMenuId(activeFolderMenuId === folder.id ? null : folder.id)}
+                              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
+                              title="Folder options"
+                            >
+                              <MoreHorizontal className="w-4 h-4" />
+                            </button>
+                            {activeFolderMenuId === folder.id && (
+                              <div className="absolute right-0 mt-1 w-40 bg-white border border-slate-200 rounded-xl shadow-xl py-1 z-50 text-xs">
+                                <button
+                                  onClick={() => {
+                                    setActiveFolderMenuId(null);
+                                    setFolderDialog({ mode: 'rename', folderId: folder.id, value: folder.name });
+                                  }}
+                                  className="w-full text-left px-3 py-2 text-slate-700 hover:bg-slate-100 font-medium cursor-pointer"
+                                >
+                                  Rename
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setActiveFolderMenuId(null);
+                                    if (window.confirm(`Delete the folder "${folder.name}"? Its ${count} ${count === 1 ? 'project' : 'projects'} will move back to All projects (nothing is deleted).`)) {
+                                      onDeleteFolder?.(folder.id);
+                                    }
+                                  }}
+                                  className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 font-medium cursor-pointer"
+                                >
+                                  Delete folder
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        <div>
+                          <h3 className="font-bold text-sm text-slate-900 group-hover:text-blue-600 truncate" title={folder.name}>
+                            {folder.name}
+                          </h3>
+                          <p className="text-xs text-slate-500 mt-0.5">
+                            {count} {count === 1 ? 'project' : 'projects'}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
 
                 {filteredProjects.map((project) => {
                   const primaryAsset = project.assets[0] || {
@@ -846,6 +960,47 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                               <ExternalLink className="w-3.5 h-3.5 text-emerald-600" />
                               <span>Open Studio & Annotate</span>
                             </button>
+                            {onMoveProject && folders.length > 0 && (
+                              <div className="border-t border-slate-100 mt-1 pt-1">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setMoveMenuProjectId(moveMenuProjectId === project.id ? null : project.id);
+                                  }}
+                                  className="w-full text-left px-3 py-2 text-slate-700 hover:bg-slate-100 flex items-center justify-between gap-2 font-medium cursor-pointer"
+                                >
+                                  <span className="flex items-center gap-2">
+                                    <FolderIcon className="w-3.5 h-3.5 text-blue-600" />
+                                    Move to folder
+                                  </span>
+                                  <ChevronRight className={`w-3.5 h-3.5 text-slate-400 transition-transform ${moveMenuProjectId === project.id ? 'rotate-90' : ''}`} />
+                                </button>
+                                {moveMenuProjectId === project.id && (
+                                  <div className="max-h-48 overflow-y-auto pb-1">
+                                    {[{ id: null as string | null, name: 'No folder' }, ...[...folders].sort((a, b) => a.name.localeCompare(b.name))].map((f) => {
+                                      const isCurrent = (project.folderId || null) === f.id;
+                                      return (
+                                        <button
+                                          key={f.id || 'none'}
+                                          disabled={isCurrent}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            onMoveProject(project.id, f.id);
+                                            setMoveMenuProjectId(null);
+                                            setActiveCardMenuId(null);
+                                          }}
+                                          className={`w-full text-left pl-8 pr-3 py-1.5 truncate ${isCurrent ? 'text-slate-400' : 'text-slate-700 hover:bg-slate-100 cursor-pointer'}`}
+                                          title={f.name}
+                                        >
+                                          {f.name}{isCurrent ? ' (current)' : ''}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
                             {onDeleteProject && (() => {
                               const isOwnerOrAdmin = currentUser.role === 'Admin' || currentUser.role === 'Owner' || currentUser.email === 'nehemiahc@yourdigitalagents.com' || currentUser.id === 'usr_nehemiah';
                               const isProjectCreator = project.ownerId === currentUser.id || project.ownerId === currentUser.email || project.createdBy === currentUser.email || project.createdBy === currentUser.id;
@@ -946,6 +1101,12 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                             <Clock className="w-3.5 h-3.5 text-slate-400" />
                             <span>Updated {project.lastUpdated || 'recently'}</span>
                           </div>
+                          {isSearching && folderOf(project) && (
+                            <div className="flex items-center gap-1 text-[11px] text-blue-600 mt-1 truncate">
+                              <FolderIcon className="w-3 h-3 shrink-0" />
+                              <span className="truncate">{folderOf(project)!.name}</span>
+                            </div>
+                          )}
                         </div>
 
                         <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
@@ -978,24 +1139,49 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                   );
                 })}
 
-                {/* CREATE NEW MARKUP BUTTON */}
-                <div
-                  onClick={onOpenNewProjectModal}
-                  className="bg-slate-50/80 hover:bg-slate-100/90 border-2 border-dashed border-slate-300 hover:border-blue-500 rounded-2xl p-6 min-h-[220px] flex flex-col items-center justify-center text-center group cursor-pointer transition-all duration-200"
-                >
-                  <div className="w-12 h-12 rounded-full bg-blue-50 text-blue-600 group-hover:bg-blue-600 group-hover:text-white flex items-center justify-center transition-all shadow-2xs mb-3">
-                    <Plus className="w-6 h-6" />
-                  </div>
-                  <h3 className="font-bold text-sm text-slate-800 group-hover:text-blue-600 transition-colors">
-                    Create New Project
-                  </h3>
-                  <p className="text-xs text-slate-500 max-w-[200px] mt-1">
-                    Enter a live website URL or upload an image mockup to start commenting.
-                  </p>
-                </div>
               </div>
             </div>
           </>
+        )}
+
+        {folderDialog && (
+          <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center z-[60] p-4">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const name = folderDialog.value.trim();
+                if (!name) return;
+                if (folderDialog.mode === 'create') {
+                  onCreateFolder?.(name);
+                } else if (folderDialog.folderId) {
+                  onRenameFolder?.(folderDialog.folderId, name);
+                }
+                setFolderDialog(null);
+              }}
+              className="bg-white border border-slate-200 rounded-2xl max-w-sm w-full p-6 shadow-2xl space-y-4 text-sm"
+            >
+              <h2 className="font-extrabold text-base text-slate-900">{folderDialog.mode === 'create' ? 'New folder' : 'Rename folder'}</h2>
+              <label className="block">
+                <span className="text-xs font-bold text-slate-600">Folder name</span>
+                <input
+                  autoFocus
+                  value={folderDialog.value}
+                  onChange={(e) => setFolderDialog({ ...folderDialog, value: e.target.value })}
+                  placeholder="e.g. PRBS - Prestige Roofing"
+                  className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500"
+                />
+              </label>
+              <p className="text-[11px] text-slate-500">Tip: start with the partner ID (like PRBS) so it is easy to find with search.</p>
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => setFolderDialog(null)} className="px-3 py-2 rounded-lg text-slate-600 hover:bg-slate-100 font-semibold">
+                  Cancel
+                </button>
+                <button type="submit" className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold">
+                  {folderDialog.mode === 'create' ? 'Create folder' : 'Save'}
+                </button>
+              </div>
+            </form>
+          </div>
         )}
 
         {/* TAB 2: ARCHIVE PAGE (CLICKABLE & RESTORABLE) */}

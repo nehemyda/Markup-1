@@ -3,10 +3,10 @@ import { PinDevice } from './pins';
 
 // URL scheme
 //   /                               dashboard
-//   /archive  /team  /settings  /settings/access
+//   /archive  /team  /settings  /settings/access  /folders/:folderId
 //   /projects/:projectId            project canvas
 //   /projects/:projectId/kanban | table | activity | qa-score
-//   ?view_mode=Desktop|Tablet|Mobile   ?asset=<assetId> (when not the project's first asset)   ?pin=<pinId>   ?guest_mode=true
+//   ?view_mode=Desktop|Tablet|Mobile   ?page=<path> (when not the project's start page)   ?pin=<pinId>   ?guest_mode=true
 
 export type DashboardTab = 'dashboard' | 'archive' | 'team' | 'settings';
 export type SettingsSubTab = 'details' | 'domains';
@@ -14,9 +14,11 @@ export type SettingsSubTab = 'details' | 'domains';
 export interface Route {
   dashboardTab?: DashboardTab;
   settingsSubTab?: SettingsSubTab;
+  folderId?: string;
   projectId?: string;
   viewMode: ViewMode;
   assetId?: string;
+  pagePath?: string;
   pinId?: string;
   device?: PinDevice;
 }
@@ -46,11 +48,13 @@ export function parseRoute(pathname: string, search: string): Route {
       projectId: parts[1],
       viewMode,
       assetId: params.get('asset') || undefined,
+      pagePath: params.get('page') || undefined,
       pinId: params.get('pin') || undefined,
       device: parseDevice(params.get('view_mode')),
     };
   }
 
+  if (parts[0] === 'folders' && parts[1]) return { viewMode: 'dashboard', dashboardTab: 'dashboard', folderId: parts[1] };
   if (parts[0] === 'archive' || parts[0] === 'team') return { viewMode: 'dashboard', dashboardTab: parts[0] };
   if (parts[0] === 'settings') {
     return { viewMode: 'dashboard', dashboardTab: 'settings', settingsSubTab: parts[1] === 'access' ? 'domains' : 'details' };
@@ -62,8 +66,9 @@ export function buildPath(state: {
   viewMode: ViewMode;
   dashboardTab: DashboardTab;
   settingsSubTab: SettingsSubTab;
+  folderId?: string | null;
   projectId?: string;
-  assetId?: string;
+  pagePath?: string;
   isFirstAsset: boolean;
   pinId?: string;
   device: PinDevice;
@@ -73,12 +78,13 @@ export function buildPath(state: {
     if (state.dashboardTab === 'archive') return '/archive';
     if (state.dashboardTab === 'team') return '/team';
     if (state.dashboardTab === 'settings') return state.settingsSubTab === 'domains' ? '/settings/access' : '/settings';
+    if (state.folderId) return `/folders/${encodeURIComponent(state.folderId)}`;
     return '/';
   }
   const segment = PROJECT_VIEW_SEGMENTS[state.viewMode];
   const params = new URLSearchParams();
   if (state.viewMode === 'studio') params.set('view_mode', state.device[0].toUpperCase() + state.device.slice(1));
-  if (state.assetId && !state.isFirstAsset) params.set('asset', state.assetId);
+  if (state.pagePath && !state.isFirstAsset) params.set('page', state.pagePath);
   if (state.pinId) params.set('pin', state.pinId);
   if (state.guestMode) params.set('guest_mode', 'true');
   const query = params.toString();

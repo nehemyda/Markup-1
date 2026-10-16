@@ -496,14 +496,26 @@ For each finding, set elementId to the id of the element the problem is on (it m
         targetUrl = 'https://' + targetUrl;
       }
 
-      const response = await fetch(targetUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.9',
-        },
-        redirect: 'follow',
-      });
+      // Retry brief network failures (connection reset, DNS hiccup) before showing the error page
+      let response: Response | undefined;
+      let lastError: any;
+      for (let attempt = 0; attempt < 3 && !response; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 500 * attempt));
+        try {
+          response = await fetch(targetUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+              'Accept-Language': 'en-US,en;q=0.9',
+            },
+            redirect: 'follow',
+            signal: AbortSignal.timeout(20000),
+          });
+        } catch (err: any) {
+          lastError = err;
+        }
+      }
+      if (!response) throw lastError;
 
       const contentType = response.headers.get('content-type') || 'text/html';
 
@@ -559,6 +571,26 @@ html, body {
       }
     } catch(e) {}
   }
+  // Link clicks: pages of the same website open inside the app (as a page of the project);
+  // other websites open in a new tab. Same-page #anchors behave normally.
+  document.addEventListener('click', function(e) {
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+    if (!a) return;
+    var raw = a.getAttribute('href') || '';
+    if (!raw || raw.charAt(0) === '#' || /^(javascript|mailto|tel|sms):/i.test(raw)) return;
+    var url, base;
+    try { url = new URL(raw, document.baseURI); base = new URL(document.baseURI); } catch (err) { return; }
+    if (!/^https?:$/.test(url.protocol)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (url.hostname.replace(/^www\\./, '') === base.hostname.replace(/^www\\./, '')) {
+      url.hash = '';
+      window.parent.postMessage({ type: 'MARKUP_NAVIGATE', url: url.href }, '*');
+    } else {
+      window.open(url.href, '_blank', 'noopener');
+    }
+  }, true);
   window.addEventListener('load', reportFullHeight);
   window.addEventListener('resize', reportFullHeight);
   document.addEventListener('DOMContentLoaded', reportFullHeight);
@@ -599,7 +631,7 @@ html, body {
         return res.send(Buffer.from(buffer));
       }
     } catch (err: any) {
-      console.warn('Proxy request failed for', rawUrl, err?.message);
+      console.warn('Proxy request failed for', rawUrl, err?.message, err?.cause?.code || err?.cause?.message || '');
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       return res.status(200).send(`
 <!DOCTYPE html>
@@ -618,7 +650,8 @@ html, body {
   <div class="card">
     <h2>🌐 External Web Server Connection Restricted</h2>
     <p>Target: <span class="code">${escapeHtml(rawUrl)}</span></p>
-    <p>The website could not be loaded here. It may require a login or VPN, or it blocks automated requests. Use the open-in-new-tab icon next to the URL to view it directly.</p>
+    <p>The website could not be loaded here. This is often a brief network problem; try again. If it keeps happening, the site may require a login or VPN, or block automated requests. Use the open-in-new-tab icon next to the URL to view it directly.</p>
+    <p><button onclick="location.reload()" style="background:#4f46e5;color:#fff;border:0;border-radius:8px;padding:8px 16px;font-weight:600;cursor:pointer">Try again</button></p>
   </div>
 </body>
 </html>

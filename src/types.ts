@@ -158,7 +158,17 @@ export interface Project {
   lastUpdated: string;
   ownerId?: string;
   createdBy?: string;
+  // Folder the project is in (null/undefined = not in a folder)
+  folderId?: string | null;
   assets: Asset[];
+}
+
+// A folder groups projects, e.g. per partner ("PRBS - Prestige Roofing"). Names are free text.
+export interface Folder {
+  id: string;
+  name: string;
+  createdAt: string;
+  createdBy?: string;
 }
 
 export interface ActivityItem {
