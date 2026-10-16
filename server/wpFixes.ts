@@ -22,6 +22,9 @@ export interface PinTarget {
   elementorId?: string | null;
   elementorType?: string | null;
   elementorParents?: string[];
+  // Divi module class at the pin, e.g. "et_pb_text_1" (matches the page's 2nd text module); "_tb_" = Theme Builder
+  diviModule?: string | null;
+  diviParents?: string[];
 }
 
 export type InspectTarget = (url: string, width: number, selector: string) => Promise<PinTarget | null>;
@@ -135,6 +138,29 @@ function elementorContext(tree: ElementorNode[], focusIds: string[]) {
   return json;
 }
 
+// Divi modules in page order, named like the classes Divi puts on the page (et_pb_text_0, et_pb_text_1, ...).
+// Works for Divi 4 shortcodes ([et_pb_text ...]) and Divi 5 blocks (<!-- wp:divi/text {...} -->).
+function diviModules(content: string) {
+  const counts: Record<string, number> = {};
+  const modules: Array<{ module: string; attrs: string; text: string }> = [];
+  const pattern = /\[(et_pb_[a-z0-9_]+)([^\]]*)\]|<!-- wp:divi\/([a-z0-9-]+)(\s+\{[\s\S]*?\})?\s*\/?-->/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(content)) && modules.length < 300) {
+    const type = match[1] || `et_pb_${match[3].replace(/-/g, '_')}`;
+    const index = counts[type] ?? 0;
+    counts[type] = index + 1;
+    const after = content.slice(pattern.lastIndex, pattern.lastIndex + 400);
+    const text = after.split(/\[|<!-- /)[0].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+    modules.push({ module: `${type}_${index}`, attrs: (match[2] || match[4] || '').trim().slice(0, 300), text });
+  }
+  return modules;
+}
+
+function balanced(find: string, replace: string, open: RegExp, close: RegExp) {
+  const n = (s: string, re: RegExp) => (s.match(re) || []).length;
+  return n(find, open) === n(replace, open) && n(find, close) === n(replace, close);
+}
+
 // ---------- Prepare a fix ----------
 
 const FIX_SCHEMA = {
@@ -169,7 +195,9 @@ function buildPrompt(input: {
     .join('\n');
   const allowed = builder === 'elementor'
     ? '"elementor_settings" (preferred: change settings of one Elementor element) or "css"'
-    : '"content_replace" (preferred for text or markup changes) or "css" (for visual changes)';
+    : builder === 'divi'
+      ? '"content_replace" (preferred: edit the Divi module\'s attributes or text in the page content) or "css"'
+      : '"content_replace" (preferred for text or markup changes) or "css" (for visual changes)';
 
   return `You fix website review feedback on a WordPress page by proposing ONE small, safe change. A person reviews and approves it before it goes live.
 
@@ -190,7 +218,7 @@ ${target ? JSON.stringify(target, null, 1) : 'Could not be detected; use the fee
 Title: ${input.pageTitle}
 Built with: ${builder}
 Body class for page-only CSS: body.${input.bodyClass}
-${builder === 'elementor' ? 'Elementor elements (id, type, parentId, settings):' : 'Page content (post_content):'}
+${builder === 'elementor' ? 'Elementor elements (id, type, parentId, settings):' : builder === 'divi' ? 'Divi modules in page order (module = the class Divi gives it on the page), then the page content (post_content):' : 'Page content (post_content):'}
 ${input.pageData}
 
 ## CSS already added by WebReview (site-wide)
@@ -199,7 +227,8 @@ ${input.siteCss.trim() || '(none)'}
 ## Rules
 - Change as little as possible and only what the feedback asks for. Keep the site's existing style, fonts and colors unless the feedback is about them.
 - elementor_settings: use real Elementor control names for that widget type and only the keys that change. Examples: heading → title, title_color, align, header_size; text-editor → editor, text_color; button → text, background_color, button_text_color, border_radius, link. Typography needs "typography_typography": "custom" plus e.g. "typography_font_size": {"unit": "px", "size": 32}, "typography_font_weight": "600". Sizes and spacing use {"unit": "px", "size": N} or {"unit":"px","top":"0","right":"0","bottom":"0","left":"0","isLinked":false}. For a fix only on ${device === 'desktop' ? 'desktop, use the plain keys' : `${device}, add the _${device} suffix (e.g. typography_font_size_${device})`}.
-- content_replace: "find" must be copied character for character from the page content and be unique; keep Gutenberg block comments (<!-- wp:... -->) valid and balanced.
+${builder === 'divi' ? `- Divi: the element at the pin belongs to module ${target?.diviModule || '(unknown)'}${target?.diviModule?.includes('_tb_') ? ', which is in a Theme Builder layout (header/footer/template), not this page: use css instead' : ''}. Edit that module's own shortcode or block. Divi 4 attribute examples: et_pb_text → text_text_color, text_font_size, header_text_color, header_font_size, text_orientation; et_pb_button → button_text, button_url, custom_button="on" with button_text_color, button_bg_color, button_text_size; et_pb_blurb → title, header_text_color. Sizes are strings like "48px". For tablet/phone only, use the _tablet / _phone suffix and set <attr>_last_edited="on|desktop". Keep every [et_pb_...] / [/et_pb_...] tag (or <!-- wp:divi/... --> comment) balanced.
+` : ''}- content_replace: "find" must be copied character for character from the page content and be unique; keep Gutenberg block comments (<!-- wp:... -->) valid and balanced.
 - css: start every selector with body.${input.bodyClass} unless the problem is site-wide${device !== 'desktop' ? `; wrap it in a media query for ${device} (${device === 'mobile' ? 'max-width: 767px' : 'min-width: 768px and max-width: 1024px'})` : ''}. No @import, no external URLs.
 - Never add scripts, iframes, forms, tracking or links to other sites.`;
 }
@@ -235,7 +264,6 @@ export async function prepareFix(opts: {
     wpRequest(creds, '/webreview/v1/css'),
   ]);
   const builder: string = page.builder;
-  if (builder === 'divi') throw new WpError('Divi pages are not supported yet.', 400);
 
   const device: string = pin.metadata?.deviceType || 'desktop';
   const selector: string = pin.metadata?.selector || '';
@@ -246,7 +274,9 @@ export async function prepareFix(opts: {
   const focusIds = [target?.elementorId, ...(target?.elementorParents || [])].filter(Boolean) as string[];
   const pageData = builder === 'elementor'
     ? elementorContext(page.elementor || [], focusIds)
-    : String(page.content || '').slice(0, 40000);
+    : builder === 'divi'
+      ? `${JSON.stringify(diviModules(String(page.content || '')))}\n\n${String(page.content || '').slice(0, 40000)}`
+      : String(page.content || '').slice(0, 40000);
 
   const parts: any[] = [{
     text: buildPrompt({ pin, device, builder, pageTitle: page.title, bodyClass: page.body_class, target, pageData, siteCss: siteCss.css || '' }),
@@ -333,6 +363,9 @@ export async function prepareFix(opts: {
     checkMarkup(replace, 'content');
     if (countOf(find, '<!-- wp:') !== countOf(replace, '<!-- wp:') || countOf(find, '<!-- /wp:') !== countOf(replace, '<!-- /wp:')) {
       throw new WpError('The suggested change would break the page blocks. Try again.', 422);
+    }
+    if (!balanced(find, replace, /\[et_pb_[a-z0-9_]+/g, /\[\/et_pb_[a-z0-9_]+\]/g)) {
+      throw new WpError('The suggested change would break the Divi layout. Try again.', 422);
     }
     fix = { ...base, kind: 'content_replace', status: 'proposed', baseHash: page.hash, find, replace };
   } else if (proposal.kind === 'css') {

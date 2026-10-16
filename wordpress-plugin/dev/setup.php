@@ -64,6 +64,24 @@ if (!$home) {
 	update_option('page_on_front', $home_id);
 }
 
+// Divi sample page (Divi 4 shortcode layout). Renders as a Divi page once the Divi theme is installed.
+if (!get_page_by_path('divi-sample')) {
+	$divi_content = '[et_pb_section fb_built="1" _builder_version="4.27.4"][et_pb_row _builder_version="4.27.4"][et_pb_column type="4_4" _builder_version="4.27.4"]'
+		. '[et_pb_text _builder_version="4.27.4" header_text_color="#1E293B" header_font_size="36px"]<h1>Divi sample heading</h1>[/et_pb_text]'
+		. '[et_pb_text _builder_version="4.27.4"]<p>This page is built with Divi so the WebReview agent can be tested on it.</p>[/et_pb_text]'
+		. '[et_pb_button button_text="Request service" button_url="#contact" _builder_version="4.27.4"][/et_pb_button]'
+		. '[/et_pb_column][/et_pb_row][/et_pb_section]';
+	$divi_id = wp_insert_post(array(
+		'post_type' => 'page',
+		'post_status' => 'publish',
+		'post_title' => 'Divi Sample',
+		'post_name' => 'divi-sample',
+		'post_content' => $divi_content,
+	));
+	update_post_meta($divi_id, '_et_pb_use_builder', 'on');
+	update_post_meta($divi_id, '_et_pb_page_layout', 'et_full_width_page');
+}
+
 // Elementor sample page
 if (defined('ELEMENTOR_VERSION') && !get_page_by_path('elementor-sample')) {
 	$elementor_data = array(array(

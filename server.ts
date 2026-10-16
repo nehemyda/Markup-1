@@ -112,6 +112,16 @@ async function inspectPinTarget(url: string, width: number, selector: string): P
         node = node.parentElement?.closest('.elementor-element[data-id]') || null;
         if (node) parents.push(node.getAttribute('data-id')!);
       }
+      // Divi: the numbered module class (et_pb_text_1) and the row/section around it
+      const diviClass = (n: Element | null) => (n ? Array.from(n.classList).find((c) => /^et_pb_[a-z0-9_]+_\d+(_tb_[a-z]+)?$/.test(c)) || null : null);
+      const diviParents: string[] = [];
+      let diviNode: Element | null = el;
+      while (diviNode && !diviClass(diviNode)) diviNode = diviNode.parentElement;
+      const diviModule = diviClass(diviNode);
+      for (let up = diviNode?.parentElement || null; up && diviParents.length < 3; up = up.parentElement) {
+        const cls = diviClass(up);
+        if (cls) diviParents.push(cls);
+      }
       return {
         tag: el.tagName.toLowerCase(),
         text: ((el as HTMLElement).innerText || '').trim().slice(0, 400),
@@ -121,6 +131,8 @@ async function inspectPinTarget(url: string, width: number, selector: string): P
         elementorId: own,
         elementorType: ownType,
         elementorParents: parents,
+        diviModule,
+        diviParents,
       };
     }, selector);
   } finally {

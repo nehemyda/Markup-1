@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WebReview Connector
  * Description: Lets WebReview Pro read pages and apply approved fixes (Elementor, Divi, Gutenberg, site CSS) safely, with a backup before every change and one-click undo.
- * Version: 0.2.0
+ * Version: 0.3.0
  * Requires at least: 5.6
  * Requires PHP: 7.4
  * Author: YourDigitalAgents
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 	exit;
 }
 
-define('WEBREVIEW_CONNECTOR_VERSION', '0.2.0');
+define('WEBREVIEW_CONNECTOR_VERSION', '0.3.0');
 const WEBREVIEW_CAP = 'webreview_agent';
 const WEBREVIEW_SNAPSHOT_TYPE = 'webreview_snapshot';
 const WEBREVIEW_CSS_OPTION = 'webreview_custom_css';
@@ -128,6 +128,16 @@ function webreview_clear_elementor_css($post_id) {
 	$css = \Elementor\Core\Files\CSS\Post::create($post_id);
 	if ($css && method_exists($css, 'update')) {
 		$css->update();
+	}
+}
+
+// Divi keeps generated CSS per page (et-cache); drop it so the page is rebuilt with the change
+function webreview_clear_divi_cache($post_id) {
+	if (class_exists('ET_Core_PageResource')) {
+		ET_Core_PageResource::remove_static_resources($post_id, 'all');
+	}
+	if (function_exists('et_core_clear_wp_cache')) {
+		et_core_clear_wp_cache($post_id);
 	}
 }
 
@@ -350,7 +360,7 @@ add_action('rest_api_init', function () {
 		},
 	));
 
-	// Gutenberg / Divi / classic: replace the page content (WordPress also keeps its own revision).
+	// Gutenberg / Divi (shortcodes or Divi 5 blocks) / classic: replace the page content (WordPress also keeps its own revision).
 	register_rest_route($ns, '/page/(?P<id>\d+)/content', array(
 		'methods' => 'POST',
 		'permission_callback' => 'webreview_post_permission',
@@ -375,6 +385,9 @@ add_action('rest_api_init', function () {
 			$result = wp_update_post(array('ID' => $post_id, 'post_content' => wp_slash((string) $request['content'])), true);
 			if (is_wp_error($result)) {
 				return $result;
+			}
+			if (webreview_page_builder($post_id) === 'divi') {
+				webreview_clear_divi_cache($post_id);
 			}
 			webreview_mark_snapshot_applied($snapshot_id, 'content', $post_id);
 			return array('ok' => true, 'snapshot_id' => $snapshot_id);
@@ -455,6 +468,9 @@ add_action('rest_api_init', function () {
 				webreview_clear_elementor_css($post_id);
 			} elseif ($kind === 'content') {
 				wp_update_post(array('ID' => $post_id, 'post_content' => wp_slash($data['content'])));
+				if (webreview_page_builder($post_id) === 'divi') {
+					webreview_clear_divi_cache($post_id);
+				}
 			} elseif ($kind === 'css') {
 				update_option(WEBREVIEW_CSS_OPTION, $data['css'], false);
 			} else {

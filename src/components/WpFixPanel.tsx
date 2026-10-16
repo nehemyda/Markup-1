@@ -45,7 +45,26 @@ function SettingValue({ value }: { value: any }) {
 }
 
 const settingLabel = (key: string) => key.replace(/^typography_/, '').replace(/_/g, ' ');
-const plainText = (html = '') => html.replace(/<!--[\s\S]*?-->/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+const plainText = (html = '') => html.replace(/<!--[\s\S]*?-->/g, '').replace(/\[\/?et_pb_[^\]]*\]/g, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+// Divi shortcode attributes (name="value") in a piece of page content
+const diviAttrs = (text = '') => Object.fromEntries(Array.from(text.matchAll(/\b([a-z0-9_]+)="([^"]*)"/gi)).map((m) => [m[1], m[2]]));
+
+function SettingsTable({ before, after, keys }: { before: Record<string, any>; after: Record<string, any>; keys: string[] }) {
+  return (
+    <table className="w-full text-[10px]">
+      <tbody>
+        {keys.map((k) => (
+          <tr key={k} className="align-top">
+            <td className="pr-2 py-0.5 text-slate-500 capitalize whitespace-nowrap">{settingLabel(k)}</td>
+            <td className="py-0.5 text-slate-500"><SettingValue value={before[k]} /></td>
+            <td className="px-1 py-0.5 text-slate-400">→</td>
+            <td className="py-0.5 text-slate-900 font-semibold"><SettingValue value={after[k]} /></td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
 
 function ChangeDetails({ fix }: { fix: WpFix }) {
   const [showCode, setShowCode] = useState(false);
@@ -56,34 +75,34 @@ function ChangeDetails({ fix }: { fix: WpFix }) {
     return (
       <div className="space-y-1">
         <div className="text-[10px] text-slate-500">Elementor {fix.elementType} element</div>
-        <table className="w-full text-[10px]">
-          <tbody>
-            {keys.map((k) => (
-              <tr key={k} className="align-top">
-                <td className="pr-2 py-0.5 text-slate-500 capitalize whitespace-nowrap">{settingLabel(k)}</td>
-                <td className="py-0.5 text-slate-500"><SettingValue value={before[k]} /></td>
-                <td className="px-1 py-0.5 text-slate-400">→</td>
-                <td className="py-0.5 text-slate-900 font-semibold"><SettingValue value={after[k]} /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <SettingsTable before={before} after={after} keys={keys} />
       </div>
     );
   }
   if (fix.kind === 'content_replace') {
     const before = plainText(fix.find);
     const after = plainText(fix.replace);
+    // Divi module settings changed (shortcode attributes): show them like Elementor settings
+    const attrsBefore = fix.builder === 'divi' ? diviAttrs(fix.find) : {};
+    const attrsAfter = fix.builder === 'divi' ? diviAttrs(fix.replace) : {};
+    const changedAttrs = Array.from(new Set([...Object.keys(attrsBefore), ...Object.keys(attrsAfter)]))
+      .filter((k) => attrsBefore[k] !== attrsAfter[k] && !k.startsWith('_'));
     return (
       <div className="space-y-1.5 text-[11px]">
+        {changedAttrs.length > 0 && (
+          <>
+            <div className="text-[10px] text-slate-500">Divi module settings</div>
+            <SettingsTable before={attrsBefore} after={attrsAfter} keys={changedAttrs} />
+          </>
+        )}
         {before !== after ? (
           <>
             <div className="bg-rose-50 border border-rose-100 rounded px-2 py-1 text-rose-900 line-through decoration-rose-300">{before || '(no text)'}</div>
             <div className="bg-emerald-50 border border-emerald-100 rounded px-2 py-1 text-emerald-900">{after || '(no text)'}</div>
           </>
-        ) : (
+        ) : changedAttrs.length === 0 ? (
           <div className="text-[10px] text-slate-500">Changes the page markup only (text stays the same).</div>
-        )}
+        ) : null}
         <button onClick={() => setShowCode((v) => !v)} className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-slate-800">
           <Code className="w-3 h-3" /> {showCode ? 'Hide code' : 'Show code'}
         </button>
