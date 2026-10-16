@@ -1424,9 +1424,11 @@ export default function App() {
                       onDeletePin={handleDeletePin}
                       onDeleteComment={handleDeleteComment}
                       wpFix={
-                        accessKey === 'member' && wpSite?.status === 'connected' && selectedPin
+                        accessKey === 'member' && selectedPin && currentAsset.type === 'url'
                           ? {
                               projectId: currentProject.id,
+                              connected: wpSite?.status === 'connected',
+                              onConnect: () => setShowWordPressModal(true),
                               isAdmin: isWorkspaceAdmin,
                               onSiteChanged: () => setSiteVersion((v) => v + 1),
                               onPreviewCss: setPreviewCss,

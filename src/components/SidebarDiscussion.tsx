@@ -70,6 +70,9 @@ interface SidebarDiscussionProps {
   // Set when the project is connected to WordPress: shows "Fix with AI" for members
   wpFix?: {
     projectId: string;
+    // false = project not connected yet: show how to connect instead
+    connected: boolean;
+    onConnect: () => void;
     isAdmin: boolean;
     onSiteChanged: () => void;
     onPreviewCss: (css: string | null) => void;
@@ -716,6 +719,8 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
         {!isGuest && wpFix && (
           <WpFixPanel
             projectId={wpFix.projectId}
+            connected={wpFix.connected}
+            onConnect={wpFix.onConnect}
             pin={selectedPin}
             isAdmin={wpFix.isAdmin}
             currentUserId={currentUser.id}
@@ -905,7 +910,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
             <span className="text-[10px] bg-indigo-100 px-1.5 py-0.5 rounded text-indigo-800 font-mono">v3.6</span>
           </div>
 
-          <div className={`grid gap-1.5 ${wpFix ? 'grid-cols-2' : 'grid-cols-3'}`}>
+          <div className={`grid gap-1.5 ${wpFix?.connected ? 'grid-cols-2' : 'grid-cols-3'}`}>
             <button
               onClick={handleRunAiSummary}
               disabled={loadingAi !== null}
@@ -925,7 +930,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
             </button>
 
             {/* On WordPress projects "Fix with AI" above replaces this */}
-            {!wpFix && (
+            {!wpFix?.connected && (
             <button
               onClick={handleRunAiFix}
               disabled={loadingAi !== null}

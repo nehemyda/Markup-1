@@ -6,6 +6,8 @@ import { subscribeWpFixes } from '../lib/firebaseSync';
 
 interface WpFixPanelProps {
   projectId: string;
+  connected: boolean;
+  onConnect: () => void;
   pin: Pin;
   isAdmin: boolean;
   currentUserId: string;
@@ -121,7 +123,25 @@ function ChangeDetails({ fix }: { fix: WpFix }) {
   return fix.reason ? <div className="text-[11px] text-slate-600">{fix.reason}</div> : null;
 }
 
-export const WpFixPanel: React.FC<WpFixPanelProps> = ({ projectId, pin, isAdmin, currentUserId, onSiteChanged, onPreviewCss }) => {
+// Not connected yet: one line explaining how to turn on Fix with AI
+const ConnectHint: React.FC<{ isAdmin: boolean; onConnect: () => void }> = ({ isAdmin, onConnect }) => (
+  <div className="border border-dashed border-indigo-200 rounded-lg px-3 py-2 flex items-center justify-between gap-2 text-[11px] text-slate-600">
+    <span className="flex items-center gap-1.5">
+      <Sparkles className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+      {isAdmin ? 'Connect this site to WordPress to fix pins with AI.' : 'Fix with AI is available once an admin connects this site to WordPress.'}
+    </span>
+    {isAdmin && (
+      <button onClick={onConnect} className="shrink-0 text-indigo-600 hover:text-indigo-800 font-bold">
+        Connect WordPress
+      </button>
+    )}
+  </div>
+);
+
+export const WpFixPanel: React.FC<WpFixPanelProps> = (props) =>
+  props.connected ? <ConnectedWpFixPanel {...props} /> : <ConnectHint isAdmin={props.isAdmin} onConnect={props.onConnect} />;
+
+const ConnectedWpFixPanel: React.FC<WpFixPanelProps> = ({ projectId, pin, isAdmin, currentUserId, onSiteChanged, onPreviewCss }) => {
   const [fixes, setFixes] = useState<WpFix[]>([]);
   const [preparing, setPreparing] = useState(false);
   const [busyFix, setBusyFix] = useState('');
