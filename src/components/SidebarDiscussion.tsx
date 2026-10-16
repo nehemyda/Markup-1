@@ -1,3 +1,4 @@
+import { apiFetch } from '../lib/api';
 import { filesToAttachments, rejectedFilesMessage } from '../lib/attachments';
 import React, { useState, useRef } from 'react';
 import { Pin, PinStatus, Teammate, Comment, Attachment, QARubricRule, QAPinError, FilterState } from '../types';
@@ -250,7 +251,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
     if (!selectedPin) return;
     setLoadingAi('summary');
     try {
-      const res = await fetch('/api/ai/summarize-thread', {
+      const res = await apiFetch('/api/ai/summarize-thread', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -272,7 +273,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
     if (!selectedPin) return;
     setLoadingAi('ticket');
     try {
-      const res = await fetch('/api/ai/convert-ticket', {
+      const res = await apiFetch('/api/ai/convert-ticket', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -295,7 +296,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
     setLoadingAi('fix');
     try {
       const lastCmt = selectedPin.comments[selectedPin.comments.length - 1]?.text || selectedPin.title;
-      const res = await fetch('/api/ai/suggest-fix', {
+      const res = await apiFetch('/api/ai/suggest-fix', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

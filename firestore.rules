@@ -1,9 +1,90 @@
 rules_version = '2';
-// Local emulator only: allow everything. Do NOT deploy these rules to production.
+
+// Who can read and change what. The server (Admin SDK) is not limited by these rules; it creates member
+// profiles, issues guest passes and is the only one that can touch WordPress keys and the audit log.
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    // Guests sign in with a pass for one shared project (custom token claim "guestProject")
+    function guestProject() { return request.auth.token.get('guestProject', null); }
+    function isGuest() { return signedIn() && guestProject() != null; }
+    function myProfile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)); }
+    function isMember() {
+      return signedIn() && !isGuest()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && myProfile().data.get('removed', false) != true;
+    }
+    function isAdmin() { return isMember() && myProfile().data.role in ['Owner', 'Admin']; }
+    function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+
+    // Team profiles are created by the server. You may edit your own name, photo, status and department;
+    // admins may change roles and remove people (never the master admin). Nobody changes their own role or email.
+    match /users/{uid} {
+      allow read: if isMember();
+      allow update: if isMember() && (
+        (request.auth.uid == uid && !changed().hasAny(['role', 'removed', 'removedAt', 'email', 'isMasterAdmin', 'id']))
+        || (isAdmin() && request.auth.uid != uid
+            && resource.data.get('isMasterAdmin', false) != true
+            && changed().hasOnly(['role', 'removed', 'removedAt']))
+      );
+      allow create, delete: if false;
+    }
+
+    match /invites/{email} {
+      allow read, write: if isMember();
+    }
+
+    match /folders/{folderId} {
+      allow read, write: if isMember();
+    }
+
+    match /projects/{projectId} {
+      allow read: if isMember() || (isGuest() && guestProject() == projectId);
+      allow create, delete: if isMember();
+      // Guests may only add a page (first pin on a newly browsed page) to their shared project
+      allow update: if isMember() || (
+        isGuest() && guestProject() == projectId
+        && changed().hasOnly(['assets'])
+        && request.resource.data.assets.size() > resource.data.assets.size()
+      );
+    }
+
+    match /pins/{pinId} {
+      allow read: if isMember() || (isGuest() && resource.data.projectId == guestProject());
+      allow create: if isMember() || (isGuest() && request.resource.data.projectId == guestProject());
+      // Guests may comment on pins in their shared project, nothing else
+      allow update: if isMember() || (
+        isGuest() && resource.data.projectId == guestProject()
+        && request.resource.data.projectId == guestProject()
+        && changed().hasOnly(['comments', 'isUnread'])
+      );
+      allow delete: if isMember();
+    }
+
+    // Allowed email domains are shown on the sign-in page
+    match /settings/access {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /auditLog/{entryId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // WordPress connections: members see site details; keys are server-only
+    match /wpSites/{siteId} {
+      allow read: if isMember();
+      allow write: if false;
+    }
+    match /wpSiteSecrets/{siteId} {
+      allow read, write: if false;
+    }
+
+    // Everything else is closed
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
     }
   }
 }

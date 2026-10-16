@@ -1,4 +1,10 @@
 import express from 'express';
+import crypto from 'crypto';
+import { adminAuth, adminDb } from './server/firebaseAdmin';
+import { checkAccess, startSession } from './server/access';
+import { requireMember, requireSignedIn, AuthedRequest } from './server/auth';
+import { logAudit } from './server/audit';
+import { addProjectIdToPins } from './server/migrations';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
@@ -107,6 +113,49 @@ async function startServer() {
   app.use(express.json({ limit: '10mb' }));
 
   // Health check endpoint
+  // ---------- Sign-in and access (decided on the server) ----------
+
+  // Before creating an account: may this email use the workspace? (Only returns yes/no.)
+  app.post('/api/auth/check-access', async (req, res) => {
+    const email = String(req.body?.email || '');
+    res.json({ allowed: await checkAccess(email) });
+  });
+
+  // After sign-in: load (or create) the member profile. 403 if this account may not use the workspace.
+  app.post('/api/auth/session', async (req: AuthedRequest, res) => {
+    const header = req.headers.authorization || '';
+    const idToken = header.startsWith('Bearer ') ? header.slice(7) : '';
+    try {
+      const token = await adminAuth.verifyIdToken(idToken);
+      const profile = await startSession(token);
+      if (!profile) {
+        return res.status(403).json({
+          error: `Access denied: ${token.email || 'this account'} is not allowed in this workspace. Ask a workspace admin to invite you.`,
+        });
+      }
+      req.token = token;
+      req.member = profile;
+      res.json({ profile });
+    } catch {
+      res.status(401).json({ error: 'Please sign in again.' });
+    }
+  });
+
+  // Guest link: a pass that only works for this one project (read it, add pins and comments)
+  app.post('/api/guest/session', async (req, res) => {
+    const projectId = String(req.body?.projectId || '');
+    const guestId = String(req.body?.guestId || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || crypto.randomUUID();
+    if (!projectId || !(await adminDb.doc(`projects/${projectId}`).get()).exists) {
+      return res.status(404).json({ error: 'This shared project no longer exists or the link is incorrect.' });
+    }
+    const token = await adminAuth.createCustomToken(`guest_${guestId}`, { guestProject: projectId });
+    res.json({ token, guestId });
+  });
+
+  // AI features and screenshots need a signed-in caller (they use the Gemini key / server Chrome)
+  app.use('/api/ai', requireMember);
+  app.use('/api/screenshot', requireSignedIn);
+
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
@@ -530,16 +579,29 @@ For each finding, set elementId to the id of the element the problem is on (it m
         const autoHeightSnippet = `
 <style>
 /* Full Page Continuous Layout - Markup.io style */
+/* Let the page grow to its full length inside the frame. Heights are left alone: forcing height:auto broke
+   pages that size their layout with percentages (e.g. an editor preview whose frame fills the screen). */
 html, body {
   overflow-y: visible !important;
-  height: auto !important;
 }
 </style>
 <script>
 (function() {
   // Height of the page's real content: the lowest bottom edge of visible, in-flow elements.
   // Ignores the frame's own height and fixed/sticky overlays (chat bubbles, cookie bars), so the frame can shrink to fit.
+  // App-style pages (e.g. an editor preview: a toolbar plus one frame that fills the screen and scrolls inside)
+  // have no page length of their own. Give them a normal screen height instead of measuring.
+  var APP_PAGE_HEIGHT = 900;
+  function isAppStylePage() {
+    var frames = document.getElementsByTagName('iframe');
+    for (var i = 0; i < frames.length; i++) {
+      var r = frames[i].getBoundingClientRect();
+      if (r.width >= window.innerWidth * 0.5 && r.height >= window.innerHeight * 0.4 && Math.abs(r.bottom - window.innerHeight) < 3) return true;
+    }
+    return false;
+  }
   function contentHeight() {
+    if (isAppStylePage()) return APP_PAGE_HEIGHT;
     var maxBottom = 0;
     var els = document.body ? document.body.getElementsByTagName('*') : [];
     for (var i = 0; i < els.length; i++) {
@@ -571,6 +633,57 @@ html, body {
       }
     } catch(e) {}
   }
+  // Frames inside the page (e.g. an editor preview showing desktop/tablet/mobile) also load through the proxy,
+  // like Markup.io; otherwise sites that only allow framing by themselves (X-Frame-Options / frame-ancestors) are
+  // blocked. Covers frames in the HTML and frames that page scripts create later.
+  var PROXY_PREFIX = location.origin + '/api/proxy-site?url=';
+  function proxiedFrameUrl(value) {
+    if (!value) return value;
+    var raw = String(value);
+    if (raw.indexOf(PROXY_PREFIX) === 0 || /^(about:|data:|blob:|javascript:)/i.test(raw)) return raw;
+    try {
+      var abs = new URL(raw, document.baseURI);
+      if (!/^https?:$/.test(abs.protocol)) return raw;
+      return PROXY_PREFIX + encodeURIComponent(abs.href);
+    } catch (err) { return raw; }
+  }
+  try {
+    var srcDesc = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'src');
+    if (srcDesc && srcDesc.set) {
+      Object.defineProperty(HTMLIFrameElement.prototype, 'src', {
+        configurable: true,
+        enumerable: srcDesc.enumerable,
+        get: function() { return srcDesc.get.call(this); },
+        set: function(v) { srcDesc.set.call(this, proxiedFrameUrl(v)); }
+      });
+    }
+    var origSetAttribute = Element.prototype.setAttribute;
+    Element.prototype.setAttribute = function(name, value) {
+      if (this.tagName === 'IFRAME' && String(name).toLowerCase() === 'src') value = proxiedFrameUrl(value);
+      return origSetAttribute.call(this, name, value);
+    };
+  } catch (err) {}
+  function fixFrames(root) {
+    var frames = root.querySelectorAll ? root.querySelectorAll('iframe[src]') : [];
+    for (var i = 0; i < frames.length; i++) {
+      var current = frames[i].getAttribute('src');
+      var fixed = proxiedFrameUrl(current);
+      if (fixed !== current) frames[i].setAttribute('src', fixed);
+    }
+  }
+  document.addEventListener('DOMContentLoaded', function() { fixFrames(document); });
+  new MutationObserver(function(mutations) {
+    for (var i = 0; i < mutations.length; i++) {
+      var added = mutations[i].addedNodes;
+      for (var j = 0; j < added.length; j++) {
+        var node = added[j];
+        if (node.nodeType !== 1) continue;
+        if (node.tagName === 'IFRAME') fixFrames(node.parentNode || document);
+        else fixFrames(node);
+      }
+    }
+  }).observe(document.documentElement, { childList: true, subtree: true });
+
   // Link clicks: pages of the same website open inside the app (as a page of the project);
   // other websites open in a new tab. Same-page #anchors behave normally.
   document.addEventListener('click', function(e) {
@@ -673,6 +786,10 @@ html, body {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  addProjectIdToPins()
+    .then((n) => n && console.log(`Migration: added projectId to ${n} pins`))
+    .catch((err) => console.warn('Migration failed:', err?.message));
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 MarkFlow Server running on http://localhost:${PORT}`);

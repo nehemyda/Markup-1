@@ -39,7 +39,7 @@ import {
   updateMemberRole,
   removeMember,
   normalizeRole,
-  checkFirebaseConnection
+  subscribeProject,
 } from './lib/firebaseSync';
 import { Header } from './components/Header';
 import { AuthPage } from './components/AuthPage';
@@ -54,12 +54,20 @@ import { NewProjectModal, NewAssetModal, ShareModal, GuestNameModal } from './co
 import { DomainSecurityModal } from './components/DomainSecurityModal';
 import { ProfileSettingsModal } from './components/ProfileSettingsModal';
 import { getAllowedDomains } from './utils/domains';
-import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { onAuthStateChanged, signOut, signInWithCustomToken } from 'firebase/auth';
 import { auth } from './lib/firebase';
 import { ReviewSnapshot } from './lib/pageSnapshot';
 import { nextPinNumber, pinDevice, describeClient, PinDevice } from './lib/pins';
 import { parseRoute, buildPath, Route, DashboardTab, SettingsSubTab } from './lib/routes';
-import { checkWorkspaceAccess, accessDeniedMessage, isMasterAdmin, getDefaultOrganization, loadOrCreateProfile, saveProfile } from './lib/userProfile';
+import { isMasterAdmin, getDefaultOrganization, startSession, saveProfile } from './lib/userProfile';
+import { apiFetch } from './lib/api';
+
+// Project id of a guest link in the address bar (/projects/<id>?guest_mode=true), else null
+function guestLinkProjectId(): string | null {
+  if (typeof window === 'undefined') return null;
+  if (new URLSearchParams(window.location.search).get('guest_mode') !== 'true') return null;
+  return parseRoute(window.location.pathname, window.location.search).projectId || null;
+}
 
 export default function App() {
   // Authentication State
@@ -226,38 +234,98 @@ export default function App() {
     } catch (e) {}
   }, [pins]);
 
+  // Who is using the app: '' (nobody yet), 'member', or 'guest:<projectId>' (a guest link's project pass).
+  // Data subscriptions start once this is known, and guests only load their project.
+  const [accessKey, setAccessKey] = useState('');
+
   // Firebase Auth: restore the session on load and react to sign-in / sign-out
   useEffect(() => {
     const unsubAuth = onAuthStateChanged(auth, async (fbUser) => {
       if (!fbUser) {
         setAuthUser(null);
         setCurrentOrganization(null);
+        setAccessKey('');
         setAuthReady(true);
         return;
       }
-      if (!(await checkWorkspaceAccess(fbUser.email))) {
-        setAuthNotice(accessDeniedMessage(fbUser.email || ''));
-        await signOut(auth);
+      const { claims } = await fbUser.getIdTokenResult();
+      if (claims.guestProject) {
+        // A guest pass only works on its own guest link
+        const linkProject = guestLinkProjectId();
+        if (!linkProject || linkProject !== claims.guestProject) {
+          await signOut(auth);
+          return;
+        }
+        setAuthUser(null);
+        setAccessKey(`guest:${claims.guestProject}`);
+        setAuthReady(true);
         return;
       }
-      const org = getDefaultOrganization();
-      const profile = await loadOrCreateProfile(fbUser, org);
-      if (!profile) {
-        setAuthNotice('Your access to this workspace was removed by an admin. Ask an admin to invite you again.');
+      try {
+        // The server checks access, applies invites and decides the role
+        const profile = await startSession(fbUser);
+        setAuthNotice(null);
+        setCurrentOrganization(getDefaultOrganization());
+        setAuthUser(profile);
+        setAccessKey('member');
+        setAuthReady(true);
+      } catch (err: any) {
+        setAuthNotice(err?.message || 'Could not sign in.');
         await signOut(auth);
-        return;
       }
-      setAuthNotice(null);
-      setCurrentOrganization(org);
-      setAuthUser(profile);
-      setAuthReady(true);
     });
     return () => unsubAuth();
   }, []);
 
-  // Firebase Firestore Real-Time Synchronization
+  // Guest link without a signed-in member: get a pass for this one project from the server
   useEffect(() => {
-    checkFirebaseConnection();
+    if (!authReady || auth.currentUser) return;
+    const projectId = guestLinkProjectId();
+    if (!projectId) return;
+    let guestId = '';
+    try {
+      guestId = localStorage.getItem('mf_guest_id') || '';
+    } catch (e) {}
+    fetch('/api/guest/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId, guestId }),
+    })
+      .then(async (res) => {
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || 'Could not open this shared project.');
+        try {
+          localStorage.setItem('mf_guest_id', body.guestId);
+        } catch (e) {}
+        await signInWithCustomToken(auth, body.token);
+      })
+      .catch((err) => {
+        alert(err.message);
+        window.location.href = '/';
+      });
+  }, [authReady]);
+
+  // Firebase Firestore Real-Time Synchronization (starts once we know who is signed in)
+  useEffect(() => {
+    if (!accessKey) {
+      // Signed out: forget the data and open the page in the address bar again after the next sign-in
+      setProjectsLoaded(false);
+      setRouteReady(false);
+      return;
+    }
+
+    if (accessKey.startsWith('guest:')) {
+      const projectId = accessKey.slice('guest:'.length);
+      const unsubProject = subscribeProject(projectId, (project) => {
+        setProjects(project ? [project] : []);
+        setProjectsLoaded(true);
+      });
+      const unsubPins = subscribePins(setPins, projectId);
+      return () => {
+        unsubProject();
+        unsubPins();
+      };
+    }
 
     // Firestore is the source of truth; its SDK queues writes made while offline
     const unsubProjects = subscribeProjects((cloudProjects) => {
@@ -288,7 +356,7 @@ export default function App() {
       unsubTeam();
       unsubFolders();
     };
-  }, []);
+  }, [accessKey]);
 
 
   // Keep the selected project pointing at a real project (the initial value is only a placeholder)
@@ -479,55 +547,7 @@ export default function App() {
     }
   };
 
-  const handleAddNewUrlAsset = (newUrl: string) => {
-    let finalUrl = newUrl.trim();
-    if (!finalUrl.startsWith('http://') && !finalUrl.startsWith('https://')) {
-      finalUrl = `https://${finalUrl}`;
-    }
-    const domainTitle = finalUrl.replace(/^https?:\/\//, '').split('/')[0] || finalUrl;
-
-    const projId = `proj_${Date.now()}`;
-    const assetId = `asset_${Date.now()}`;
-
-    const newAsset: Asset = {
-      id: assetId,
-      projectId: projId,
-      title: domainTitle,
-      type: 'url',
-      url: finalUrl,
-      thumbnailUrl: 'https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=600&auto=format&fit=crop&q=80',
-      status: 'in_review',
-      pinCount: 0,
-      resolvedCount: 0
-    };
-
-    const newProject: Project = {
-      folderId: currentFolderId,
-      id: projId,
-      name: domainTitle,
-      client: 'YourDigitalAgents Enterprise',
-      description: `Live web annotation project for ${domainTitle}`,
-      color: 'from-blue-600 to-indigo-600',
-      avatar: '🌐',
-      memberCount: 1,
-      lastUpdated: 'Just now',
-      ownerId: currentUser.id,
-      assets: [newAsset]
-    };
-
-    setProjects((prev) => {
-      const updated = [newProject, ...prev];
-      try {
-        localStorage.setItem('webreview_projects_v2', JSON.stringify(updated));
-      } catch (e) {}
-      return updated;
-    });
-    saveProjectToFirestore(newProject);
-    setCurrentProject(newProject);
-    setCurrentAsset(newAsset);
-    setSelectedPin(null);
-    setViewMode('studio');
-  };
+  const handleAddNewUrlAsset = (newUrl: string) => handleCreateProject(newUrl);
 
   // Filters
   const [filterState, setFilterState] = useState<FilterState>({
@@ -640,10 +660,12 @@ export default function App() {
   }) => {
     ensurePageSaved(currentAsset);
     const nextNum = nextPinNumber(pins, projectPageIds);
+    const projectId = currentProject.id;
     const assignee = teammates.find((t) => t.id === pinData.assigneeId);
 
     const pinId = `pin_${Date.now()}`;
     const newPin: Pin = {
+      projectId,
       id: pinId,
       assetId: currentAsset.id,
       number: nextNum,
@@ -803,7 +825,7 @@ export default function App() {
   const handleRunAiAudit = async (snapshot: ReviewSnapshot) => {
     setIsAuditing(true);
     try {
-      const res = await fetch('/api/ai/audit-site', {
+      const res = await apiFetch('/api/ai/audit-site', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -845,6 +867,7 @@ export default function App() {
         return {
           id: pinId,
           assetId: currentAsset.id,
+          projectId: currentProject.id,
           number: firstNumber + idx,
           x: item.x,
           y: item.y,
@@ -935,57 +958,41 @@ export default function App() {
     if (currentFolderId === folderId) setCurrentFolderId(null);
   };
 
-  // Create Project
-  const handleCreateProject = (
-    name: string,
-    client: string,
-    desc: string,
-    avatar: string,
-    color: string,
-    websiteUrl?: string
-  ) => {
-    let finalUrl = websiteUrl?.trim();
-    if (!finalUrl) {
-      if (name.includes('.') && !name.includes(' ')) {
-        finalUrl = name.startsWith('http') ? name : `https://${name}`;
-      } else {
-        const slug = name.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-');
-        finalUrl = `https://${slug || 'site'}.websitepro.hosting`;
-      }
-    } else {
-      if (!finalUrl.startsWith('http://') && !finalUrl.startsWith('https://')) {
-        finalUrl = `https://${finalUrl}`;
-      }
+  // Create a project for a website (one project = one website). Used by the New project window and by
+  // creating from an address elsewhere. Name defaults to the domain; the folder defaults to the open folder.
+  const handleCreateProject = (rawUrl: string, name = '', folderId: string | null = currentFolderId) => {
+    let url = rawUrl.trim();
+    if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      alert('That does not look like a website address.');
+      return;
     }
-
-    const domainTitle = finalUrl.replace(/^https?:\/\//, '').split('/')[0] || name;
-
+    const domain = parsed.hostname;
     const projId = `proj_${Date.now()}`;
-    const assetId = `asset_${Date.now()}`;
-
     const newAsset: Asset = {
-      id: assetId,
+      id: `asset_${Date.now()}`,
       projectId: projId,
-      title: domainTitle || name,
+      title: domain,
       type: 'url',
-      url: finalUrl,
-      thumbnailUrl: 'https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=600&auto=format&fit=crop&q=80',
+      url: parsed.href,
       status: 'in_review',
       pinCount: 0,
       resolvedCount: 0,
     };
-
     const newProj: Project = {
-      folderId: currentFolderId,
       id: projId,
-      name,
-      client,
-      description: desc || `Live website annotation project for ${name}`,
-      avatar: avatar || '🌐',
-      color: color || 'from-blue-600 to-indigo-600',
+      name: name.trim() || domain,
+      client: '',
+      description: '',
+      avatar: '🌐',
+      color: 'from-blue-600 to-indigo-600',
       memberCount: 1,
       lastUpdated: 'Just now',
       ownerId: currentUser.id,
+      folderId,
       assets: [newAsset],
     };
 
@@ -1485,6 +1492,8 @@ export default function App() {
         isOpen={showNewProjectModal}
         onClose={() => setShowNewProjectModal(false)}
         onCreateProject={handleCreateProject}
+        folders={folders}
+        defaultFolderId={currentFolderId}
       />
       <NewAssetModal
         isOpen={showNewAssetModal}

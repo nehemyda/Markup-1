@@ -1,6 +1,7 @@
 import { 
   collection, 
   doc, 
+  where,
   setDoc, 
   onSnapshot, 
   getDocs,
@@ -12,34 +13,14 @@ import {
 import { db, firebaseConfig } from './firebase';
 import { Project, Pin, QARubricRule, Teammate, AuthUser, Folder } from '../types';
 
-export interface FirebaseConnectionInfo {
-  isConnected: boolean;
-  projectId: string;
-  error?: string;
-}
-
-// Check initial Firestore connectivity
-export async function checkFirebaseConnection(): Promise<FirebaseConnectionInfo> {
-  try {
-    const testDocRef = doc(db, '_health_check', 'status');
-    await setDoc(testDocRef, { 
-      lastChecked: new Date().toISOString(), 
-      app: 'WebReview Pro',
-      status: 'active' 
-    }, { merge: true });
-    
-    return {
-      isConnected: true,
-      projectId: firebaseConfig.projectId
-    };
-  } catch (err: any) {
-    console.warn("Firestore check fallback mode active:", err);
-    return {
-      isConnected: true, // We still consider config valid
-      projectId: firebaseConfig.projectId,
-      error: err.message
-    };
-  }
+// One project (guests can only read the project in their link)
+export function subscribeProject(projectId: string, onUpdate: (project: Project | null) => void): () => void {
+  return onSnapshot(doc(db, 'projects', projectId), (snap) => {
+    onUpdate(snap.exists() ? ({ ...(snap.data() as Project), id: snap.id }) : null);
+  }, (error) => {
+    console.warn("Project Firestore subscription error:", error);
+    onUpdate(null);
+  });
 }
 
 // Sync Projects to Firestore
@@ -74,9 +55,10 @@ export async function saveProjectToFirestore(project: Project): Promise<void> {
 }
 
 // Sync Pins to Firestore
-export function subscribePins(onPinsUpdate: (pins: Pin[]) => void): () => void {
+// All pins (members), or only one project's pins (guests)
+export function subscribePins(onPinsUpdate: (pins: Pin[]) => void, projectId?: string): () => void {
   try {
-    const pinsCol = collection(db, 'pins');
+    const pinsCol = projectId ? query(collection(db, 'pins'), where('projectId', '==', projectId)) : collection(db, 'pins');
     const unsubscribe = onSnapshot(pinsCol, (snapshot) => {
       const fetchedPins: Pin[] = [];
       snapshot.forEach((docSnap) => {

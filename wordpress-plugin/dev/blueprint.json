@@ -1,0 +1,19 @@
+{
+  "$schema": "https://playground.wordpress.net/blueprint-schema.json",
+  "landingPage": "/wp-admin/options-general.php?page=webreview-connector",
+  "steps": [
+    {
+      "step": "installPlugin",
+      "pluginData": { "resource": "wordpress.org/plugins", "slug": "elementor" },
+      "ifAlreadyInstalled": "skip"
+    },
+    {
+      "step": "activatePlugin",
+      "pluginPath": "webreview-connector/webreview-connector.php"
+    },
+    {
+      "step": "runPHP",
+      "code": "<?php require_once '/wordpress/wp-load.php'; require '/webreview-dev/setup.php';"
+    }
+  ]
+}

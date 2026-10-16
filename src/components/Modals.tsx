@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Project, Asset, Teammate } from '../types';
+import { Project, Asset, Teammate, Folder } from '../types';
 import { projectUrl } from '../lib/routes';
 import { copyText } from '../lib/clipboard';
 import { 
@@ -22,148 +22,104 @@ import {
 interface NewProjectModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onCreateProject: (name: string, client: string, desc: string, avatar: string, color: string, websiteUrl?: string) => void;
+  onCreateProject: (url: string, name: string, folderId: string | null) => void;
+  folders?: Folder[];
+  defaultFolderId?: string | null;
 }
 
-export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClose, onCreateProject }) => {
+// A project is one website: only the address is needed. Name defaults to the address; folder defaults to the open one.
+export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClose, onCreateProject, folders = [], defaultFolderId = null }) => {
+  const [url, setUrl] = useState('');
   const [name, setName] = useState('');
-  const [client, setClient] = useState('');
-  const [desc, setDesc] = useState('');
-  const [websiteUrl, setWebsiteUrl] = useState('');
-  const [avatar, setAvatar] = useState('🚀');
-  const [color, setColor] = useState('from-blue-600 to-indigo-600');
+  const [folderId, setFolderId] = useState<string | null>(defaultFolderId);
+  const [error, setError] = useState('');
+
+  React.useEffect(() => {
+    if (isOpen) {
+      setUrl('');
+      setName('');
+      setError('');
+      setFolderId(defaultFolderId);
+    }
+  }, [isOpen, defaultFolderId]);
 
   if (!isOpen) return null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return;
-    onCreateProject(name.trim(), client.trim() || 'Internal Team', desc.trim(), avatar, color, websiteUrl.trim());
-    setName('');
-    setClient('');
-    setDesc('');
-    setWebsiteUrl('');
+    const raw = url.trim();
+    const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    try {
+      const parsed = new URL(withScheme);
+      if (!parsed.hostname.includes('.')) throw new Error('no domain');
+    } catch {
+      setError('Enter a website address, e.g. example.com');
+      return;
+    }
+    onCreateProject(withScheme, name.trim(), folderId);
     onClose();
   };
 
-  const avatars = ['🚀', '⚡', '💎', '🎨', '🛍️', '🔥', '🌐', '🛡️', '✨'];
-  const colors = [
-    'from-blue-600 to-indigo-600',
-    'from-purple-600 to-pink-600',
-    'from-emerald-600 to-teal-600',
-    'from-amber-600 to-orange-600',
-    'from-rose-600 to-red-600',
-  ];
-
   return (
-    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-in fade-in duration-150">
-      <div className="bg-white border border-slate-200 rounded-xl max-w-lg w-full p-5 shadow-xl space-y-4">
-        <div className="flex items-center justify-between border-b border-slate-200 pb-2.5">
-          <div className="flex items-center gap-1.5 font-extrabold text-sm text-slate-900">
-            <Plus className="w-4 h-4 text-indigo-600" />
-            <span>Create New Client Project</span>
-          </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-700"><X className="w-4 h-4" /></button>
+    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+      <form onSubmit={handleSubmit} className="bg-white border border-slate-200 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4 text-sm">
+        <div className="flex items-center justify-between">
+          <h2 className="font-extrabold text-base text-slate-900">New project</h2>
+          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-700 p-1 rounded-lg">
+            <X className="w-4 h-4" />
+          </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-3.5 text-xs">
-          <div>
-            <label className="font-extrabold text-slate-700 uppercase tracking-wider block mb-1">Project Name</label>
-            <input
-              type="text"
-              required
-              placeholder="e.g. Acme Web App Redesign Beta"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="w-full bg-white border border-slate-300 rounded-md px-3 py-1.5 text-slate-900 focus:outline-none focus:border-indigo-600 shadow-xs"
-              autoFocus
-            />
-          </div>
+        <label className="block">
+          <span className="text-xs font-bold text-slate-600">Website address</span>
+          <input
+            autoFocus
+            value={url}
+            onChange={(e) => {
+              setUrl(e.target.value);
+              setError('');
+            }}
+            placeholder="e.g. example.com or staging.example.com"
+            className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500"
+          />
+          {error && <span className="block text-xs text-rose-600 mt-1">{error}</span>}
+        </label>
 
-          <div>
-            <label className="font-extrabold text-slate-700 uppercase tracking-wider block mb-1">Client / Organization Name</label>
-            <input
-              type="text"
-              placeholder="e.g. Acme Enterprises Inc."
-              value={client}
-              onChange={(e) => setClient(e.target.value)}
-              className="w-full bg-white border border-slate-300 rounded-md px-3 py-1.5 text-slate-900 focus:outline-none focus:border-indigo-600 shadow-xs"
-            />
-          </div>
+        <label className="block">
+          <span className="text-xs font-bold text-slate-600">Project name <span className="font-normal text-slate-400">(optional)</span></span>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Uses the website address if empty"
+            className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500"
+          />
+        </label>
 
-          <div>
-            <label className="font-extrabold text-slate-700 uppercase tracking-wider block mb-1">Project Goal / Description</label>
-            <textarea
-              rows={2}
-              placeholder="Brief summary of the annotation goals or launch deadline..."
-              value={desc}
-              onChange={(e) => setDesc(e.target.value)}
-              className="w-full bg-white border border-slate-300 rounded-md px-3 py-1.5 text-slate-900 focus:outline-none focus:border-indigo-600 resize-none shadow-xs"
-            />
-          </div>
-
-          <div>
-            <label className="font-extrabold text-slate-700 uppercase tracking-wider block mb-1">Target Website or Staging URL</label>
-            <input
-              type="text"
-              placeholder="e.g. https://myclientwebsite.com or staging.app.com"
-              value={websiteUrl}
-              onChange={(e) => setWebsiteUrl(e.target.value)}
-              className="w-full bg-white border border-slate-300 rounded-md px-3 py-1.5 text-slate-900 focus:outline-none focus:border-indigo-600 shadow-xs"
-            />
-          </div>
-
-          <div>
-            <label className="font-extrabold text-slate-700 uppercase tracking-wider block mb-1.5">Project Avatar Emoji</label>
-            <div className="flex items-center gap-1.5">
-              {avatars.map((a) => (
-                <button
-                  type="button"
-                  key={a}
-                  onClick={() => setAvatar(a)}
-                  className={`w-8 h-8 rounded-lg text-base flex items-center justify-center transition-all ${
-                    avatar === a ? 'bg-indigo-600 text-white scale-110 shadow-sm' : 'bg-slate-100 border border-slate-200 text-slate-600 hover:bg-slate-200'
-                  }`}
-                >
-                  {a}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <label className="font-extrabold text-slate-700 uppercase tracking-wider block mb-1.5">Color Theme</label>
-            <div className="flex items-center gap-2.5">
-              {colors.map((c) => (
-                <button
-                  type="button"
-                  key={c}
-                  onClick={() => setColor(c)}
-                  className={`w-7 h-7 rounded-full bg-gradient-to-r ${c} transition-transform ${
-                    color === c ? 'scale-125 ring-2 ring-slate-900 shadow-sm' : 'opacity-60 hover:opacity-100'
-                  }`}
-                />
-              ))}
-            </div>
-          </div>
-
-          <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-200">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-3.5 py-1.5 rounded-md font-semibold text-slate-600 hover:text-slate-900"
+        {folders.length > 0 && (
+          <label className="block">
+            <span className="text-xs font-bold text-slate-600">Folder</span>
+            <select
+              value={folderId || ''}
+              onChange={(e) => setFolderId(e.target.value || null)}
+              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:border-indigo-500"
             >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold px-5 py-1.5 rounded-md shadow-xs transition-all"
-            >
-              Create Project Folder
-            </button>
-          </div>
-        </form>
-      </div>
+              <option value="">No folder</option>
+              {[...folders].sort((a, b) => a.name.localeCompare(b.name)).map((f) => (
+                <option key={f.id} value={f.id}>{f.name}</option>
+              ))}
+            </select>
+          </label>
+        )}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose} className="px-3 py-2 rounded-lg text-slate-600 hover:bg-slate-100 font-semibold">
+            Cancel
+          </button>
+          <button type="submit" className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold">
+            Create project
+          </button>
+        </div>
+      </form>
     </div>
   );
 };

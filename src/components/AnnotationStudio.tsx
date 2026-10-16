@@ -1,3 +1,4 @@
+import { apiFetch } from '../lib/api';
 import { filesToAttachments, rejectedFilesMessage } from '../lib/attachments';
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
@@ -493,7 +494,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
       const ry = Math.min(Math.max(0, py - h / 2), pageH - h);
       // Preferred: a real screenshot from the server's headless Chrome at the same page width
       try {
-        const res = await fetch('/api/screenshot', {
+        const res = await apiFetch('/api/screenshot', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

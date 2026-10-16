@@ -115,6 +115,8 @@ export interface Comment {
 export interface Pin {
   id: string;
   assetId: string;
+  // Project the pin belongs to (lets security rules limit guests to their shared project)
+  projectId?: string;
   number: number;
   x: number; // percentage X coordinate on canvas
   y: number; // percentage Y coordinate on canvas

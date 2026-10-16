@@ -1,32 +1,20 @@
 import { User } from 'firebase/auth';
-import { collection, deleteDoc, doc, getDoc, getDocs, limit, query, setDoc, where } from 'firebase/firestore';
+import { doc, setDoc } from 'firebase/firestore';
 import { db } from './firebase';
 import { AuthUser, Organization } from '../types';
-import { fetchAllowedDomains, getAllowedDomains } from '../utils/domains';
+import { getAllowedDomains } from '../utils/domains';
 
-const DEFAULT_AVATAR = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80';
-
-/**
- * Who can sign in:
- * - master admins (VITE_ADMIN_EMAILS)
- * - anyone with an email on an allowed domain (domain-based access)
- * - anyone with a pending invite, whatever their domain (user-based access)
- * - existing members who have not been removed
- */
+// Who can sign in is decided by the server (master admins, allowed domains, invites, existing members).
+// This only asks yes/no, e.g. before creating an account.
 export async function checkWorkspaceAccess(email: string | null | undefined): Promise<boolean> {
-  const normalized = (email || '').trim().toLowerCase();
-  if (!normalized.includes('@')) return false;
-  if (isMasterAdmin(normalized)) return true;
-
-  const domain = normalized.split('@')[1];
-  if ((await fetchAllowedDomains()).some((d) => d.toLowerCase() === domain)) return true;
-
   try {
-    if ((await getDoc(doc(db, 'invites', normalized))).exists()) return true;
-    const members = await getDocs(query(collection(db, 'users'), where('email', '==', normalized)));
-    return members.docs.some((d) => !d.data().removed);
-  } catch (err) {
-    console.warn('Failed checking workspace access:', err);
+    const res = await fetch('/api/auth/check-access', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email || '' }),
+    });
+    return !!(await res.json()).allowed;
+  } catch {
     return false;
   }
 }
@@ -64,81 +52,29 @@ export function isMasterAdmin(email: string | null | undefined): boolean {
   return !!email && ADMIN_EMAILS.includes(email.toLowerCase());
 }
 
-// Take (and clear) a pending invitation for this email, if there is one
-async function consumeInvite(email: string): Promise<{ name?: string; role?: string } | null> {
-  if (!email) return null;
-  const ref = doc(db, 'invites', email.toLowerCase());
-  try {
-    const snap = await getDoc(ref);
-    if (!snap.exists()) return null;
-    await deleteDoc(ref);
-    return snap.data() as { name?: string; role?: string };
-  } catch (err) {
-    console.warn('Failed reading invite from Firestore:', err);
-    return null;
-  }
+// After sign-in the server loads (or creates) the member profile and decides the role.
+// Throws with a readable message when this account may not use the workspace.
+export async function startSession(fbUser: User): Promise<AuthUser> {
+  const res = await fetch('/api/auth/session', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${await fbUser.getIdToken()}` },
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || !body.profile) throw new Error(body.error || 'Could not sign in. Please try again.');
+  return body.profile as AuthUser;
 }
 
-// Load the user's profile from Firestore (users/{uid}), creating it on first sign-in.
-// Role: master admins (VITE_ADMIN_EMAILS) are always Owner; otherwise a pending invite's role;
-// otherwise Member (or Owner for the very first account when no master admin is configured).
-// Returns null when the member was removed from the workspace and has no new invite.
-export async function loadOrCreateProfile(fbUser: User, org: Organization): Promise<AuthUser | null> {
-  const ref = doc(db, 'users', fbUser.uid);
-  const email = fbUser.email || '';
-  try {
-    const snap = await getDoc(ref);
-    if (snap.exists()) {
-      const existing = { ...(snap.data() as AuthUser & { removed?: boolean }), id: fbUser.uid, email };
-      let changed = false;
-      if (existing.removed) {
-        const invite = await consumeInvite(email);
-        if (!invite && !isMasterAdmin(email)) return null;
-        existing.removed = false;
-        if (invite?.role) existing.role = invite.role as any;
-        changed = true;
-      }
-      if (isMasterAdmin(email) && existing.role !== 'Owner') {
-        existing.role = 'Owner' as any;
-        changed = true;
-      }
-      if (changed) await saveProfile(existing);
-      return existing;
-    }
-  } catch (err) {
-    console.warn('Failed loading user profile from Firestore:', err);
-  }
-
-  let isFirstUser = false;
-  if (ADMIN_EMAILS.length === 0) {
-    try {
-      isFirstUser = (await getDocs(query(collection(db, 'users'), limit(1)))).empty;
-    } catch (err) {
-      console.warn('Failed checking existing users:', err);
-    }
-  }
-
-  const invite = await consumeInvite(email);
-  const role = isMasterAdmin(email) || isFirstUser ? 'Owner' : (invite?.role || 'Member');
-
-  const profile: AuthUser = {
-    id: fbUser.uid,
-    name: fbUser.displayName || invite?.name || email.split('@')[0].replace(/\./g, ' '),
-    email,
-    avatar: fbUser.photoURL || DEFAULT_AVATAR,
-    role: role as any,
-    organizationId: org.id,
-    organizationName: org.name,
-    status: 'online',
-    cursorColor: '#6366f1',
+// Save your own profile. Only these fields are yours to change; role and email are managed by the server/admins.
+export async function saveProfile(profile: AuthUser & { department?: string }): Promise<void> {
+  const editable: Record<string, unknown> = {
+    name: profile.name,
+    avatar: profile.avatar,
+    status: profile.status,
+    cursorColor: profile.cursorColor,
   };
-  await saveProfile(profile);
-  return profile;
-}
-
-export async function saveProfile(profile: AuthUser & { department?: string; removed?: boolean }): Promise<void> {
+  if (profile.department !== undefined) editable.department = profile.department;
   try {
-    await setDoc(doc(db, 'users', profile.id), profile, { merge: true });
+    await setDoc(doc(db, 'users', profile.id), editable, { merge: true });
   } catch (err) {
     console.warn('Failed saving user profile to Firestore:', err);
   }

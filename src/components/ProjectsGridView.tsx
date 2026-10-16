@@ -328,7 +328,6 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
 
   const [filterOwner, setFilterOwner] = useState<'all' | 'mine' | string>('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [urlInput, setUrlInput] = useState('');
   const [activeCardMenuId, setActiveCardMenuId] = useState<string | null>(null);
   
   // Team tab state
@@ -447,18 +446,6 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
       ? 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5'
       : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4';
 
-  const handleUrlSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!urlInput.trim()) return;
-    
-    let formattedUrl = urlInput.trim();
-    if (!formattedUrl.startsWith('http://') && !formattedUrl.startsWith('https://')) {
-      formattedUrl = 'https://' + formattedUrl;
-    }
-
-    onAddNewUrlAsset(formattedUrl);
-    setUrlInput('');
-  };
 
   // Enter in the search box opens the folder when exactly one folder matches (search never creates projects)
   const handleSearchSubmit = (e: React.FormEvent) => {
@@ -641,30 +628,9 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
             {/* TOP BAR WITH URL ENTERER & SEARCH */}
             <div className="bg-white border-b border-slate-200 px-8 py-4 flex flex-col md:flex-row items-center justify-between gap-4 sticky top-0 z-10 shadow-2xs">
               
-              {/* URL Input Bar */}
-              <form onSubmit={handleUrlSubmit} className="w-full md:w-auto flex-1 max-w-2xl flex items-center gap-2">
-                <div className="relative flex-1">
-                  <Globe className="w-4 h-4 text-blue-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="text"
-                    value={urlInput}
-                    onChange={(e) => setUrlInput(e.target.value)}
-                    placeholder="Enter any live website URL (e.g. example.com) to create project..."
-                    className="w-full bg-slate-50 border-2 border-slate-200 hover:border-blue-300 focus:border-blue-600 focus:bg-white rounded-xl pl-10 pr-4 py-2 text-xs text-slate-900 placeholder-slate-400 focus:outline-none transition-all shadow-2xs font-medium"
-                  />
-                </div>
-                <button
-                  type="submit"
-                  className="bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs px-5 py-2 rounded-xl transition-all shadow-2xs shrink-0 cursor-pointer flex items-center gap-1.5"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>Create Project</span>
-                </button>
-              </form>
-
               {/* Search & Action Controls */}
-              <div className="flex items-center gap-3 w-full md:w-auto justify-end">
-                <form onSubmit={handleSearchSubmit} className="relative w-56">
+              <div className="flex items-center gap-3 w-full">
+                <form onSubmit={handleSearchSubmit} className="relative flex-1 max-w-md">
                   <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
                     type="text"
@@ -700,11 +666,12 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
             <div className="px-8 py-6 space-y-6">
               
               {/* Workspace Title & Owner Filter Sub-header */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200/80 pb-4">
-                <div>
-                  <h1 className="text-xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2 flex-wrap">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-200/80 pb-4">
+                <div className="min-w-0 flex-1">
+                  <h1 className="text-xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2 min-w-0">
                     {isSearching ? (
-                      <span>Results for "{searchQuery.trim()}"</span>
+                      // Long searches (e.g. a pasted URL) are shortened; the full text shows on hover
+                      <span className="truncate min-w-0" title={searchQuery.trim()}>Results for "{searchQuery.trim()}"</span>
                     ) : currentFolder ? (
                       <>
                         <button
@@ -713,8 +680,8 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                         >
                           All projects
                         </button>
-                        <ChevronRight className="w-4 h-4 text-slate-400" />
-                        <span>{currentFolder.name}</span>
+                        <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
+                        <span className="truncate min-w-0" title={currentFolder.name}>{currentFolder.name}</span>
                         {onRenameFolder && (
                           <button
                             onClick={() => setFolderDialog({ mode: 'rename', folderId: currentFolder.id, value: currentFolder.name })}
@@ -728,7 +695,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                     ) : (
                       <span>All projects</span>
                     )}
-                    <span className="text-xs bg-slate-200 text-slate-700 font-bold px-2 py-0.5 rounded-full">
+                    <span className="text-xs bg-slate-200 text-slate-700 font-bold px-2 py-0.5 rounded-full shrink-0 whitespace-nowrap">
                       {isSearching
                         ? `${visibleFolders.length} ${visibleFolders.length === 1 ? 'folder' : 'folders'}, ${filteredProjects.length} ${filteredProjects.length === 1 ? 'project' : 'projects'}`
                         : `${filteredProjects.length} ${filteredProjects.length === 1 ? 'project' : 'projects'}`}
@@ -743,8 +710,8 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                   </p>
                 </div>
 
-                {/* Owner Filter Pills */}
-                <div className="flex items-center gap-2">
+                {/* Owner Filter Pills (never shrink or wrap) */}
+                <div className="flex items-center gap-2 shrink-0 whitespace-nowrap">
                   <div className="bg-slate-200/80 p-1 rounded-xl flex items-center gap-1 text-xs font-bold">
                     <button
                       onClick={() => setFilterOwner('all')}
@@ -804,7 +771,9 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
               <div className={`grid ${gridColumnClass} gap-6`}>
                 {isSearching && filteredProjects.length === 0 && visibleFolders.length === 0 && (
                   <div className="col-span-full bg-white border border-dashed border-slate-300 rounded-2xl p-8 text-center text-sm text-slate-500">
-                    No folders or projects match "{searchQuery.trim()}".
+                    <span className="break-all" title={searchQuery.trim()}>
+                      No folders or projects match "{searchQuery.trim().length > 80 ? `${searchQuery.trim().slice(0, 77)}…` : searchQuery.trim()}".
+                    </span>
                   </div>
                 )}
 
