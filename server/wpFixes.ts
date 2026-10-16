@@ -5,12 +5,17 @@ import { FieldValue } from 'firebase-admin/firestore';
 import type { GoogleGenAI } from '@google/genai';
 import { Type } from '@google/genai';
 import { adminDb } from './firebaseAdmin';
-import { loadCredentials, sameSite, wpRequest, WpError } from './wordpress';
+import { loadCredentials, sameSite, uploadMedia, wpRequest, WpError } from './wordpress';
 
 const MODEL = 'gemini-3.6-flash';
 const DEVICE_WIDTHS: Record<string, number> = { desktop: 1440, tablet: 768, mobile: 375 };
 
-export type FixKind = 'elementor_settings' | 'content_replace' | 'css';
+export type FixKind = 'elementor_settings' | 'elementor_insert' | 'content_replace' | 'css';
+
+// Widgets the AI may add to an Elementor page
+const ELEMENTOR_INSERTABLE = ['image', 'heading', 'text-editor', 'button', 'spacer', 'divider'];
+const IMAGE_URL = '{{image_url}}';
+const IMAGE_ID = '{{image_id}}';
 
 // What the page shows at the pin (read in a real browser from the pin's saved CSS selector)
 export interface PinTarget {
@@ -156,9 +161,44 @@ function diviModules(content: string) {
   return modules;
 }
 
-function balanced(find: string, replace: string, open: RegExp, close: RegExp) {
+// Page structure stays valid if the change keeps the same blocks/modules (e.g. edits one opening tag's settings),
+// or if both the removed and the new text are complete blocks/modules (e.g. removes a whole paragraph block)
+function structureKept(find: string, replace: string, open: RegExp, close: RegExp) {
   const n = (s: string, re: RegExp) => (s.match(re) || []).length;
-  return n(find, open) === n(replace, open) && n(find, close) === n(replace, close);
+  const sameShape = n(find, open) === n(replace, open) && n(find, close) === n(replace, close);
+  const whole = (s: string) => n(s, open) === n(s, close);
+  return sameShape || (whole(find) && whole(replace));
+}
+
+const GUTENBERG_OPEN = /<!-- wp:[a-z0-9/-]+(?:\s+\{[\s\S]*?\})?\s*-->/g;
+const GUTENBERG_CLOSE = /<!-- \/wp:[a-z0-9/-]+\s*-->/g;
+const DIVI_OPEN = /\[et_pb_[a-z0-9_]+/g;
+const DIVI_CLOSE = /\[\/et_pb_[a-z0-9_]+\]/g;
+
+// Images attached to the pin's comments (data URLs), labelled A1, A2, ... in thread order
+function pinImages(pin: any) {
+  const out: Array<{ label: string; commentId: string; attachmentId: string; name: string; author: string; mime: string; base64: string }> = [];
+  for (const comment of pin.comments || []) {
+    for (const att of comment.attachments || []) {
+      const m = String(att.url || '').match(/^data:(image\/(?:jpeg|png|webp|gif));base64,(.+)$/);
+      if (!m) continue;
+      out.push({
+        label: `A${out.length + 1}`,
+        commentId: comment.id,
+        attachmentId: att.id,
+        name: String(att.name || 'image'),
+        author: comment.author?.name || 'Reviewer',
+        mime: m[1],
+        base64: m[2],
+      });
+    }
+  }
+  return out;
+}
+
+// Fill in an uploaded image's address and Media Library id
+function fillImage(text: string, media: { id: number; url: string }) {
+  return text.split(`"${IMAGE_ID}"`).join(String(media.id)).split(IMAGE_ID).join(String(media.id)).split(IMAGE_URL).join(media.url);
 }
 
 // ---------- Prepare a fix ----------
@@ -166,7 +206,7 @@ function balanced(find: string, replace: string, open: RegExp, close: RegExp) {
 const FIX_SCHEMA = {
   type: Type.OBJECT,
   properties: {
-    kind: { type: Type.STRING, enum: ['elementor_settings', 'content_replace', 'css', 'none'] },
+    kind: { type: Type.STRING, enum: ['elementor_settings', 'elementor_insert', 'content_replace', 'css', 'none'] },
     summary: { type: Type.STRING, description: 'Short imperative title, max 80 characters, e.g. "Make the heading dark blue".' },
     explanation: { type: Type.STRING, description: 'One or two sentences for the reviewer: what changes and why it addresses the feedback.' },
     elementId: { type: Type.STRING, description: 'elementor_settings: id of the Elementor element to change.' },
@@ -174,6 +214,9 @@ const FIX_SCHEMA = {
     find: { type: Type.STRING, description: 'content_replace: exact text copied from the page content; must appear exactly once.' },
     replace: { type: Type.STRING, description: 'content_replace: the replacement text.' },
     css: { type: Type.STRING, description: 'css: CSS rules to add, limited to this page with the body class unless the feedback is site-wide.' },
+    afterElementId: { type: Type.STRING, description: 'elementor_insert: id of the Elementor element the new widget goes right after.' },
+    widgetJson: { type: Type.STRING, description: 'elementor_insert: JSON {"widgetType": "...", "settings": {...}} of the new widget.' },
+    imageAttachment: { type: Type.STRING, description: 'Label of the attached image the change places on the page (e.g. "A1"); empty if none.' },
     cannotFixReason: { type: Type.STRING, description: 'none: why this needs a person (e.g. needs new images, layout redesign, unclear request).' },
   },
   required: ['kind', 'summary', 'explanation'],
@@ -188,13 +231,15 @@ function buildPrompt(input: {
   target: PinTarget | null;
   pageData: string;
   siteCss: string;
+  history: string;
+  attachments: Array<{ label: string; name: string; author: string }>;
 }) {
   const { pin, device, builder, target } = input;
   const thread = (pin.comments || [])
     .map((c: any) => `- ${c.author?.name || 'Reviewer'}: ${String(c.text || '').slice(0, 1000)}`)
     .join('\n');
   const allowed = builder === 'elementor'
-    ? '"elementor_settings" (preferred: change settings of one Elementor element) or "css"'
+    ? '"elementor_settings" (preferred: change settings of one Elementor element), "elementor_insert" (add one new widget, e.g. an attached image) or "css"'
     : builder === 'divi'
       ? '"content_replace" (preferred: edit the Divi module\'s attributes or text in the page content) or "css"'
       : '"content_replace" (preferred for text or markup changes) or "css" (for visual changes)';
@@ -209,9 +254,15 @@ Title: ${String(pin.title || '').slice(0, 300)}
 Category: ${pin.category} · Priority: ${pin.priority} · Seen on: ${device}
 Thread:
 ${thread || '(no comments)'}
-${pin.screenshotUrl ? 'A screenshot of the area around the pin is attached; the numbered marker shows the exact spot.' : ''}
+${pin.screenshotUrl ? 'A screenshot of the area around the pin is attached first; the numbered marker shows the exact spot.' : ''}
+${input.attachments.length ? `Images attached to the comments (sent ${pin.screenshotUrl ? 'after the screenshot' : ''} in this order): ${input.attachments.map((a) => `${a.label} = ${a.name} (from ${a.author})`).join('; ')}` : ''}
+
+## Fixes already made for this pin
+${input.history || '(none yet)'}
+The thread can hold several requests. Handle exactly ONE request per fix: the FIRST one not already handled by a fix marked "applied" or "waiting for approval" above. Never combine two requests in one fix; the next one gets its own fix. If every request is handled, answer "none" with cannotFixReason "Everything asked in this thread is already fixed."
 
 ## Element at the pin
+The reviewer placed the pin on this element. Words like "this", "here", "this text" or "this button" in the feedback mean this element (or the module/block it belongs to). Only answer "none" for unclear requests if the element below is missing and the feedback alone doesn't say what to change.
 ${target ? JSON.stringify(target, null, 1) : 'Could not be detected; use the feedback and screenshot to find it.'}
 
 ## Page
@@ -229,7 +280,10 @@ ${input.siteCss.trim() || '(none)'}
 - elementor_settings: use real Elementor control names for that widget type and only the keys that change. Examples: heading → title, title_color, align, header_size; text-editor → editor, text_color; button → text, background_color, button_text_color, border_radius, link. Typography needs "typography_typography": "custom" plus e.g. "typography_font_size": {"unit": "px", "size": 32}, "typography_font_weight": "600". Sizes and spacing use {"unit": "px", "size": N} or {"unit":"px","top":"0","right":"0","bottom":"0","left":"0","isLinked":false}. For a fix only on ${device === 'desktop' ? 'desktop, use the plain keys' : `${device}, add the _${device} suffix (e.g. typography_font_size_${device})`}.
 ${builder === 'divi' ? `- Divi: the element at the pin belongs to module ${target?.diviModule || '(unknown)'}${target?.diviModule?.includes('_tb_') ? ', which is in a Theme Builder layout (header/footer/template), not this page: use css instead' : ''}. Edit that module's own shortcode or block. Divi 4 attribute examples: et_pb_text → text_text_color, text_font_size, header_text_color, header_font_size, text_orientation; et_pb_button → button_text, button_url, custom_button="on" with button_text_color, button_bg_color, button_text_size; et_pb_blurb → title, header_text_color. Sizes are strings like "48px". For tablet/phone only, use the _tablet / _phone suffix and set <attr>_last_edited="on|desktop". Keep every [et_pb_...] / [/et_pb_...] tag (or <!-- wp:divi/... --> comment) balanced.
 ` : ''}- content_replace: "find" must be copied character for character from the page content and be unique; keep Gutenberg block comments (<!-- wp:... -->) valid and balanced.
+- If the element is not in this page's own content (e.g. the page title, header, footer or menu printed by the theme template), you can't remove or edit it here: use css for this page and say in the explanation that it comes from the theme template, so CSS hides it on this page only and editing the template would change every page.
 - css: start every selector with body.${input.bodyClass} unless the problem is site-wide${device !== 'desktop' ? `; wrap it in a media query for ${device} (${device === 'mobile' ? 'max-width: 767px' : 'min-width: 768px and max-width: 1024px'})` : ''}. No @import, no external URLs.
+- To place an attached image, set imageAttachment to its label and write ${IMAGE_URL} and ${IMAGE_ID} where its address and Media Library id go (they are filled in when the image is uploaded on approval). Use a short descriptive alt text. Gutenberg: <!-- wp:image {"id":${IMAGE_ID},"sizeSlug":"full","linkDestination":"none"} --><figure class="wp-block-image size-full"><img src="${IMAGE_URL}" alt="..." class="wp-image-${IMAGE_ID}"/></figure><!-- /wp:image --> as its own block (e.g. find = the block it goes after, replace = that block followed by the image block). Divi: [et_pb_image src="${IMAGE_URL}" alt="..." _builder_version="4.27.4"][/et_pb_image] as its own module in the same column. Elementor: kind elementor_insert, afterElementId = the element it goes below, widgetJson = {"widgetType":"image","settings":{"image":{"url":"${IMAGE_URL}","id":"${IMAGE_ID}"},"image_size":"full"}}.
+- elementor_insert may add only one of these widgets: ${ELEMENTOR_INSERTABLE.join(', ')}.
 - Never add scripts, iframes, forms, tracking or links to other sites.`;
 }
 
@@ -268,7 +322,10 @@ export async function prepareFix(opts: {
   const device: string = pin.metadata?.deviceType || 'desktop';
   const selector: string = pin.metadata?.selector || '';
   const target = selector
-    ? await opts.inspect(pageUrl, DEVICE_WIDTHS[device] || 1440, selector).catch(() => null)
+    ? await opts.inspect(pageUrl, DEVICE_WIDTHS[device] || 1440, selector).catch((err) => {
+      console.warn('Could not read the element at the pin:', err?.message);
+      return null;
+    })
     : null;
 
   const focusIds = [target?.elementorId, ...(target?.elementorParents || [])].filter(Boolean) as string[];
@@ -278,11 +335,26 @@ export async function prepareFix(opts: {
       ? `${JSON.stringify(diviModules(String(page.content || '')))}\n\n${String(page.content || '').slice(0, 40000)}`
       : String(page.content || '').slice(0, 40000);
 
+  // What has already been done for this pin, so the AI moves on to the next request in the thread
+  const STATUS_TEXT: Record<string, string> = { applied: 'applied', proposed: 'waiting for approval', reverted: 'undone', rejected: 'dismissed', stale: 'outdated', not_possible: 'needs a person' };
+  const earlier = (await adminDb.collection('wpFixes').where('pinId', '==', pinId).get()).docs
+    .map((d) => d.data())
+    .filter((f) => STATUS_TEXT[f.status])
+    .map((f) => `- ${STATUS_TEXT[f.status]}: ${f.summary}`);
+
+  // Images attached to comments (labelled A1, A2, ... for the AI)
+  const images = pinImages(pin).slice(0, 4);
+
   const parts: any[] = [{
-    text: buildPrompt({ pin, device, builder, pageTitle: page.title, bodyClass: page.body_class, target, pageData, siteCss: siteCss.css || '' }),
+    text: buildPrompt({
+      pin, device, builder, pageTitle: page.title, bodyClass: page.body_class, target, pageData, siteCss: siteCss.css || '',
+      history: earlier.join('\n'),
+      attachments: images.map((img) => ({ label: img.label, name: img.name, author: img.author })),
+    }),
   }];
   const shot = String(pin.screenshotUrl || '').match(/^data:(image\/(?:png|jpeg|webp));base64,(.+)$/);
   if (shot) parts.push({ inlineData: { mimeType: shot[1], data: shot[2] } });
+  for (const img of images) parts.push({ inlineData: { mimeType: img.mime, data: img.base64 } });
 
   const response = await ai.models.generateContent({
     model: MODEL,
@@ -298,6 +370,17 @@ export async function prepareFix(opts: {
 
   const summary = String(proposal.summary || 'AI fix').slice(0, 120);
   const explanation = String(proposal.explanation || '').slice(0, 1000);
+  const usesImage = (text: string) => text.includes(IMAGE_URL) || text.includes(IMAGE_ID);
+  const picked = String(proposal.imageAttachment || '').trim().toLowerCase();
+  const placesImage = [proposal.replace, proposal.widgetJson].some((t) => usesImage(String(t || '')));
+  // The label the AI gave (or the file name); if it placed an image and only one is attached, that one
+  const chosen = images.find((img) => picked && (img.label.toLowerCase() === picked || img.name.toLowerCase() === picked))
+    || (placesImage && images.length === 1 ? images[0] : undefined);
+  const image = chosen ? { commentId: chosen.commentId, attachmentId: chosen.attachmentId, name: chosen.name } : null;
+  const checkImageUse = (text: string) => {
+    if (usesImage(text) && !image) throw new WpError('The AI referred to an attached image it did not pick. Try again.', 422);
+    if (image && !text.includes(IMAGE_URL)) throw new WpError('The AI picked an image but did not place it. Try again.', 422);
+  };
   const base = {
     projectId,
     pinId,
@@ -312,6 +395,7 @@ export async function prepareFix(opts: {
     proposedBy: actor,
     proposedAt: FieldValue.serverTimestamp(),
     model: MODEL,
+    image,
   };
 
   let fix: Record<string, any> & { kind: string; status: string };
@@ -352,6 +436,34 @@ export async function prepareFix(opts: {
       settingsJson: JSON.stringify(settings),
       beforeJson: JSON.stringify(before),
     };
+  } else if (proposal.kind === 'elementor_insert' && builder === 'elementor') {
+    const afterElementId = String(proposal.afterElementId || '');
+    const after = findElementor(page.elementor || [], afterElementId);
+    if (!after) throw new WpError('The AI pointed at an element that is not on this page. Try again.', 422);
+    let widget: { widgetType?: string; settings?: Record<string, any> };
+    try {
+      widget = JSON.parse(proposal.widgetJson || '{}');
+    } catch {
+      throw new WpError('The AI suggested a widget that could not be read. Try again.', 422);
+    }
+    if (!widget.widgetType || !ELEMENTOR_INSERTABLE.includes(widget.widgetType)) throw new WpError('The AI suggested a kind of widget that cannot be added.', 422);
+    const settings = widget.settings && typeof widget.settings === 'object' && !Array.isArray(widget.settings) ? widget.settings : {};
+    if (Object.keys(settings).some((k) => !/^[a-z][a-z0-9_]*$/i.test(k)) || Object.keys(settings).length > 20) {
+      throw new WpError('The AI suggested invalid widget settings.', 422);
+    }
+    checkSettingValue(settings);
+    const settingsJson = JSON.stringify(settings);
+    checkImageUse(settingsJson);
+    fix = {
+      ...base,
+      kind: 'elementor_insert',
+      status: 'proposed',
+      baseHash: page.hash,
+      afterElementId,
+      afterElementType: after.widgetType || after.elType,
+      elementType: widget.widgetType,
+      settingsJson,
+    };
   } else if (proposal.kind === 'content_replace' && builder !== 'elementor') {
     const find = String(proposal.find || '');
     const replace = String(proposal.replace ?? '');
@@ -361,11 +473,15 @@ export async function prepareFix(opts: {
     if (matches !== 1) throw new WpError(matches ? 'The AI picked text that appears more than once. Try again.' : 'The AI picked text that is not on the page. Try again.', 422);
     if (replace.length > 20000) throw new WpError('The suggested change is too long.', 422);
     checkMarkup(replace, 'content');
-    if (countOf(find, '<!-- wp:') !== countOf(replace, '<!-- wp:') || countOf(find, '<!-- /wp:') !== countOf(replace, '<!-- /wp:')) {
+    checkImageUse(replace);
+    if (!structureKept(find, replace, GUTENBERG_OPEN, GUTENBERG_CLOSE)) {
       throw new WpError('The suggested change would break the page blocks. Try again.', 422);
     }
-    if (!balanced(find, replace, /\[et_pb_[a-z0-9_]+/g, /\[\/et_pb_[a-z0-9_]+\]/g)) {
+    if (!structureKept(find, replace, DIVI_OPEN, DIVI_CLOSE)) {
       throw new WpError('The suggested change would break the Divi layout. Try again.', 422);
+    }
+    if (find.length > 8000 && replace.length < find.length / 4) {
+      throw new WpError('The suggested change would remove a large part of the page. Do this one by hand.', 422);
     }
     fix = { ...base, kind: 'content_replace', status: 'proposed', baseHash: page.hash, find, replace };
   } else if (proposal.kind === 'css') {
@@ -400,8 +516,28 @@ export async function applyFix(projectId: string, fixId: string, actor: Actor) {
   try {
     const creds = await loadCredentials(projectId);
     const common = { summary: `Pin #${fix.pinNumber}: ${fix.summary}`, request_id: fixId };
+
+    // Upload the attached image to the Media Library first (once; kept if applying is retried)
+    let media: { id: number; url: string } | null = fix.media || null;
+    if (fix.image && !media) {
+      const pin = (await adminDb.collection('pins').doc(fix.pinId).get()).data();
+      const att = pin?.comments?.find((c: any) => c.id === fix.image.commentId)?.attachments?.find((a: any) => a.id === fix.image.attachmentId);
+      const m = String(att?.url || '').match(/^data:(image\/(?:jpeg|png|webp|gif));base64,(.+)$/);
+      if (!m) throw new WpError('The attached image is no longer on the pin.', 409);
+      const ext = m[1].split('/')[1].replace('jpeg', 'jpg');
+      const name = /\.[a-z0-9]+$/i.test(fix.image.name) ? fix.image.name : `${fix.image.name}.${ext}`;
+      media = await uploadMedia(creds, { name, mime: m[1], data: Buffer.from(m[2], 'base64'), alt: fix.summary });
+      await ref.update({ media });
+    }
+    const withImage = (text: string) => (media ? fillImage(text, media) : text);
+
     let result: any;
-    if (fix.kind === 'elementor_settings') {
+    if (fix.kind === 'elementor_insert') {
+      result = await wpRequest(creds, `/webreview/v1/page/${fix.postId}/elementor-insert`, {
+        method: 'POST',
+        body: { ...common, after_element_id: fix.afterElementId, widget_type: fix.elementType, settings: JSON.parse(withImage(fix.settingsJson)), expected_hash: fix.baseHash },
+      });
+    } else if (fix.kind === 'elementor_settings') {
       result = await wpRequest(creds, `/webreview/v1/page/${fix.postId}/elementor-element`, {
         method: 'POST',
         body: { ...common, element_id: fix.elementId, settings: JSON.parse(fix.settingsJson), expected_hash: fix.baseHash },
@@ -414,7 +550,7 @@ export async function applyFix(projectId: string, fixId: string, actor: Actor) {
       const index = content.indexOf(fix.find);
       result = await wpRequest(creds, `/webreview/v1/page/${fix.postId}/content`, {
         method: 'POST',
-        body: { ...common, content: content.slice(0, index) + fix.replace + content.slice(index + fix.find.length), expected_hash: fix.baseHash },
+        body: { ...common, content: content.slice(0, index) + withImage(fix.replace) + content.slice(index + fix.find.length), expected_hash: fix.baseHash },
       });
     } else if (fix.kind === 'css') {
       // CSS fixes are added to the end of WebReview's CSS, so other fixes in between don't matter

@@ -232,7 +232,7 @@ export interface WpFix {
   pageUrl: string;
   pageTitle?: string;
   builder: string;
-  kind: 'elementor_settings' | 'content_replace' | 'css' | 'none';
+  kind: 'elementor_settings' | 'elementor_insert' | 'content_replace' | 'css' | 'none';
   status: 'proposed' | 'applying' | 'applied' | 'undoing' | 'reverted' | 'rejected' | 'stale' | 'not_possible';
   summary: string;
   explanation: string;
@@ -244,6 +244,11 @@ export interface WpFix {
   find?: string;
   replace?: string;
   css?: string;
+  afterElementId?: string;
+  afterElementType?: string;
+  // Attached image the fix places on the page (uploaded to the Media Library on approval)
+  image?: { commentId: string; attachmentId: string; name: string } | null;
+  media?: { id: number; url: string } | null;
   lastError?: string | null;
   proposedBy?: { uid: string; name: string; email: string };
   appliedBy?: { uid: string; name: string; email: string };

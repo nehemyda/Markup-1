@@ -235,3 +235,36 @@ export async function resolvePage(projectId: string, pageUrl: string) {
   if (!sameSite(pageUrl, creds.siteUrl)) throw new WpError('That page is not on the connected WordPress site.');
   return wpRequest(creds, `/webreview/v1/resolve?url=${encodeURIComponent(pageUrl)}`);
 }
+
+// Upload an image to the site's Media Library as the connected WordPress user
+export async function uploadMedia(creds: WpCredentials, file: { name: string; mime: string; data: Buffer; alt?: string }) {
+  if (!/^image\/(jpeg|png|webp|gif)$/.test(file.mime)) throw new WpError('Only JPG, PNG, WebP or GIF images can be added.', 400);
+  if (file.data.length > 5 * 1024 * 1024) throw new WpError('The image is too large (max 5 MB).', 400);
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'image';
+  let res: Response;
+  try {
+    res = await fetch(`${creds.siteUrl}/wp-json/wp/v2/media`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${creds.username}:${creds.appPassword.replace(/\s+/g, '')}`).toString('base64')}`,
+        'Content-Type': file.mime,
+        'Content-Disposition': `attachment; filename="${safeName}"`,
+        Accept: 'application/json',
+      },
+      body: file.data,
+      redirect: 'manual',
+      signal: AbortSignal.timeout(60000),
+    });
+  } catch {
+    throw new WpError('Could not upload the image to WordPress.', 502);
+  }
+  const data: any = await res.json().catch(() => null);
+  if (!res.ok || !data?.id) {
+    if (data?.code === 'rest_cannot_create') throw new WpError('The connected WordPress user is not allowed to upload images.', 403);
+    throw new WpError(data?.message || `WordPress could not save the image (${res.status}).`, 502);
+  }
+  if (file.alt) {
+    await wpRequest(creds, `/wp/v2/media/${data.id}`, { method: 'POST', body: { alt_text: file.alt.slice(0, 200) } }).catch(() => {});
+  }
+  return { id: data.id as number, url: data.source_url as string };
+}

@@ -88,6 +88,14 @@ interface AnnotationStudioProps {
   previewCss?: string | null;
 }
 
+// Pin title shown in lists: the first line of the comment, shortened at a word
+function pinTitleFrom(comment: string) {
+  const line = comment.split('\n')[0].trim();
+  if (line.length <= 80) return line;
+  const cut = line.slice(0, 80);
+  return `${cut.slice(0, cut.lastIndexOf(' ') > 40 ? cut.lastIndexOf(' ') : 80)}…`;
+}
+
 export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
   currentProject,
   currentAsset,
@@ -124,7 +132,6 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
 
   // New Pin Popover state
   const [newPinCoord, setNewPinCoord] = useState<{ x: number; y: number } | null>(null);
-  const [newPinTitle, setNewPinTitle] = useState('');
   const [newPinComment, setNewPinComment] = useState('');
   const [newPinCategory, setNewPinCategory] = useState<PinCategory>('design');
   const [newPinPriority, setNewPinPriority] = useState<PinPriority>('medium');
@@ -352,7 +359,6 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
     const percentY = Math.round((clickY / rect.height) * 100);
 
     setNewPinCoord({ x: percentX, y: percentY });
-    setNewPinTitle('');
     setNewPinComment('');
     setNewPinScreenshot(null);
     setNewPinAttachments([]);
@@ -655,13 +661,14 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
 
   const handleSaveNewPin = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newPinCoord || !newPinTitle.trim() || !newPinComment.trim()) return;
+    const comment = newPinComment.trim();
+    if (!newPinCoord || !comment) return;
 
     onAddPin({
       x: newPinCoord.x,
       y: newPinCoord.y,
-      title: newPinTitle.trim(),
-      commentText: newPinComment.trim(),
+      title: pinTitleFrom(comment),
+      commentText: comment,
       category: newPinCategory,
       priority: newPinPriority,
       assigneeId: newPinAssignee,
@@ -1046,24 +1053,11 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
 
                 <form onSubmit={handleSaveNewPin} className="space-y-3">
                   <div>
-                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Feedback Title</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g., Increase CTA contrast or Fix alignment"
-                      value={newPinTitle}
-                      onChange={(e) => setNewPinTitle(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-md px-2.5 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-indigo-500 focus:bg-white focus:ring-1 focus:ring-indigo-500"
-                      autoFocus
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Comment & Recommendation</label>
                     <textarea
                       required
-                      rows={2}
-                      placeholder="Explain the issue or suggested change..."
+                      rows={3}
+                      autoFocus
+                      placeholder="Describe the issue or the change you want..."
                       value={newPinComment}
                       onChange={(e) => setNewPinComment(e.target.value)}
                       className="w-full bg-slate-50 border border-slate-200 rounded-md px-2.5 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-indigo-500 focus:bg-white focus:ring-1 focus:ring-indigo-500 resize-none"

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WebReview Connector
  * Description: Lets WebReview Pro read pages and apply approved fixes (Elementor, Divi, Gutenberg, site CSS) safely, with a backup before every change and one-click undo.
- * Version: 0.3.0
+ * Version: 0.4.0
  * Requires at least: 5.6
  * Requires PHP: 7.4
  * Author: YourDigitalAgents
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 	exit;
 }
 
-define('WEBREVIEW_CONNECTOR_VERSION', '0.3.0');
+define('WEBREVIEW_CONNECTOR_VERSION', '0.4.0');
 const WEBREVIEW_CAP = 'webreview_agent';
 const WEBREVIEW_SNAPSHOT_TYPE = 'webreview_snapshot';
 const WEBREVIEW_CSS_OPTION = 'webreview_custom_css';
@@ -120,8 +120,26 @@ function &webreview_find_elementor_element(array &$elements, $element_id) {
 	return $null;
 }
 
+// Insert a new element right after another one (same parent). Returns false if the element isn't found.
+function webreview_insert_elementor_after(array &$elements, $after_id, array $new_element) {
+	foreach ($elements as $index => &$element) {
+		if (isset($element['id']) && $element['id'] === $after_id) {
+			array_splice($elements, $index + 1, 0, array($new_element));
+			return true;
+		}
+		if (!empty($element['elements']) && is_array($element['elements'])) {
+			if (webreview_insert_elementor_after($element['elements'], $after_id, $new_element)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 // Regenerate only this page's Elementor CSS file, in place (never clear the whole site's CSS cache)
 function webreview_clear_elementor_css($post_id) {
+	// Elementor also caches each page's rendered HTML (element cache); drop it so the page shows the change
+	delete_post_meta($post_id, '_elementor_element_cache');
 	if (!class_exists('\Elementor\Core\Files\CSS\Post')) {
 		return;
 	}
@@ -357,6 +375,55 @@ add_action('rest_api_init', function () {
 			webreview_clear_elementor_css($post_id);
 			webreview_mark_snapshot_applied($snapshot_id, 'elementor', $post_id);
 			return array('ok' => true, 'snapshot_id' => $snapshot_id, 'element' => $element);
+		},
+	));
+
+	// Elementor: add one new widget (image, heading, text, button, spacer, divider) after an existing element.
+	register_rest_route($ns, '/page/(?P<id>\d+)/elementor-insert', array(
+		'methods' => 'POST',
+		'permission_callback' => 'webreview_post_permission',
+		'args' => array(
+			'after_element_id' => array('required' => true, 'type' => 'string'),
+			'widget_type' => array('required' => true, 'type' => 'string'),
+			'settings' => array('required' => true, 'type' => 'object'),
+		),
+		'callback' => function (WP_REST_Request $request) {
+			$post_id = (int) $request['id'];
+			if (webreview_page_builder($post_id) !== 'elementor') {
+				return new WP_Error('webreview_wrong_builder', 'This page is not built with Elementor.', array('status' => 400));
+			}
+			$widget_type = (string) $request['widget_type'];
+			if (!in_array($widget_type, array('image', 'heading', 'text-editor', 'button', 'spacer', 'divider'), true)) {
+				return new WP_Error('webreview_widget_not_allowed', 'This kind of widget cannot be added.', array('status' => 400));
+			}
+			$unchanged = webreview_check_expected_hash($request, 'elementor', $post_id);
+			if (is_wp_error($unchanged)) {
+				return $unchanged;
+			}
+			$raw_before = get_post_meta($post_id, '_elementor_data', true);
+			$data = webreview_elementor_data($post_id);
+			$new_element = array(
+				'id' => substr(md5(uniqid('webreview', true)), 0, 7),
+				'elType' => 'widget',
+				'widgetType' => $widget_type,
+				'settings' => webreview_clean_settings((array) $request['settings']),
+				'elements' => array(),
+			);
+			if (!webreview_find_elementor_element($data, (string) $request['after_element_id'])) {
+				return new WP_Error('webreview_element_not_found', 'Element not found on this page.', array('status' => 404));
+			}
+			$snapshot_id = webreview_create_snapshot('elementor', array(
+				'post_id' => $post_id,
+				'elementor_data' => is_string($raw_before) ? $raw_before : wp_json_encode($raw_before),
+			), (string) ($request['summary'] ?: 'Add Elementor ' . $widget_type), (string) $request['request_id']);
+			if (is_wp_error($snapshot_id)) {
+				return $snapshot_id;
+			}
+			webreview_insert_elementor_after($data, (string) $request['after_element_id'], $new_element);
+			update_post_meta($post_id, '_elementor_data', wp_slash(wp_json_encode($data)));
+			webreview_clear_elementor_css($post_id);
+			webreview_mark_snapshot_applied($snapshot_id, 'elementor', $post_id);
+			return array('ok' => true, 'snapshot_id' => $snapshot_id, 'element' => $new_element);
 		},
 	));
 

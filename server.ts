@@ -39,6 +39,9 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 }
 
+// Browser identity for fetching review pages when the viewer's own isn't available
+const FALLBACK_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36';
+
 // ---------- Real screenshots via the local Google Chrome (puppeteer-core) ----------
 // Pin snippets are real browser screenshots, like Markup.io. Set CHROME_PATH if Chrome lives elsewhere.
 const CHROME_PATH = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -95,6 +98,8 @@ async function inspectPinTarget(url: string, width: number, selector: string): P
   try {
     await page.setViewport({ width, height: 900 });
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+    // The dev server's TypeScript compiler wraps named functions in __name(); define it inside the page too
+    await page.evaluate('globalThis.__name = globalThis.__name || ((fn) => fn)');
     return await page.evaluate((sel: string) => {
       let el: Element | null = null;
       try { el = document.querySelector(sel); } catch { return null; }
@@ -266,7 +271,9 @@ async function startServer() {
     const { projectId } = req.params;
     const pinId = String(req.body?.pinId || '');
     try {
-      const fix = await prepareFix({ projectId, pinId, actor: actorOf(req), ai: getAIClient(), inspect: inspectPinTarget });
+      const run = () => prepareFix({ projectId, pinId, actor: actorOf(req), ai: getAIClient(), inspect: inspectPinTarget });
+      // An AI answer that fails our checks (422) is asked for once more before giving up
+      const fix = await run().catch((err) => (err instanceof WpError && err.status === 422 ? run() : Promise.reject(err)));
       await logAudit(req, 'wordpress.fix_prepared', { projectId, pinId, fixId: fix.id, kind: fix.kind });
       res.json({ fix });
     } catch (err) {
@@ -707,7 +714,8 @@ For each finding, set elementId to the id of the element the problem is on (it m
         try {
           response = await fetch(targetUrl, {
             headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+              // The viewer's own browser identity: some hosts' firewalls block outdated or made-up browser versions
+              'User-Agent': String(req.headers['user-agent'] || FALLBACK_USER_AGENT),
               'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
               'Accept-Language': 'en-US,en;q=0.9',
             },

@@ -72,6 +72,28 @@ function guestLinkProjectId(): string | null {
   return parseRoute(window.location.pathname, window.location.search).projectId || null;
 }
 
+// Spinner while signing in or opening a page; offers a reload if it takes too long (e.g. the connection dropped)
+function LoadingScreen({ dark = false }: { dark?: boolean }) {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setSlow(true), 12000);
+    return () => clearTimeout(timer);
+  }, []);
+  return (
+    <div className={`min-h-screen flex flex-col items-center justify-center gap-4 ${dark ? 'bg-slate-900' : 'bg-slate-50'}`}>
+      <span className={`w-8 h-8 border-2 border-indigo-500/30 rounded-full animate-spin ${dark ? 'border-t-indigo-400' : 'border-t-indigo-500'}`} />
+      {slow && (
+        <div className={`text-sm text-center ${dark ? 'text-slate-300' : 'text-slate-600'}`}>
+          <p>This is taking longer than usual.</p>
+          <button onClick={() => window.location.reload()} className="mt-2 font-bold text-indigo-500 hover:text-indigo-400">
+            Reload
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   // Authentication State
   // Authentication State (driven by Firebase Auth via onAuthStateChanged below)
@@ -251,7 +273,15 @@ export default function App() {
         setAuthReady(true);
         return;
       }
-      const { claims } = await fbUser.getIdTokenResult();
+      let claims: Record<string, any>;
+      try {
+        ({ claims } = await fbUser.getIdTokenResult());
+      } catch {
+        // Saved session that no longer works (e.g. its account was deleted): start fresh.
+        // Signing out runs this listener again with no user, which shows sign-in or gets a new guest pass.
+        await signOut(auth).catch(() => {});
+        return;
+      }
       if (claims.guestProject) {
         // A guest pass only works on its own guest link
         const linkProject = guestLinkProjectId();
@@ -293,6 +323,7 @@ export default function App() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ projectId, guestId }),
+      signal: AbortSignal.timeout(20000),
     })
       .then(async (res) => {
         const body = await res.json().catch(() => ({}));
@@ -1159,11 +1190,7 @@ export default function App() {
 
   if (!authUser && ((!isGuestMode && !isGuestShareLink) || guestWantsSignIn)) {
     if (!authReady) {
-      return (
-        <div className="min-h-screen bg-slate-900 flex items-center justify-center">
-          <span className="w-8 h-8 border-2 border-indigo-500/30 border-t-indigo-400 rounded-full animate-spin" />
-        </div>
-      );
+      return <LoadingScreen dark />;
     }
     return <AuthPage notice={authNotice} />;
   }
@@ -1171,11 +1198,7 @@ export default function App() {
   // Until the page in the address bar has been opened, show a neutral loading screen. Otherwise the dashboard
   // (the starting view) flashes for a moment, which for a guest would briefly reveal the list of all projects.
   if (!routeReady) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
-        <span className="w-8 h-8 border-2 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin" />
-      </div>
-    );
+    return <LoadingScreen />;
   }
 
   const effectiveGuestMode = isGuestMode || (!authUser && isGuestShareLink);

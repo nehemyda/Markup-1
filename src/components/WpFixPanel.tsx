@@ -68,8 +68,39 @@ function SettingsTable({ before, after, keys }: { before: Record<string, any>; a
   );
 }
 
-function ChangeDetails({ fix }: { fix: WpFix }) {
+// The attached image a fix adds, shown from the pin's comment (or the uploaded copy once applied)
+function FixImage({ fix, pin }: { fix: WpFix; pin: Pin }) {
+  if (!fix.image) return null;
+  const att = pin.comments.find((c) => c.id === fix.image!.commentId)?.attachments?.find((a) => a.id === fix.image!.attachmentId);
+  const src = fix.media?.url || att?.url;
+  return (
+    <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded p-1.5">
+      {src && <img src={src} alt="" className="w-12 h-12 object-cover rounded border border-slate-200 bg-white" />}
+      <div className="text-[10px] text-slate-600 min-w-0">
+        <div className="font-semibold text-slate-800 truncate">Adds image: {fix.image.name}</div>
+        <div>{fix.media ? 'Uploaded to the Media Library' : 'Uploaded to the Media Library when approved'}</div>
+      </div>
+    </div>
+  );
+}
+
+const WIDGET_NAMES: Record<string, string> = { image: 'image', heading: 'heading', 'text-editor': 'text', button: 'button', spacer: 'spacer', divider: 'divider' };
+
+function ChangeDetails({ fix, pin }: { fix: WpFix; pin: Pin }) {
   const [showCode, setShowCode] = useState(false);
+  if (fix.kind === 'elementor_insert') {
+    const settings = JSON.parse(fix.settingsJson || '{}');
+    const keys = Object.keys(settings).filter((k) => k !== 'image' && k !== 'typography_typography');
+    return (
+      <div className="space-y-1.5">
+        <div className="text-[10px] text-slate-500">
+          Adds a new Elementor {WIDGET_NAMES[fix.elementType || ''] || fix.elementType} below the {fix.afterElementType} element
+        </div>
+        <FixImage fix={fix} pin={pin} />
+        {keys.length > 0 && <SettingsTable before={{}} after={settings} keys={keys} />}
+      </div>
+    );
+  }
   if (fix.kind === 'elementor_settings') {
     const after = JSON.parse(fix.settingsJson || '{}');
     const before = JSON.parse(fix.beforeJson || '{}');
@@ -84,6 +115,7 @@ function ChangeDetails({ fix }: { fix: WpFix }) {
   if (fix.kind === 'content_replace') {
     const before = plainText(fix.find);
     const after = plainText(fix.replace);
+    const imageOnly = !!fix.image && before === after;
     // Divi module settings changed (shortcode attributes): show them like Elementor settings
     const attrsBefore = fix.builder === 'divi' ? diviAttrs(fix.find) : {};
     const attrsAfter = fix.builder === 'divi' ? diviAttrs(fix.replace) : {};
@@ -91,6 +123,7 @@ function ChangeDetails({ fix }: { fix: WpFix }) {
       .filter((k) => attrsBefore[k] !== attrsAfter[k] && !k.startsWith('_'));
     return (
       <div className="space-y-1.5 text-[11px]">
+        <FixImage fix={fix} pin={pin} />
         {changedAttrs.length > 0 && (
           <>
             <div className="text-[10px] text-slate-500">Divi module settings</div>
@@ -102,7 +135,7 @@ function ChangeDetails({ fix }: { fix: WpFix }) {
             <div className="bg-rose-50 border border-rose-100 rounded px-2 py-1 text-rose-900 line-through decoration-rose-300">{before || '(no text)'}</div>
             <div className="bg-emerald-50 border border-emerald-100 rounded px-2 py-1 text-emerald-900">{after || '(no text)'}</div>
           </>
-        ) : changedAttrs.length === 0 ? (
+        ) : changedAttrs.length === 0 && !imageOnly ? (
           <div className="text-[10px] text-slate-500">Changes the page markup only (text stays the same).</div>
         ) : null}
         <button onClick={() => setShowCode((v) => !v)} className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-slate-800">
@@ -235,7 +268,7 @@ const ConnectedWpFixPanel: React.FC<WpFixPanelProps> = ({ projectId, pin, isAdmi
           <span className={`text-[9px] font-bold border px-1.5 py-0.5 rounded-full whitespace-nowrap ${status.className}`}>{status.label}</span>
         </div>
         {fix.explanation && fix.kind !== 'none' && <p className="text-[11px] text-slate-600">{fix.explanation}</p>}
-        <ChangeDetails fix={fix} />
+        <ChangeDetails fix={fix} pin={pin} />
         {fix.lastError && <div className="text-[10px] text-rose-700 flex gap-1"><AlertTriangle className="w-3 h-3 shrink-0 mt-px" />{fix.lastError}</div>}
 
         <div className="flex items-center gap-1.5 flex-wrap">
