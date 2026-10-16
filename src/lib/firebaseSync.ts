@@ -11,7 +11,7 @@ import {
   orderBy
 } from 'firebase/firestore';
 import { db, firebaseConfig } from './firebase';
-import { Project, Pin, QARubricRule, Teammate, AuthUser, Folder } from '../types';
+import { Project, Pin, QARubricRule, Teammate, AuthUser, Folder, WpSite } from '../types';
 
 // One project (guests can only read the project in their link)
 export function subscribeProject(projectId: string, onUpdate: (project: Project | null) => void): () => void {
@@ -19,6 +19,16 @@ export function subscribeProject(projectId: string, onUpdate: (project: Project 
     onUpdate(snap.exists() ? ({ ...(snap.data() as Project), id: snap.id }) : null);
   }, (error) => {
     console.warn("Project Firestore subscription error:", error);
+    onUpdate(null);
+  });
+}
+
+// WordPress site linked to a project (null = not connected)
+export function subscribeWpSite(projectId: string, onUpdate: (site: WpSite | null) => void): () => void {
+  return onSnapshot(doc(db, 'wpSites', projectId), (snap) => {
+    onUpdate(snap.exists() ? (snap.data() as WpSite) : null);
+  }, (error) => {
+    console.warn("WordPress site subscription error:", error);
     onUpdate(null);
   });
 }

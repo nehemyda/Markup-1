@@ -40,6 +40,10 @@ function webreview_user_is_allowed($user_id = 0) {
 }
 
 function webreview_permission() {
+	// A wrong or revoked Application Password leaves the request logged out
+	if (!is_user_logged_in()) {
+		return new WP_Error('webreview_not_logged_in', 'The username or Application Password was not accepted.', array('status' => 401));
+	}
 	if (!webreview_user_is_allowed()) {
 		return new WP_Error('webreview_forbidden', 'This user is not allowed to use WebReview Connector. An administrator can allow it under Settings > WebReview Connector.', array('status' => 403));
 	}

@@ -17,7 +17,8 @@ import {
   NotificationItem,
   QARubricRule,
   QAPinError,
-  Folder
+  Folder,
+  WpSite
 } from './types';
 import { 
   INITIAL_PROJECTS, 
@@ -40,6 +41,7 @@ import {
   removeMember,
   normalizeRole,
   subscribeProject,
+  subscribeWpSite,
 } from './lib/firebaseSync';
 import { Header } from './components/Header';
 import { AuthPage } from './components/AuthPage';
@@ -51,6 +53,7 @@ import { TeamActivityFeed } from './components/TeamActivityFeed';
 import { ProjectsGridView } from './components/ProjectsGridView';
 import { QAScoreManager } from './components/QAScoreManager';
 import { NewProjectModal, NewAssetModal, ShareModal, GuestNameModal } from './components/Modals';
+import { WordPressModal } from './components/WordPressModal';
 import { DomainSecurityModal } from './components/DomainSecurityModal';
 import { ProfileSettingsModal } from './components/ProfileSettingsModal';
 import { getAllowedDomains } from './utils/domains';
@@ -358,6 +361,15 @@ export default function App() {
     };
   }, [accessKey]);
 
+
+  // WordPress site linked to the open project (members only; guests never see it)
+  const [wpSite, setWpSite] = useState<WpSite | null>(null);
+  const [showWordPressModal, setShowWordPressModal] = useState(false);
+  useEffect(() => {
+    setWpSite(null);
+    if (accessKey !== 'member' || !currentProject?.id) return;
+    return subscribeWpSite(currentProject.id, setWpSite);
+  }, [accessKey, currentProject?.id]);
 
   // Keep the selected project pointing at a real project (the initial value is only a placeholder)
   useEffect(() => {
@@ -1220,6 +1232,8 @@ export default function App() {
           setShowShareModal(true);
         }}
         onOpenNewAssetModal={() => setShowNewAssetModal(true)}
+        wpStatus={accessKey === 'member' && projects.some((p) => p.id === currentProject.id) ? (wpSite?.status || 'none') : undefined}
+        onOpenWordPress={() => setShowWordPressModal(true)}
         currentUser={headerUser}
         currentOrganization={currentOrganization || undefined}
         onSignOut={handleSignOut}
@@ -1520,6 +1534,14 @@ export default function App() {
         onClose={() => setShowShareModal(false)}
         currentProject={shareProject || (projects.some((p) => p.id === currentProject.id) ? currentProject : null)}
         onInviteTeammate={handleInviteTeammate}
+      />
+      <WordPressModal
+        isOpen={showWordPressModal}
+        onClose={() => setShowWordPressModal(false)}
+        project={currentProject}
+        pageUrl={currentAsset?.type === 'url' ? currentAsset.url : undefined}
+        site={wpSite}
+        isAdmin={!!authUser && ['Owner', 'Admin'].includes(normalizeRole(authUser.role))}
       />
       <DomainSecurityModal
         isOpen={showDomainModal}

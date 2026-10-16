@@ -51,6 +51,9 @@ interface HeaderProps {
   onToggleSimulatePartner?: () => void;
   onOpenNewProjectModal: () => void;
   onOpenShareModal: () => void;
+  // WordPress connection of the open project (undefined = button hidden)
+  wpStatus?: 'connected' | 'error' | 'none';
+  onOpenWordPress?: () => void;
   onOpenNewAssetModal: () => void;
   currentUser?: AuthUser;
   currentOrganization?: Organization;
@@ -80,6 +83,8 @@ export const Header: React.FC<HeaderProps> = ({
   onToggleSimulatePartner,
   onOpenNewProjectModal,
   onOpenShareModal,
+  wpStatus,
+  onOpenWordPress,
   onOpenNewAssetModal,
   currentUser,
   currentOrganization,
@@ -248,6 +253,16 @@ export const Header: React.FC<HeaderProps> = ({
           {/* Share (only inside a project, not for guests) */}
           {viewMode !== 'dashboard' && !isGuestMode && (
             <>
+              {onOpenWordPress && wpStatus && (
+                <button
+                  onClick={onOpenWordPress}
+                  className="flex items-center gap-1.5 border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-bold px-3 py-1.5 rounded-md transition-colors shrink-0 cursor-pointer"
+                  title={wpStatus === 'connected' ? 'WordPress connected' : wpStatus === 'error' ? 'WordPress connection has a problem' : 'Connect a WordPress site'}
+                >
+                  <span className={`w-2 h-2 rounded-full ${wpStatus === 'connected' ? 'bg-emerald-500' : wpStatus === 'error' ? 'bg-rose-500' : 'bg-slate-300'}`} />
+                  WordPress
+                </button>
+              )}
               <button
                 onClick={onOpenShareModal}
                 className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-3.5 py-1.5 rounded-md shadow-sm transition-colors shrink-0 cursor-pointer"

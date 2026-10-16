@@ -2,7 +2,8 @@ import express from 'express';
 import crypto from 'crypto';
 import { adminAuth, adminDb } from './server/firebaseAdmin';
 import { checkAccess, startSession } from './server/access';
-import { requireMember, requireSignedIn, AuthedRequest } from './server/auth';
+import { requireAdmin, requireMember, requireSignedIn, AuthedRequest } from './server/auth';
+import { checkSite, connectSite, disconnectSite, resolvePage, WpError } from './server/wordpress';
 import { logAudit } from './server/audit';
 import { addProjectIdToPins } from './server/migrations';
 import path from 'path';
@@ -155,6 +156,57 @@ async function startServer() {
   // AI features and screenshots need a signed-in caller (they use the Gemini key / server Chrome)
   app.use('/api/ai', requireMember);
   app.use('/api/screenshot', requireSignedIn);
+
+  // ---------- WordPress connections (admins connect/disconnect; members can check and look up pages) ----------
+
+  const wpFail = (res: express.Response, err: any) => {
+    if (err instanceof WpError) return res.status(err.status).json({ error: err.message });
+    console.error('WordPress request failed:', err);
+    res.status(500).json({ error: 'Something went wrong talking to WordPress.' });
+  };
+
+  app.post('/api/wp/:projectId/connect', requireAdmin, async (req: AuthedRequest, res) => {
+    const { projectId } = req.params;
+    try {
+      const site = await connectSite(projectId, {
+        siteUrl: String(req.body?.siteUrl || ''),
+        username: String(req.body?.username || ''),
+        appPassword: String(req.body?.appPassword || ''),
+      }, req.token?.email || '');
+      await logAudit(req, 'wordpress.connect', { projectId, siteUrl: site.siteUrl, wpUser: site.wpUser.name });
+      res.json({ site });
+    } catch (err) {
+      await logAudit(req, 'wordpress.connect_failed', { projectId, siteUrl: String(req.body?.siteUrl || ''), error: (err as Error).message });
+      wpFail(res, err);
+    }
+  });
+
+  app.post('/api/wp/:projectId/check', requireMember, async (req: AuthedRequest, res) => {
+    try {
+      res.json(await checkSite(req.params.projectId));
+    } catch (err) {
+      wpFail(res, err);
+    }
+  });
+
+  app.delete('/api/wp/:projectId', requireAdmin, async (req: AuthedRequest, res) => {
+    const { projectId } = req.params;
+    try {
+      const result = await disconnectSite(projectId);
+      await logAudit(req, 'wordpress.disconnect', { projectId, keyRevoked: result.revoked });
+      res.json(result);
+    } catch (err) {
+      wpFail(res, err);
+    }
+  });
+
+  app.get('/api/wp/:projectId/resolve', requireMember, async (req: AuthedRequest, res) => {
+    try {
+      res.json(await resolvePage(req.params.projectId, String(req.query.url || '')));
+    } catch (err) {
+      wpFail(res, err);
+    }
+  });
 
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });

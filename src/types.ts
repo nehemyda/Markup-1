@@ -207,3 +207,18 @@ export interface NotificationItem {
   isRead: boolean;
 }
 
+
+// WordPress site linked to a project (the password stays on the server)
+export interface WpSite {
+  projectId: string;
+  siteUrl: string;
+  siteName: string;
+  username: string;
+  wpUser: { id: number; name: string; roles: string[] };
+  builders: Record<string, string | null>;
+  pluginVersion: string;
+  wordpressVersion: string;
+  status: 'connected' | 'error';
+  lastError?: string | null;
+  connectedBy?: string;
+}
