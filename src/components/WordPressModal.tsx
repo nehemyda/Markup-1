@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { X, Globe, CheckCircle2, AlertTriangle, Loader2, RefreshCw, Unplug, FileText, KeyRound } from 'lucide-react';
+import { X, Globe, CheckCircle2, AlertTriangle, Loader2, RefreshCw, Unplug, FileText, KeyRound, Download } from 'lucide-react';
 import { Project, WpSite } from '../types';
 import { apiFetch } from '../lib/api';
 
@@ -27,6 +27,28 @@ interface PageInfo {
   can_edit: boolean;
 }
 
+// "0.4.0" < "0.5.0"
+function olderThan(a: string, b: string) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) < (pb[i] || 0);
+  }
+  return false;
+}
+
+// Download the latest plugin zip (admins only; the request needs the sign-in token)
+async function downloadPlugin(version: string) {
+  const res = await apiFetch('/api/wp/plugin.zip');
+  if (!res.ok) throw new Error('Could not download the plugin.');
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `webreview-connector-${version}.zip`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 async function readJson(res: Response) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
@@ -43,6 +65,15 @@ export const WordPressModal: React.FC<WordPressModalProps> = ({ isOpen, onClose,
   const [notice, setNotice] = useState('');
   const [page, setPage] = useState<PageInfo | null>(null);
   const [pageError, setPageError] = useState('');
+  const [latestVersion, setLatestVersion] = useState('');
+
+  useEffect(() => {
+    if (!isOpen || latestVersion) return;
+    apiFetch('/api/wp/plugin').then(readJson).then((d) => setLatestVersion(d.version || '')).catch(() => {});
+  }, [isOpen]);
+
+  const download = () => downloadPlugin(latestVersion).catch((err) => setError(err.message));
+  const needsUpdate = !!(site && latestVersion && olderThan(site.pluginVersion || '0', latestVersion));
 
   // Fresh form each time the dialog opens
   useEffect(() => {
@@ -169,6 +200,25 @@ export const WordPressModal: React.FC<WordPressModalProps> = ({ isOpen, onClose,
                 </div>
               </div>
 
+              {needsUpdate && (
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-[11px] text-amber-900 space-y-2">
+                  <div>
+                    <strong>Plugin update available:</strong> this site has WebReview Connector {site!.pluginVersion}; the latest is {latestVersion}.
+                    Newer features (like changing text across the whole site) need the update.
+                  </div>
+                  {isAdmin ? (
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button onClick={download} className="flex items-center gap-1 bg-amber-600 hover:bg-amber-700 text-white font-bold px-2.5 py-1 rounded">
+                        <Download className="w-3 h-3" /> Download plugin {latestVersion}
+                      </button>
+                      <span>Then in WordPress: Plugins → Add New → Upload Plugin → Replace current with uploaded. Click Check connection afterwards.</span>
+                    </div>
+                  ) : (
+                    <div>Ask a workspace admin to update it.</div>
+                  )}
+                </div>
+              )}
+
               {connected && pageUrl && (
                 <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 flex items-center gap-2 text-[11px] text-slate-600">
                   <FileText className="w-4 h-4 text-slate-400 shrink-0" />
@@ -210,7 +260,12 @@ export const WordPressModal: React.FC<WordPressModalProps> = ({ isOpen, onClose,
           ) : isAdmin ? (
             <form onSubmit={connect} className="space-y-3">
               <ol className="list-decimal pl-4 space-y-1 text-[11px] text-slate-600">
-                <li>Install and activate the <strong>WebReview Connector</strong> plugin on the site.</li>
+                <li>
+                  Install and activate the <strong>WebReview Connector</strong> plugin on the site
+                  {latestVersion && (
+                    <> (<button type="button" onClick={download} className="text-blue-600 hover:underline font-semibold">download {latestVersion}</button>)</>
+                  )}.
+                </li>
                 <li>Create a WordPress user for WebReview (Editor is enough) and allow it under Settings → WebReview Connector.</li>
                 <li>Log in as that user, create an <strong>Application Password</strong> under Users → Profile, and paste it below.</li>
               </ol>

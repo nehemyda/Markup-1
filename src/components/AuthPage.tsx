@@ -12,17 +12,12 @@ import { auth } from '../lib/firebase';
 import { checkWorkspaceAccess, accessDeniedMessage } from '../lib/userProfile';
 import { useAllowedDomains } from '../utils/domains';
 import { 
-  Building2, 
-  ShieldCheck, 
   Lock, 
   Mail, 
   ArrowRight, 
   CheckCircle2, 
-  Sparkles, 
-  Users, 
   UserPlus,
   User as UserIcon,
-  Globe,
 } from 'lucide-react';
 
 // Turn Firebase Auth error codes into readable messages
@@ -53,12 +48,50 @@ function describeAuthError(err: any): string {
 export const AuthPage: React.FC<{ notice?: string | null }> = ({ notice }) => {
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
+  // Email = name + a domain from the workspace's allowed list, or a full address typed in for "Other"
+  const [emailName, setEmailName] = useState('');
+  const [emailDomain, setEmailDomain] = useState<string>(() => {
+    try {
+      return localStorage.getItem('mf_login_domain') || '';
+    } catch (e) {
+      return '';
+    }
+  });
+  const [otherEmail, setOtherEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(notice || null);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
   const allowedDomains = useAllowedDomains();
+  const OTHER = '__other';
+  // No list yet, or a remembered domain that is no longer allowed: use the first one
+  const domainChoice = !allowedDomains.length
+    ? OTHER
+    : emailDomain === OTHER || allowedDomains.includes(emailDomain)
+      ? emailDomain
+      : allowedDomains[0];
+  const email = domainChoice === OTHER ? otherEmail : emailName.trim() ? `${emailName.trim()}@${domainChoice}` : '';
+
+  const chooseDomain = (value: string) => {
+    setEmailDomain(value);
+    try {
+      localStorage.setItem('mf_login_domain', value);
+    } catch (e) {}
+  };
+
+  // Pasting a whole address into the name box picks its domain (or switches to Other)
+  const changeEmailName = (value: string) => {
+    const at = value.indexOf('@');
+    if (at === -1) return setEmailName(value);
+    const domain = value.slice(at + 1).trim().toLowerCase();
+    if (allowedDomains.includes(domain)) {
+      setEmailName(value.slice(0, at));
+      chooseDomain(domain);
+    } else {
+      setOtherEmail(value.trim());
+      chooseDomain(OTHER);
+    }
+  };
 
   // Messages from App after sign-in (e.g. access removed) arrive while this page is still open
   useEffect(() => {
@@ -147,80 +180,22 @@ export const AuthPage: React.FC<{ notice?: string | null }> = ({ notice }) => {
             <span className="font-extrabold text-xl tracking-tight bg-gradient-to-r from-white via-slate-100 to-slate-400 bg-clip-text text-transparent">
               WebReview Pro
             </span>
-            <span className="ml-2.5 px-2 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 text-[10px] font-bold tracking-widest uppercase">
-              Enterprise v2.4
-            </span>
           </div>
         </div>
 
-        <div className="hidden sm:flex items-center gap-6 text-xs text-slate-400 font-medium">
-          <div className="flex items-center gap-1.5 text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1.5 rounded-full">
-            <ShieldCheck className="w-3.5 h-3.5" />
-            <span>SOC2 Type II Certified</span>
-          </div>
-          <span className="flex items-center gap-1.5 hover:text-white transition-colors cursor-pointer">
-            <Globe className="w-3.5 h-3.5" />
-            <span>US-East (Virginia) Region</span>
-          </span>
-        </div>
       </header>
 
       {/* Main Container */}
       <main className="w-full max-w-6xl mx-auto px-4 py-8 flex-1 flex flex-col lg:flex-row items-center justify-center gap-12 lg:gap-16 z-10">
         
-        {/* Left Column: Value Proposition & Security Trust */}
-        <div className="max-w-xl space-y-6 text-center lg:text-left">
-          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-800/80 border border-slate-700/80 text-indigo-300 text-xs font-semibold shadow-inner">
-            <Sparkles className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
-            <span>Real-time Website & Design Annotation Workspace</span>
-          </div>
-
+        {/* Left Column: what the app is for */}
+        <div className="max-w-xl space-y-4 text-center lg:text-left">
           <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight text-white leading-[1.15]">
-            Review, annotate & ship production UI <span className="bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">10x faster.</span>
+            Website review for the <span className="bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">YourDigitalAgents</span> team
           </h1>
-
-          <p className="text-base text-slate-300 leading-relaxed font-normal">
-            Welcome to the centralized review portal for <strong className="text-white font-semibold">YourDigitalAgents Enterprise</strong>. Connect live URLs, Figma frames, or staging environments and collaborate synchronously with AI-assisted review workflows.
+          <p className="text-base text-slate-300 leading-relaxed">
+            Pin feedback on live pages, share review links with clients, and fix WordPress pages with AI.
           </p>
-
-          {/* Feature Highlights Grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 text-left">
-            <div className="bg-slate-800/50 border border-slate-700/60 p-4 rounded-xl space-y-1.5 hover:border-slate-600/80 transition-colors">
-              <div className="flex items-center gap-2 text-indigo-400 font-bold text-sm">
-                <Users className="w-4 h-4" />
-                <span>Organization RBAC</span>
-              </div>
-              <p className="text-xs text-slate-400 leading-normal">
-                Granular permission controls for Admins, Designers, Product Managers, and External Reviewers.
-              </p>
-            </div>
-
-            <div className="bg-slate-800/50 border border-slate-700/60 p-4 rounded-xl space-y-1.5 hover:border-slate-600/80 transition-colors">
-              <div className="flex items-center gap-2 text-emerald-400 font-bold text-sm">
-                <Building2 className="w-4 h-4" />
-                <span>Multi-Asset Workspaces</span>
-              </div>
-              <p className="text-xs text-slate-400 leading-normal">
-                Organize feedback across staging URLs, mobile viewports, and marketing landing pages in one hub.
-              </p>
-            </div>
-          </div>
-
-          {/* Trust Banner */}
-          <div className="pt-4 border-t border-slate-800/80 flex flex-wrap items-center justify-center lg:justify-start gap-x-6 gap-y-2 text-xs text-slate-400">
-            <span className="flex items-center gap-1.5">
-              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-              <span>SAML 2.0 / Okta SSO</span>
-            </span>
-            <span className="flex items-center gap-1.5">
-              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-              <span>99.99% Enterprise SLA</span>
-            </span>
-            <span className="flex items-center gap-1.5">
-              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-              <span>AES-256 Encrypted</span>
-            </span>
-          </div>
         </div>
 
         {/* Right Column: Interactive Login Box */}
@@ -293,17 +268,47 @@ export const AuthPage: React.FC<{ notice?: string | null }> = ({ notice }) => {
                 <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1.5">
                   Organization Work Email
                 </label>
-                <div className="relative">
-                  <Mail className="absolute left-3.5 top-3 w-4 h-4 text-slate-500" />
-                  <input
-                    type="email"
-                    required
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="you@yourdigitalagents.com"
-                    autoComplete="email"
-                    className="w-full bg-slate-900/80 border border-slate-700 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all"
-                  />
+                <div className="flex items-stretch bg-slate-900/80 border border-slate-700 rounded-xl focus-within:border-indigo-500 focus-within:ring-1 focus-within:ring-indigo-500 transition-all">
+                  <div className="relative flex-1 min-w-[72px]">
+                    {domainChoice === OTHER && <Mail className="absolute left-3.5 top-3 w-4 h-4 text-slate-500" />}
+                    {domainChoice === OTHER ? (
+                      <input
+                        type="email"
+                        required
+                        value={otherEmail}
+                        onChange={(e) => setOtherEmail(e.target.value)}
+                        placeholder="name@company.com"
+                        autoComplete="email"
+                        autoFocus={allowedDomains.length > 0}
+                        className="w-full bg-transparent pl-10 pr-2 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none"
+                      />
+                    ) : (
+                      <input
+                        type="text"
+                        required
+                        value={emailName}
+                        onChange={(e) => changeEmailName(e.target.value)}
+                        placeholder="your.name"
+                        autoComplete="username"
+                        autoCapitalize="none"
+                        spellCheck={false}
+                        className="w-full bg-transparent pl-3.5 pr-1 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none"
+                      />
+                    )}
+                  </div>
+                  {allowedDomains.length > 0 && (
+                    <select
+                      value={domainChoice}
+                      onChange={(e) => chooseDomain(e.target.value)}
+                      aria-label="Email domain"
+                      className="shrink-0 bg-slate-800/80 border-l border-slate-700 rounded-r-xl px-2.5 text-sm text-slate-200 focus:outline-none cursor-pointer"
+                    >
+                      {allowedDomains.map((dom) => (
+                        <option key={dom} value={dom}>@{dom}</option>
+                      ))}
+                      <option value={OTHER}>Other email…</option>
+                    </select>
+                  )}
                 </div>
               </div>
 
@@ -377,61 +382,15 @@ export const AuthPage: React.FC<{ notice?: string | null }> = ({ notice }) => {
               </button>
             </div>
 
-            {/* AUTHORIZED DOMAIN ACCESS BADGE */}
-            <div className="p-3.5 bg-slate-900/90 border border-indigo-500/30 rounded-xl space-y-2">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-bold text-slate-200 flex items-center gap-1.5">
-                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                  <span>Authorized Organization Domains</span>
-                </span>
-                <span className="text-[10px] bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 px-2 py-0.5 rounded font-bold flex items-center gap-1">
-                  <Lock className="w-3 h-3 text-emerald-400" />
-                  <span>Super Admin Protected</span>
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-400 leading-relaxed">
-                Anyone with an email on these domains can create an account. People outside these domains can sign in once a workspace admin invites them.
-              </p>
-              <div className="flex flex-wrap gap-1.5 pt-0.5">
-                {allowedDomains.map((dom) => (
-                  <span
-                    key={dom}
-                    className="text-[11px] font-mono px-2 py-0.5 bg-slate-800 border border-slate-700 rounded-md text-emerald-300 font-semibold"
-                  >
-                    @{dom}
-                  </span>
-                ))}
-              </div>
-            </div>
 
           </div>
 
-          {/* Bottom Security Footer */}
-          <div className="px-6 py-3.5 bg-slate-900/80 border-t border-slate-700/80 flex items-center justify-between text-[11px] text-slate-400">
-            <span className="flex items-center gap-1.5">
-              <Lock className="w-3 h-3 text-indigo-400" />
-              <span>Protected by Cloudflare Turnstile</span>
-            </span>
-            <span className="font-mono text-slate-500">v2.4.19-ent</span>
-          </div>
 
         </div>
       </main>
 
-      {/* Footer */}
-      <footer className="w-full max-w-7xl mx-auto px-6 py-6 border-t border-slate-800/80 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500 z-10">
-        <div className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-emerald-500" />
-          <span>All Systems Operational</span>
-          <span className="text-slate-700">|</span>
-          <span>© 2026 MarkFlow Studio Inc. All rights reserved.</span>
-        </div>
-        <div className="flex items-center gap-6 font-medium">
-          <a href="#privacy" onClick={(e) => e.preventDefault()} className="hover:text-slate-400 transition-colors">Privacy Policy</a>
-          <a href="#terms" onClick={(e) => e.preventDefault()} className="hover:text-slate-400 transition-colors">Enterprise Terms of Service</a>
-          <a href="#security" onClick={(e) => e.preventDefault()} className="hover:text-slate-400 transition-colors">Security Whitepaper</a>
-          <a href="#support" onClick={(e) => e.preventDefault()} className="hover:text-slate-400 transition-colors">24/7 Priority Support</a>
-        </div>
+      <footer className="w-full max-w-7xl mx-auto px-6 py-6 text-xs text-slate-500 text-center sm:text-left z-10">
+        © {new Date().getFullYear()} YourDigitalAgents
       </footer>
     </div>
   );

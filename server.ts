@@ -3,7 +3,8 @@ import crypto from 'crypto';
 import { adminAuth, adminDb } from './server/firebaseAdmin';
 import { checkAccess, isAdminRole, startSession } from './server/access';
 import { requireAdmin, requireMember, requireSignedIn, AuthedRequest } from './server/auth';
-import { checkSite, connectSite, disconnectSite, resolvePage, WpError } from './server/wordpress';
+import { checkSite, connectSite, disconnectSite, resolvePage, WpError, LATEST_PLUGIN_VERSION, PLUGIN_DIR } from './server/wordpress';
+import { spawn } from 'child_process';
 import { applyFix, prepareFix, rejectFix, undoFix, PinTarget } from './server/wpFixes';
 import { logAudit } from './server/audit';
 import { addProjectIdToPins } from './server/migrations';
@@ -37,6 +38,18 @@ function getAIClient(): GoogleGenAI | null {
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+}
+
+// Same page address with a one-off parameter, so hosting page caches (e.g. WordPress.com's 5-minute cache)
+// return the current page instead of a stored copy
+function bypassPageCache(url: string, token: string | number = Date.now()) {
+  try {
+    const u = new URL(url);
+    u.searchParams.set('wr_fresh', String(token));
+    return u.toString();
+  } catch {
+    return url;
+  }
 }
 
 // Browser identity for fetching review pages when the viewer's own isn't available
@@ -97,7 +110,8 @@ async function inspectPinTarget(url: string, width: number, selector: string): P
   const page = await browser.newPage();
   try {
     await page.setViewport({ width, height: 900 });
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+    // Fresh copy: right after a fix the host may still cache the old page
+    await page.goto(bypassPageCache(url), { waitUntil: 'networkidle2', timeout: 30000 });
     // The dev server's TypeScript compiler wraps named functions in __name(); define it inside the page too
     await page.evaluate('globalThis.__name = globalThis.__name || ((fn) => fn)');
     return await page.evaluate((sel: string) => {
@@ -314,6 +328,18 @@ async function startServer() {
     } catch (err) {
       wpFail(res, err);
     }
+  });
+
+  // Latest WebReview Connector plugin: its version, and the zip for admins to install or update
+  app.get('/api/wp/plugin', requireMember, (req, res) => {
+    res.json({ version: LATEST_PLUGIN_VERSION });
+  });
+  app.get('/api/wp/plugin.zip', requireAdmin, (req, res) => {
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="webreview-connector-${LATEST_PLUGIN_VERSION}.zip"`);
+    const zip = spawn('zip', ['-rq', '-', 'webreview-connector', '-x', '*.DS_Store'], { cwd: path.dirname(PLUGIN_DIR) });
+    zip.stdout.pipe(res);
+    zip.on('error', () => res.destroy());
   });
 
   app.get('/api/wp/:projectId/resolve', requireMember, async (req: AuthedRequest, res) => {
@@ -712,8 +738,11 @@ For each finding, set elementId to the id of the element the problem is on (it m
       for (let attempt = 0; attempt < 3 && !response; attempt++) {
         if (attempt > 0) await new Promise((r) => setTimeout(r, 500 * attempt));
         try {
-          response = await fetch(targetUrl, {
+          // After a fix (?v=...) skip hosting page caches so the change shows straight away
+          const fetchUrl = req.query.v ? bypassPageCache(targetUrl, String(req.query.v)) : targetUrl;
+          response = await fetch(fetchUrl, {
             headers: {
+              ...(req.query.v ? { 'Cache-Control': 'no-cache', Pragma: 'no-cache' } : {}),
               // The viewer's own browser identity: some hosts' firewalls block outdated or made-up browser versions
               'User-Agent': String(req.headers['user-agent'] || FALLBACK_USER_AGENT),
               'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',

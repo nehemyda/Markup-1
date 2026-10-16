@@ -207,9 +207,14 @@ export default function App() {
       // ...under the matching Active / Resolved tab
       const resolved = selectedPin.status === 'resolved' || selectedPin.status === 'archived';
       setFilterState((prev) => (prev.showResolved === resolved ? prev : { ...prev, showResolved: resolved }));
+      // ...in its own project (a pin opened from a link, notification, Kanban or Table can belong to another one)
+      const owner =
+        projects.find((p) => p.id === selectedPin.projectId) ||
+        projects.find((p) => (p.assets || []).some((a) => a.id === selectedPin.assetId));
+      if (owner && owner.id !== currentProject.id) setCurrentProject(owner);
       // ...and on its own page (the sidebar lists comments from every page of the website)
       if (selectedPin.assetId !== currentAsset.id) {
-        const page = projects.flatMap((p) => p.assets || []).find((a) => a.id === selectedPin.assetId);
+        const page = (owner?.assets || projects.flatMap((p) => p.assets || [])).find((a) => a.id === selectedPin.assetId);
         if (page) setCurrentAsset(page);
       }
     }
@@ -1453,7 +1458,8 @@ export default function App() {
                               connected: wpSite?.status === 'connected',
                               onConnect: () => setShowWordPressModal(true),
                               isAdmin: isWorkspaceAdmin,
-                              onSiteChanged: () => setSiteVersion((v) => v + 1),
+                              // A new value each time (also across app reloads), so no cached copy of the page is reused
+                              onSiteChanged: () => setSiteVersion(Date.now()),
                               onPreviewCss: setPreviewCss,
                             }
                           : undefined

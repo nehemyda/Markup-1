@@ -232,7 +232,7 @@ export interface WpFix {
   pageUrl: string;
   pageTitle?: string;
   builder: string;
-  kind: 'elementor_settings' | 'elementor_insert' | 'content_replace' | 'css' | 'none';
+  kind: 'elementor_settings' | 'elementor_insert' | 'content_replace' | 'css' | 'site_replace' | 'none';
   status: 'proposed' | 'applying' | 'applied' | 'undoing' | 'reverted' | 'rejected' | 'stale' | 'not_possible';
   summary: string;
   explanation: string;
@@ -244,11 +244,16 @@ export interface WpFix {
   find?: string;
   replace?: string;
   css?: string;
+  // Site-wide text change: every place it changes (previewed before approval)
+  wholeWord?: boolean;
+  siteReplace?: { total: number; places: number; items: Array<{ label: string; where: string; count: number; sample: string }> };
   afterElementId?: string;
   afterElementType?: string;
   // Attached image the fix places on the page (uploaded to the Media Library on approval)
   image?: { commentId: string; attachmentId: string; name: string } | null;
   media?: { id: number; url: string } | null;
+  // Requests from the pin's thread this fix doesn't cover yet
+  remaining?: string[];
   lastError?: string | null;
   proposedBy?: { uid: string; name: string; email: string };
   appliedBy?: { uid: string; name: string; email: string };

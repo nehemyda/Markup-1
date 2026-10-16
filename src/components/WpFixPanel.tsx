@@ -88,6 +88,40 @@ const WIDGET_NAMES: Record<string, string> = { image: 'image', heading: 'heading
 
 function ChangeDetails({ fix, pin }: { fix: WpFix; pin: Pin }) {
   const [showCode, setShowCode] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+  if (fix.kind === 'site_replace' && fix.siteReplace) {
+    const { total, places, items } = fix.siteReplace;
+    const shown = showAll ? items : items.slice(0, 5);
+    return (
+      <div className="space-y-1.5 text-[11px]">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="bg-rose-50 border border-rose-100 rounded px-1.5 py-0.5 text-rose-900 line-through decoration-rose-300">{fix.find}</span>
+          <span className="text-slate-400">→</span>
+          <span className="bg-emerald-50 border border-emerald-100 rounded px-1.5 py-0.5 text-emerald-900">{fix.replace}</span>
+          <span className="text-[10px] text-slate-500">everywhere{fix.wholeWord === false ? ' (also inside words)' : ''}</span>
+        </div>
+        <div className="text-[10px] text-slate-500">
+          {total} {total === 1 ? 'change' : 'changes'} in {places} {places === 1 ? 'place' : 'places'} across the site
+        </div>
+        <ul className="border border-slate-200 rounded divide-y divide-slate-100 max-h-48 overflow-y-auto">
+          {shown.map((it, i) => (
+            <li key={i} className="px-2 py-1">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-semibold text-slate-800 truncate">{it.label}</span>
+                <span className={`text-[10px] shrink-0 ${it.count ? 'text-slate-500' : 'text-amber-700'}`}>{it.count ? `${it.count}× · ${it.where}` : it.where}</span>
+              </div>
+              {it.sample && <div className="text-[10px] text-slate-500 truncate">{it.sample}</div>}
+            </li>
+          ))}
+        </ul>
+        {items.length > 5 && (
+          <button onClick={() => setShowAll((v) => !v)} className="text-[10px] text-slate-500 hover:text-slate-800">
+            {showAll ? 'Show fewer' : `Show all ${items.length}`}
+          </button>
+        )}
+      </div>
+    );
+  }
   if (fix.kind === 'elementor_insert') {
     const settings = JSON.parse(fix.settingsJson || '{}');
     const keys = Object.keys(settings).filter((k) => k !== 'image' && k !== 'typography_typography');
@@ -308,6 +342,25 @@ const ConnectedWpFixPanel: React.FC<WpFixPanelProps> = ({ projectId, pin, isAdmi
             </button>
           )}
         </div>
+        {fix.remaining && fix.remaining.length > 0 && ['proposed', 'applied'].includes(fix.status) && (
+          <div className="bg-indigo-50/70 border border-indigo-100 rounded px-2 py-1.5 text-[11px] text-indigo-950">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-bold">Still to do in this thread</span>
+              {fix.status === 'applied' && !hasOpenProposal && (
+                <button
+                  onClick={prepare}
+                  disabled={preparing}
+                  className="flex items-center gap-1 text-indigo-700 hover:text-indigo-900 font-bold disabled:opacity-50"
+                >
+                  {preparing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />} Fix next
+                </button>
+              )}
+            </div>
+            <ul className="list-disc pl-4 mt-0.5 space-y-0.5">
+              {fix.remaining.map((r, i) => <li key={i}>{r}</li>)}
+            </ul>
+          </div>
+        )}
         {fix.status === 'proposed' && !isAdmin && <div className="text-[10px] text-slate-400">A workspace admin needs to approve this before it goes live.</div>}
         {fix.status === 'applied' && fix.appliedBy && <div className="text-[10px] text-slate-400">Applied by {fix.appliedBy.name}</div>}
       </div>

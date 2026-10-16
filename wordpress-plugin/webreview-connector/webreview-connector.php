@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WebReview Connector
  * Description: Lets WebReview Pro read pages and apply approved fixes (Elementor, Divi, Gutenberg, site CSS) safely, with a backup before every change and one-click undo.
- * Version: 0.4.0
+ * Version: 0.5.0
  * Requires at least: 5.6
  * Requires PHP: 7.4
  * Author: YourDigitalAgents
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 	exit;
 }
 
-define('WEBREVIEW_CONNECTOR_VERSION', '0.4.0');
+define('WEBREVIEW_CONNECTOR_VERSION', '0.5.0');
 const WEBREVIEW_CAP = 'webreview_agent';
 const WEBREVIEW_SNAPSHOT_TYPE = 'webreview_snapshot';
 const WEBREVIEW_CSS_OPTION = 'webreview_custom_css';
@@ -257,6 +257,186 @@ add_action('wp_head', function () {
 }, 999);
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Site-wide text replacement: change wording everywhere it is shown (page text, titles, menus, builder layouts),
+// never inside links, image names, CSS classes or other settings. Previewed first; one undo restores everything.
+// ---------------------------------------------------------------------------------------------------------------------
+
+// Divi shortcode attributes that hold visible text
+const WEBREVIEW_DIVI_TEXT_ATTRS = array('title', 'heading', 'subhead', 'button_text', 'button_one_text', 'button_two_text', 'alt', 'title_text', 'name', 'position', 'job_title', 'company_name', 'author', 'prefix', 'suffix', 'header_text');
+
+function webreview_replace_plain($text, $find, $replace, $whole_word, &$count) {
+	$pattern = '/' . ($whole_word ? '(?<![\p{L}\p{N}_])' : '') . preg_quote($find, '/') . ($whole_word ? '(?![\p{L}\p{N}_])' : '') . '/u';
+	$n = 0;
+	$out = preg_replace($pattern, str_replace(array('\\', '$'), array('\\\\', '\$'), $replace), $text, -1, $n);
+	if ($out === null) {
+		return $text;
+	}
+	$count += $n;
+	return $out;
+}
+
+// Replace only in visible text: skip HTML tags, comments (Gutenberg block data) and shortcode brackets,
+// except the visible-text attributes of Divi modules
+function webreview_replace_markup($markup, $find, $replace, $whole_word, &$count) {
+	$parts = preg_split('/(<!--[\s\S]*?-->|<[^>]*>|\[[^\]]*\])/u', $markup, -1, PREG_SPLIT_DELIM_CAPTURE);
+	if ($parts === false) {
+		return $markup;
+	}
+	foreach ($parts as $i => $part) {
+		if ($part === '') {
+			continue;
+		}
+		if ($i % 2 === 0) {
+			$parts[$i] = webreview_replace_plain($part, $find, $replace, $whole_word, $count);
+		} elseif ($part[0] === '[' && preg_match('/^\[et_pb_/', $part)) {
+			$parts[$i] = preg_replace_callback('/\b(' . implode('|', WEBREVIEW_DIVI_TEXT_ATTRS) . ')="([^"]*)"/', function ($m) use ($find, $replace, $whole_word, &$count) {
+				return $m[1] . '="' . webreview_replace_plain($m[2], $find, $replace, $whole_word, $count) . '"';
+			}, $part);
+		}
+	}
+	return implode('', $parts);
+}
+
+// Elementor: text settings only (not links, images, ids, classes, colors, sizes)
+function webreview_replace_elementor(&$value, $key, $find, $replace, $whole_word, &$count) {
+	if (is_array($value)) {
+		foreach ($value as $k => &$v) {
+			webreview_replace_elementor($v, is_string($k) ? $k : $key, $find, $replace, $whole_word, $count);
+		}
+		return;
+	}
+	if (!is_string($value) || $value === '' || preg_match('#^(https?:|/|\#|mailto:|tel:)#', $value)) {
+		return;
+	}
+	if (preg_match('/(url|link|image|img|background|icon|video|_id$|^id$|class|css|color|size|typography|align|animation|_type$|^widgetType$|^elType$|html_tag|font|gap|width|height|position|margin|padding|border|shadow)/i', (string) $key) || strpos((string) $key, '_') === 0) {
+		return;
+	}
+	$value = webreview_replace_markup($value, $find, $replace, $whole_word, $count);
+}
+
+function webreview_short_sample($text, $find) {
+	$plain = trim(preg_replace('/\s+/', ' ', wp_strip_all_tags(preg_replace('/\[[^\]]*\]/', ' ', $text))));
+	$pos = stripos($plain, $find);
+	if ($pos === false) {
+		return mb_substr($plain, 0, 80);
+	}
+	$start = max(0, $pos - 40);
+	return ($start > 0 ? '…' : '') . mb_substr($plain, $start, 100) . '…';
+}
+
+/**
+ * Find (and optionally change) every place the text is shown. Returns the list of places with counts; when applying,
+ * also the before/after values needed for undo.
+ */
+function webreview_site_replace($find, $replace, $whole_word, $apply) {
+	$deny = array('attachment', 'revision', 'customize_changeset', 'oembed_cache', 'user_request', 'wp_navigation', WEBREVIEW_SNAPSHOT_TYPE);
+	$types = array_values(array_diff(array_unique(array_merge(
+		get_post_types(array('show_ui' => true)),
+		array('nav_menu_item', 'wp_template', 'wp_template_part', 'wp_block', 'et_pb_layout', 'et_header_layout', 'et_body_layout', 'et_footer_layout', 'elementor_library')
+	)), $deny));
+	$types = array_values(array_filter($types, 'post_type_exists'));
+	$posts = get_posts(array('post_type' => $types, 'post_status' => array('publish', 'private', 'future', 'draft'), 'numberposts' => 2000, 'orderby' => 'ID', 'order' => 'ASC', 'suppress_filters' => true));
+	$items = array();
+	$changes = array();
+	foreach ($posts as $post) {
+		if (!current_user_can('edit_post', $post->ID)) {
+			continue;
+		}
+		$label = ($post->post_title !== '' ? $post->post_title : '(no title)') . ' · ' . $post->post_type;
+		// Title (menu items keep their custom label here)
+		if (stripos($post->post_title, $find) !== false) {
+			$n = 0;
+			$new = webreview_replace_plain($post->post_title, $find, $replace, $whole_word, $n);
+			if ($n) {
+				$items[] = array('type' => 'title', 'id' => $post->ID, 'label' => $label, 'where' => 'title', 'count' => $n, 'sample' => $post->post_title);
+				$changes[] = array('type' => 'post_title', 'id' => $post->ID, 'before' => $post->post_title, 'after' => $new);
+			}
+		}
+		// Content
+		if (stripos($post->post_content, $find) !== false) {
+			$n = 0;
+			$new = webreview_replace_markup($post->post_content, $find, $replace, $whole_word, $n);
+			if ($n) {
+				$items[] = array('type' => 'content', 'id' => $post->ID, 'label' => $label, 'where' => 'content', 'count' => $n, 'sample' => webreview_short_sample($post->post_content, $find));
+				$changes[] = array('type' => 'post_content', 'id' => $post->ID, 'before' => $post->post_content, 'after' => $new);
+			}
+		}
+		// Elementor layout
+		if (get_post_meta($post->ID, '_elementor_edit_mode', true) === 'builder') {
+			$raw = get_post_meta($post->ID, '_elementor_data', true);
+			$raw = is_string($raw) ? $raw : wp_json_encode($raw);
+			if (stripos($raw, $find) !== false) {
+				$data = json_decode($raw, true);
+				$n = 0;
+				if (is_array($data)) {
+					webreview_replace_elementor($data, '', $find, $replace, $whole_word, $n);
+				}
+				if ($n) {
+					$items[] = array('type' => 'elementor', 'id' => $post->ID, 'label' => $label, 'where' => 'Elementor layout', 'count' => $n, 'sample' => '');
+					$changes[] = array('type' => 'elementor', 'id' => $post->ID, 'before' => $raw, 'after' => wp_json_encode($data));
+				}
+			}
+		}
+	}
+	// Site title and tagline (only for users who may change site settings)
+	foreach (array('blogname' => 'Site title', 'blogdescription' => 'Site tagline') as $option => $label) {
+		$value = (string) get_option($option, '');
+		if ($value === '' || stripos($value, $find) === false) {
+			continue;
+		}
+		$n = 0;
+		$new = webreview_replace_plain($value, $find, $replace, $whole_word, $n);
+		if (!$n) {
+			continue;
+		}
+		$allowed = current_user_can('manage_options');
+		$items[] = array('type' => 'option', 'id' => 0, 'label' => $label, 'where' => $allowed ? 'setting' : 'skipped: needs a WordPress administrator', 'count' => $allowed ? $n : 0, 'sample' => $value);
+		if ($allowed) {
+			$changes[] = array('type' => 'option', 'id' => $option, 'before' => $value, 'after' => $new);
+		}
+	}
+	if (!$apply) {
+		return array('items' => $items, 'total' => array_sum(wp_list_pluck($items, 'count')));
+	}
+	return array('items' => $items, 'changes' => $changes);
+}
+
+// Write one site-replace change (or its undo); clears builder caches for the post
+function webreview_write_change($change, $value) {
+	if ($change['type'] === 'option') {
+		update_option($change['id'], $value);
+		return;
+	}
+	$post_id = (int) $change['id'];
+	if ($change['type'] === 'post_title') {
+		wp_update_post(array('ID' => $post_id, 'post_title' => wp_slash($value)));
+	} elseif ($change['type'] === 'post_content') {
+		wp_update_post(array('ID' => $post_id, 'post_content' => wp_slash($value)));
+	} elseif ($change['type'] === 'elementor') {
+		update_post_meta($post_id, '_elementor_data', wp_slash($value));
+		webreview_clear_elementor_css($post_id);
+	}
+	if (webreview_page_builder($post_id) === 'divi') {
+		webreview_clear_divi_cache($post_id);
+	}
+}
+
+function webreview_read_change($change) {
+	if ($change['type'] === 'option') {
+		return (string) get_option($change['id'], '');
+	}
+	$post = get_post((int) $change['id']);
+	if ($change['type'] === 'post_title') {
+		return $post ? $post->post_title : '';
+	}
+	if ($change['type'] === 'post_content') {
+		return $post ? $post->post_content : '';
+	}
+	$raw = get_post_meta((int) $change['id'], '_elementor_data', true);
+	return is_string($raw) ? $raw : wp_json_encode($raw);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // REST API
 // ---------------------------------------------------------------------------------------------------------------------
 
@@ -493,6 +673,58 @@ add_action('rest_api_init', function () {
 		),
 	));
 
+	// Site-wide text replacement: preview (nothing changes) and apply (one backup for everything).
+	$site_replace_args = array(
+		'find' => array('required' => true, 'type' => 'string'),
+		'replace' => array('required' => true, 'type' => 'string'),
+		'whole_word' => array('type' => 'boolean', 'default' => true),
+	);
+	$site_replace_check = function (WP_REST_Request $request) {
+		$find = (string) $request['find'];
+		if (mb_strlen($find) < 2 || mb_strlen($find) > 100 || preg_match('/[<>\[\]]/', $find . $request['replace']) || mb_strlen((string) $request['replace']) > 200) {
+			return new WP_Error('webreview_bad_text', 'Use plain text of 2 to 100 characters, without HTML or brackets.', array('status' => 400));
+		}
+		return true;
+	};
+	register_rest_route($ns, '/site-replace/preview', array(
+		'methods' => 'POST',
+		'permission_callback' => 'webreview_permission',
+		'args' => $site_replace_args,
+		'callback' => function (WP_REST_Request $request) use ($site_replace_check) {
+			$ok = $site_replace_check($request);
+			if (is_wp_error($ok)) {
+				return $ok;
+			}
+			return webreview_site_replace((string) $request['find'], (string) $request['replace'], (bool) $request['whole_word'], false);
+		},
+	));
+	register_rest_route($ns, '/site-replace', array(
+		'methods' => 'POST',
+		'permission_callback' => 'webreview_permission',
+		'args' => $site_replace_args,
+		'callback' => function (WP_REST_Request $request) use ($site_replace_check) {
+			$ok = $site_replace_check($request);
+			if (is_wp_error($ok)) {
+				return $ok;
+			}
+			$result = webreview_site_replace((string) $request['find'], (string) $request['replace'], (bool) $request['whole_word'], true);
+			if (!$result['changes']) {
+				return new WP_Error('webreview_nothing_to_change', 'The text was not found anywhere it can be changed.', array('status' => 409));
+			}
+			$backup = array_map(function ($c) {
+				return array('type' => $c['type'], 'id' => $c['id'], 'before' => $c['before'], 'after_hash' => md5($c['after']));
+			}, $result['changes']);
+			$snapshot_id = webreview_create_snapshot('batch', array('post_id' => 0, 'changes' => $backup), (string) ($request['summary'] ?: 'Replace text across the site'), (string) $request['request_id']);
+			if (is_wp_error($snapshot_id)) {
+				return $snapshot_id;
+			}
+			foreach ($result['changes'] as $change) {
+				webreview_write_change($change, $change['after']);
+			}
+			return array('ok' => true, 'snapshot_id' => $snapshot_id, 'changed' => count($result['changes']), 'items' => $result['items']);
+		},
+	));
+
 	// Change history.
 	register_rest_route($ns, '/snapshots', array(
 		'methods' => 'GET',
@@ -524,6 +756,26 @@ add_action('rest_api_init', function () {
 			}
 			if (get_post_meta($snapshot->ID, '_webreview_reverted', true)) {
 				return new WP_Error('webreview_already_undone', 'This change was already undone.', array('status' => 409));
+			}
+			// Site-wide replacement: put every changed item back; refuse if any was edited since (unless forced)
+			if ($kind === 'batch') {
+				$changed_since = array();
+				foreach ((array) $data['changes'] as $change) {
+					if ($change['type'] !== 'option' && !current_user_can('edit_post', (int) $change['id'])) {
+						return new WP_Error('webreview_forbidden', 'This user cannot edit every page in this change.', array('status' => 403));
+					}
+					if (!hash_equals($change['after_hash'], md5(webreview_read_change($change)))) {
+						$changed_since[] = $change['type'] === 'option' ? $change['id'] : get_the_title((int) $change['id']);
+					}
+				}
+				if ($changed_since && empty($request['force'])) {
+					return new WP_Error('webreview_changed', 'These were edited after this change, so undoing it would also remove those later edits: ' . implode(', ', array_unique($changed_since)) . '.', array('status' => 409));
+				}
+				foreach ((array) $data['changes'] as $change) {
+					webreview_write_change($change, $change['before']);
+				}
+				update_post_meta($snapshot->ID, '_webreview_reverted', 1);
+				return array('ok' => true, 'reverted' => $snapshot->ID);
 			}
 			// Undo restores the whole page as it was; refuse if someone edited it after this change (unless forced)
 			$after_hash = (string) get_post_meta($snapshot->ID, '_webreview_after_hash', true);

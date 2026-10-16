@@ -1,11 +1,34 @@
 // WordPress connections. A project can be linked to one WordPress site that runs the WebReview Connector plugin.
 // The site's Application Password is encrypted and kept server-only (wpSiteSecrets); members only see the
 // site details (wpSites). Every request to WordPress goes through here.
+import fs from 'fs';
+import path from 'path';
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from './firebaseAdmin';
 import { decryptSecret, encryptSecret } from './secrets';
 
 const TIMEOUT_MS = 15000;
+
+// The plugin that ships with this app (its version is read from the plugin file)
+export const PLUGIN_DIR = path.join(process.cwd(), 'wordpress-plugin', 'webreview-connector');
+export const LATEST_PLUGIN_VERSION = (() => {
+  try {
+    return fs.readFileSync(path.join(PLUGIN_DIR, 'webreview-connector.php'), 'utf8').match(/WEBREVIEW_CONNECTOR_VERSION', '([\d.]+)'/)?.[1] || '0';
+  } catch {
+    return '0';
+  }
+})();
+
+// -1 / 0 / 1 like a sort comparator, for versions such as "0.4.0"
+export function compareVersions(a: string, b: string) {
+  const pa = String(a || '0').split('.').map(Number);
+  const pb = String(b || '0').split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
 
 export interface WpStatus {
   plugin_version: string;
@@ -118,6 +141,7 @@ export async function wpRequest<T = any>(creds: WpCredentials, route: string, in
   let data: any = null;
   try { data = text ? JSON.parse(text) : null; } catch {}
 
+  if (!res.ok && data === null && /<html/i.test(text)) throw new WpError(notWordPressMessage(text), 502);
   if (!res.ok) {
     const code = data?.code || '';
     if (res.status === 401 || code === 'incorrect_password' || code === 'invalid_username' || code === 'invalid_email') {
@@ -129,12 +153,31 @@ export async function wpRequest<T = any>(creds: WpCredentials, route: string, in
     }
     throw new WpError(data?.message || `WordPress returned an error (${res.status}).`, res.status >= 500 ? 502 : res.status);
   }
-  if (data === null) throw new WpError('The site did not answer like a WordPress site. Check the address.', 502);
+  if (data === null) throw new WpError(notWordPressMessage(text), 502);
   return data as T;
 }
 
+// The site answered with a web page instead of WordPress data: say what it seems to be
+function notWordPressMessage(html: string) {
+  if (/irp\.cdn-website\.com|dmAPI|multiscreensite/.test(html)) {
+    return 'This site is built with Duda, not WordPress, so it can\'t be connected. Fix with AI works with WordPress sites only.';
+  }
+  if (/static\.wixstatic\.com|wix-bolt|_wixCssImports/.test(html)) return 'This site is built with Wix, not WordPress, so it can\'t be connected.';
+  if (/squarespace\.com|static1\.squarespace/.test(html)) return 'This site is built with Squarespace, not WordPress, so it can\'t be connected.';
+  if (/cdn\.shopify\.com|Shopify\.theme/.test(html)) return 'This site is built with Shopify, not WordPress, so it can\'t be connected.';
+  if (!/wp-content|wp-includes|wp-json/.test(html)) return 'This doesn\'t look like a WordPress site. Fix with AI works with WordPress sites only.';
+  return 'The site did not answer like a WordPress site. Check the address and that the WebReview Connector plugin is active.';
+}
+
 export async function getSiteStatus(creds: WpCredentials) {
-  return wpRequest<WpStatus>(creds, '/webreview/v1/status');
+  const status = await wpRequest<WpStatus>(creds, '/webreview/v1/status');
+  if (!status || typeof status.site_url !== 'string' || !status.plugin_version || !status.user) {
+    // Some site builders answer unknown addresses with their own data (e.g. Duda sends its page CSS as JSON)
+    const answer = JSON.stringify(status || '').slice(0, 5000);
+    if (/dmNewParagraph|additionalWidgetCss|#dm \*\.dmBody/.test(answer)) throw new WpError(notWordPressMessage('dmAPI'), 502);
+    throw new WpError('The site answered, but not like the WebReview Connector plugin. Check that the plugin is installed and active.', 502);
+  }
+  return status;
 }
 
 // Site details members can see (no password)
