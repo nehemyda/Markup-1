@@ -1,4 +1,6 @@
 import React, { useState } from 'react';
+import { toMillis, fullTime } from '../lib/time';
+import { pinColor } from '../lib/pins';
 import { Pin, PinStatus, Teammate, Project, Asset } from '../types';
 import { 
   TableProperties, 
@@ -103,7 +105,7 @@ export const FeedbackMatrix: React.FC<FeedbackMatrixProps> = ({
       `"${p.assignedTo?.name || 'Unassigned'}"`,
       `"${p.metadata.browser}"`,
       `"${p.metadata.os}"`,
-      `"${p.createdAt}"`
+      `"${fullTime(toMillis(p.createdAt, p.id))}"`
     ]);
 
     const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
@@ -120,6 +122,7 @@ export const FeedbackMatrix: React.FC<FeedbackMatrixProps> = ({
     switch (status) {
       case 'open': return <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-bold">Open</span>;
       case 'in_progress': return <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-bold">In Progress</span>;
+      case 'waiting_on_customer': return <span className="bg-sky-500/20 text-sky-300 border border-sky-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-bold">Waiting on Customer</span>;
       case 'ready_for_review': return <span className="bg-purple-500/20 text-purple-300 border border-purple-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-bold">In Review</span>;
       case 'resolved': return <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-bold">Resolved</span>;
       case 'archived': return <span className="bg-slate-500/20 text-slate-300 border border-slate-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-bold">Archived</span>;
@@ -289,7 +292,7 @@ export const FeedbackMatrix: React.FC<FeedbackMatrixProps> = ({
                       </td>
 
                       <td className="p-2.5 font-bold text-slate-900">
-                        <span className="w-5 h-5 rounded-full bg-indigo-50 text-indigo-700 inline-flex items-center justify-center border border-indigo-200 text-[10px] font-mono font-extrabold">
+                        <span className={`min-w-5 h-5 px-1 rounded-full text-white inline-flex items-center justify-center text-[10px] font-mono font-extrabold ${pinColor(pin.category).bg}`}>
                           #{pin.number}
                         </span>
                       </td>
@@ -315,6 +318,7 @@ export const FeedbackMatrix: React.FC<FeedbackMatrixProps> = ({
                         >
                           <option value="open">🔴 Open</option>
                           <option value="in_progress">🟡 In Progress</option>
+                          <option value="waiting_on_customer">🔵 Waiting on Customer</option>
                           <option value="ready_for_review">🟣 In Review</option>
                           <option value="resolved">🟢 Resolved</option>
                           <option value="archived">⚪ Archived</option>

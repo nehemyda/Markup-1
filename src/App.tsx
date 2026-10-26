@@ -54,6 +54,8 @@ import { ProjectsGridView } from './components/ProjectsGridView';
 import { QAScoreManager } from './components/QAScoreManager';
 import { NewProjectModal, NewAssetModal, ShareModal, GuestNameModal } from './components/Modals';
 import { WordPressModal } from './components/WordPressModal';
+import { useRolePermissions } from './lib/permissions';
+import { useBranding, useGuestPolicy, brandEmblem } from './lib/workspaceSettings';
 import { DomainSecurityModal } from './components/DomainSecurityModal';
 import { ProfileSettingsModal } from './components/ProfileSettingsModal';
 import { getAllowedDomains } from './utils/domains';
@@ -103,8 +105,14 @@ export default function App() {
   const [currentOrganization, setCurrentOrganization] = useState<Organization | null>(null);
 
   // State
-  const [appName, setAppName] = useState('WebReview Pro');
-  const [appIcon, setAppIcon] = useState('W');
+  // App name and logo emblem (Settings → Branding, shared by the workspace)
+  const branding = useBranding();
+  const appName = branding.appName;
+  const appIcon = brandEmblem(branding);
+  const guestPolicy = useGuestPolicy();
+  useEffect(() => {
+    document.title = appName;
+  }, [appName]);
   // Preview-as-guest toggle for signed-in members; visitors on a guest link are handled by isGuestShareLink
   const [isGuestMode, setIsGuestMode] = useState(false);
   // A signed-out visitor on a guest link who clicked "Sign in"
@@ -405,6 +413,10 @@ export default function App() {
   const [siteVersion, setSiteVersion] = useState(0);
   const [previewCss, setPreviewCss] = useState<string | null>(null);
   const isWorkspaceAdmin = !!authUser && ['Owner', 'Admin'].includes(normalizeRole(authUser.role));
+  // Fix with AI for members depends on Team → Roles & Permissions (the server checks the same settings)
+  const rolePermissions = useRolePermissions();
+  const canAskAi = isWorkspaceAdmin || rolePermissions.membersCanUseAiFix;
+  const canApplyAi = isWorkspaceAdmin || rolePermissions.membersCanApplyAiFix;
   useEffect(() => {
     setWpSite(null);
     if (accessKey !== 'member' || !currentProject?.id) return;
@@ -424,11 +436,6 @@ export default function App() {
       setCurrentAsset(projects[0].assets[0]);
     }
   }, [projects, projectsLoaded]);
-
-  const handleUpdateBranding = (newName: string, newIcon: string) => {
-    setAppName(newName);
-    setAppIcon(newIcon);
-  };
 
   const handleUpdateTeammateRole = (id: string, newRole: Teammate['role']) => {
     const member = teammates.find((tm) => tm.id === id);
@@ -467,7 +474,8 @@ export default function App() {
 
   const applyRoute = (route: Route) => {
     if (!route.projectId) {
-      setViewMode('dashboard');
+      // Workspace pages: dashboard tabs, or the QA scores page
+      setViewMode(route.viewMode === 'qascore' ? 'qascore' : 'dashboard');
       setDashboardTab(route.dashboardTab || 'dashboard');
       setCurrentFolderId(route.folderId || null);
       if (route.settingsSubTab) setSettingsSubTab(route.settingsSubTab);
@@ -563,7 +571,7 @@ export default function App() {
     else window.history.pushState(null, '', path);
   }, [routeReady, viewMode, dashboardTab, settingsSubTab, currentProject.id, currentAsset?.id, selectedPin?.id, device, projects, currentFolderId]);
 
-  const handleNavigateDashboardTab = (tab: 'dashboard' | 'archive' | 'team' | 'settings' = 'dashboard') => {
+  const handleNavigateDashboardTab = (tab: 'dashboard' | 'archive' | 'team' | 'credits' | 'settings' = 'dashboard') => {
     setDashboardTab(tab);
     setViewMode('dashboard');
   };
@@ -727,7 +735,7 @@ export default function App() {
       status: 'open',
       priority: pinData.priority,
       title: pinData.title,
-      createdAt: 'Just now',
+      createdAt: new Date().toISOString(),
       author: currentUser,
       assignedTo: assignee,
       screenshotUrl: pinData.screenshotUrl,
@@ -744,7 +752,7 @@ export default function App() {
           pinId: pinId,
           author: currentUser,
           text: pinData.commentText,
-          createdAt: 'Just now',
+          createdAt: new Date().toISOString(),
           attachments: pinData.attachments,
         },
       ],
@@ -795,7 +803,7 @@ export default function App() {
       pinId,
       author: currentUser,
       text,
-      createdAt: 'Just now',
+      createdAt: new Date().toISOString(),
       attachments,
       audioDuration,
     };
@@ -881,11 +889,12 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          projectId: currentProject.id,
           url: currentAsset.url,
           title: currentAsset.title,
           snapshot,
           // Issues already pinned on this page, so a re-run does not repeat them
-          existingIssues: pins
+          existingIssues: livePins
             .filter((p) => p.assetId === currentAsset.id && p.status !== 'archived')
             .map((p) => p.title.replace(/^\[AI Review\] /, '')),
         }),
@@ -927,7 +936,7 @@ export default function App() {
           status: 'open',
           priority: item.priority || 'medium',
           title: `[AI Review] ${item.title}`,
-          createdAt: new Date().toLocaleString(),
+          createdAt: new Date().toISOString(),
           author: aiReviewer,
           metadata: {
             browser: 'Gemini AI review',
@@ -942,7 +951,7 @@ export default function App() {
               pinId,
               author: aiReviewer,
               text: item.comment,
-              createdAt: new Date().toLocaleString(),
+              createdAt: new Date().toISOString(),
               isAiGenerated: true,
             },
           ],
@@ -1059,7 +1068,10 @@ export default function App() {
     setCurrentProject(newProj);
     setCurrentAsset(newAsset);
     setSelectedPin(null);
-    setViewMode('studio');
+    // Stay on the projects list (in the folder it was created in); the new project shows first, marked New
+    setCurrentFolderId(newProj.folderId || null);
+    setDashboardTab('dashboard');
+    setViewMode('dashboard');
   };
 
   // Delete Project
@@ -1099,29 +1111,41 @@ export default function App() {
   };
 
   // Delete Pin
+  // Deleting a pin moves it to the Deleted tab; it can be restored or deleted permanently there
+  const updatePin = (pinId: string, change: (pin: Pin) => Pin) => {
+    setPins((prev) =>
+      prev.map((pin) => {
+        if (pin.id !== pinId) return pin;
+        const updated = change(pin);
+        savePinToFirestore(updated);
+        if (selectedPin?.id === pinId) setSelectedPin(updated.deletedAt ? null : updated);
+        return updated;
+      })
+    );
+  };
   const handleDeletePin = (pinId: string) => {
+    updatePin(pinId, (pin) => ({
+      ...pin,
+      deletedAt: new Date().toISOString(),
+      deletedBy: { id: currentUser.id, name: currentUser.name },
+    }));
+    if (selectedPin?.id === pinId) setSelectedPin(null);
+  };
+  const handleRestorePin = (pinId: string) => {
+    updatePin(pinId, (pin) => ({ ...pin, deletedAt: null, deletedBy: null }));
+  };
+  const handlePurgePin = (pinId: string) => {
     deletePinFromFirestore(pinId);
     setPins((prev) => prev.filter((p) => p.id !== pinId));
-    if (selectedPin?.id === pinId) {
-      setSelectedPin(null);
-    }
+    if (selectedPin?.id === pinId) setSelectedPin(null);
   };
+  // Pins that aren't deleted: the page, Kanban, Table, counts and QA scores use these
+  const livePins = React.useMemo(() => pins.filter((p) => !p.deletedAt), [pins]);
 
   // Delete Comment
   const handleDeleteComment = (pinId: string, commentId: string) => {
-    setPins((prev) =>
-      prev.map((pin) => {
-        if (pin.id === pinId) {
-          const updatedComments = pin.comments.filter((c) => c.id !== commentId);
-          const updatedPin = { ...pin, comments: updatedComments };
-          if (selectedPin?.id === pinId) {
-            setSelectedPin(updatedPin);
-          }
-          return updatedPin;
-        }
-        return pin;
-      })
-    );
+    // Saved, so the comment disappears for everyone (it used to be removed only on this screen)
+    updatePin(pinId, (pin) => ({ ...pin, comments: pin.comments.filter((c) => c.id !== commentId) }));
   };
 
   // Create Asset
@@ -1148,20 +1172,19 @@ export default function App() {
   };
 
   // Invite Teammate
-  const handleInviteTeammate = (name: string, email: string, role: Teammate['role']) => {
+  // Invite by email; the security rules decide which roles this person may invite with
+  const handleInviteTeammate = async (name: string, email: string, role: Teammate['role']) => {
     if (teammates.some((tm) => tm.email.toLowerCase() === email.trim().toLowerCase())) {
-      alert(`${email} is already a member or has a pending invitation.`);
-      return;
+      throw new Error(`${email} is already a member or has a pending invitation.`);
     }
-    inviteMember(name, email, role, currentUser.email);
-
+    await inviteMember(name, email, role, currentUser.email);
     const log: ActivityItem = {
       id: `act_${Date.now()}`,
       projectId: currentProject.id,
       author: currentUser,
       action: 'invited teammate to workspace:',
-      targetName: `${name} (${role})`,
-      timestamp: 'Just now',
+      targetName: `${name || email} (${role})`,
+      timestamp: new Date().toISOString(),
       type: 'approval',
     };
     setActivityLogs((prev) => [log, ...prev]);
@@ -1175,7 +1198,7 @@ export default function App() {
     new URLSearchParams(window.location.search).get('guest_mode') === 'true';
 
   // Guests must give a name before their first pin or comment; the action then runs with that name
-  const needsGuestName = !authUser && !guestProfile;
+  const needsGuestName = !authUser && !guestProfile && guestPolicy.askGuestName;
   const addPinAsUser = (data: Parameters<typeof handleAddPin>[0]) => {
     if (needsGuestName) {
       pendingGuestAction.current = { kind: 'pin', data };
@@ -1330,11 +1353,8 @@ export default function App() {
       <main className="flex-1 min-h-0 min-w-0 flex overflow-hidden relative">
         {viewMode === 'dashboard' && (
           <ProjectsGridView
-            appName={appName}
-            appIcon={appIcon}
-            onUpdateBranding={handleUpdateBranding}
             projects={projects}
-            pins={pins}
+            pins={livePins}
             folders={folders}
             currentFolderId={currentFolderId}
             onOpenFolder={setCurrentFolderId}
@@ -1360,6 +1380,7 @@ export default function App() {
             onAddNewUrlAsset={handleAddNewUrlAsset}
             onDeleteProject={handleDeleteProject}
             onDeleteTeammate={handleDeleteTeammate}
+            onInviteTeammate={handleInviteTeammate}
             onRestoreProject={(archivedItem) => {
               // Restore an archived item back to active projects list
               const restoredAsset: Asset = {
@@ -1399,7 +1420,7 @@ export default function App() {
               currentAsset={currentAsset}
               onNavigatePage={handleNavigatePage}
               projectPageIds={projectPageIds}
-              pins={pins}
+              pins={livePins}
               selectedPin={selectedPin}
               onSelectPin={setSelectedPin}
               onAddPin={addPinAsUser}
@@ -1450,6 +1471,8 @@ export default function App() {
                       rubricRules={rubricRules}
                       onUpdatePinQAError={handleUpdatePinQAError}
                       onDeletePin={handleDeletePin}
+                      onRestorePin={handleRestorePin}
+                      onPurgePin={handlePurgePin}
                       onDeleteComment={handleDeleteComment}
                       wpFix={
                         accessKey === 'member' && selectedPin && currentAsset.type === 'url'
@@ -1458,6 +1481,8 @@ export default function App() {
                               connected: wpSite?.status === 'connected',
                               onConnect: () => setShowWordPressModal(true),
                               isAdmin: isWorkspaceAdmin,
+                              canAsk: canAskAi,
+                              canApply: canApplyAi,
                               // A new value each time (also across app reloads), so no cached copy of the page is reused
                               onSiteChanged: () => setSiteVersion(Date.now()),
                               onPreviewCss: setPreviewCss,
@@ -1483,7 +1508,7 @@ export default function App() {
         {viewMode === 'qascore' && (
           <QAScoreManager
             projects={projects}
-            pins={pins}
+            pins={livePins}
             teammates={teammates}
             rubricRules={rubricRules}
             onUpdateRubricRules={handleUpdateRubricRules}
@@ -1501,7 +1526,7 @@ export default function App() {
 
         {viewMode === 'kanban' && (
           <KanbanBoard
-            pins={pins}
+            pins={livePins}
             currentProject={currentProject}
             currentAsset={currentAsset}
             onUpdatePinStatus={handleUpdatePinStatus}
@@ -1521,7 +1546,7 @@ export default function App() {
 
         {viewMode === 'matrix' && (
           <FeedbackMatrix
-            pins={pins}
+            pins={livePins}
             currentProject={currentProject}
             onUpdatePinStatus={handleUpdatePinStatus}
             onSelectPin={(pin) => {
@@ -1581,6 +1606,8 @@ export default function App() {
         onClose={() => setShowShareModal(false)}
         currentProject={shareProject || (projects.some((p) => p.id === currentProject.id) ? currentProject : null)}
         onInviteTeammate={handleInviteTeammate}
+        canChooseRole={isWorkspaceAdmin}
+        allowOwner={normalizeRole(authUser?.role) === 'Owner'}
       />
       <WordPressModal
         isOpen={showWordPressModal}

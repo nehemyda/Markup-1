@@ -8,6 +8,10 @@ import { spawn } from 'child_process';
 import { applyFix, prepareFix, rejectFix, undoFix, PinTarget } from './server/wpFixes';
 import { logAudit } from './server/audit';
 import { addProjectIdToPins } from './server/migrations';
+import { aiContext, trackUsage, forgetPricingCache, DEFAULT_PRICING } from './server/aiUsage';
+import { saveDataUrl, UPLOAD_DIR, SAFE_FILE, CONTENT_TYPES } from './server/uploads';
+import { moveEmbeddedFilesOut } from './server/migrations';
+import { startAutoSnapshots } from './server/snapshots';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
@@ -24,14 +28,15 @@ function getAIClient(): GoogleGenAI | null {
     return null;
   }
   if (!aiClient) {
-    aiClient = new GoogleGenAI({
+    // Every request through this client is recorded on the AI Credits page (see server/aiUsage.ts)
+    aiClient = trackUsage(new GoogleGenAI({
       apiKey,
       httpOptions: {
         headers: {
           'User-Agent': 'aistudio-build',
         },
       },
-    });
+    }));
   }
   return aiClient;
 }
@@ -105,7 +110,7 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
 
 // What the page shows under a pin: open the page fresh (not from the snippet cache, it may have just been edited)
 // and read the element at the pin's saved CSS selector, plus the Elementor element it belongs to
-async function inspectPinTarget(url: string, width: number, selector: string): Promise<PinTarget | null> {
+async function inspectPinTarget(url: string, width: number, selector: string, point?: { x: number; y: number }): Promise<PinTarget | null> {
   const browser = await getBrowser();
   const page = await browser.newPage();
   try {
@@ -114,14 +119,43 @@ async function inspectPinTarget(url: string, width: number, selector: string): P
     await page.goto(bypassPageCache(url), { waitUntil: 'networkidle2', timeout: 30000 });
     // The dev server's TypeScript compiler wraps named functions in __name(); define it inside the page too
     await page.evaluate('globalThis.__name = globalThis.__name || ((fn) => fn)');
-    return await page.evaluate((sel: string) => {
-      let el: Element | null = null;
-      try { el = document.querySelector(sel); } catch { return null; }
+    return await page.evaluate((sel: string, pt: { x: number; y: number } | null) => {
+      // The pin's spot on the page (pins are stored as % of the page width and full page height)
+      const docH = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
+      const px = pt ? (pt.x / 100) * window.innerWidth : 0;
+      const py = pt ? (pt.y / 100) * docH : 0;
+      const contains = (n: Element) => {
+        const r = n.getBoundingClientRect();
+        const top = r.top + window.scrollY;
+        return px >= r.left - 4 && px <= r.right + 4 && py >= top - 4 && py <= top + r.height + 4;
+      };
+      let candidates: Element[] = [];
+      try { candidates = sel ? Array.from(document.querySelectorAll(sel)) : []; } catch {}
+      let el: Element | null = candidates.length === 1 ? candidates[0] : null;
+      // A selector that matches many elements (older pins): take the one under the pin
+      if (!el && pt) el = candidates.filter(contains).pop() || null;
+      if (!el && pt) {
+        window.scrollTo(0, Math.max(0, py - window.innerHeight / 2));
+        el = document.elementsFromPoint(px, py - window.scrollY).find((n) => {
+          if (n === document.body || n === document.documentElement) return false;
+          const st = getComputedStyle(n);
+          return st.visibility !== 'hidden' && st.pointerEvents !== 'none';
+        }) || null;
+      }
+      if (!el && candidates.length) el = candidates[0];
       if (!el) return null;
       const st = getComputedStyle(el);
       const styles: Record<string, string> = {};
-      for (const prop of ['color', 'backgroundColor', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'textAlign', 'padding', 'margin', 'width', 'height', 'borderRadius']) {
+      for (const prop of ['color', 'backgroundColor', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'textAlign', 'padding', 'margin', 'width', 'maxWidth', 'height', 'borderRadius']) {
         styles[prop] = (st as any)[prop];
+      }
+      const rect = el.getBoundingClientRect();
+      // What limits the element's size: it and the boxes around it, with their widths
+      const layout: Array<{ element: string; width: number; maxWidth: string }> = [];
+      for (let n: Element | null = el; n && n !== document.body && layout.length < 6; n = n.parentElement) {
+        const ns = getComputedStyle(n);
+        const named = Array.from(n.classList).filter((c) => /^(et_pb_[a-z0-9_]+_\d+|et_pb_column_\d_\d|elementor-element-[a-z0-9]+|elementor-(section|column|container|widget)\b|wp-block-[a-z-]+)/.test(c)).slice(0, 3);
+        layout.push({ element: `${n.tagName.toLowerCase()}${named.length ? '.' + named.join('.') : ''}`, width: Math.round(n.getBoundingClientRect().width), maxWidth: ns.maxWidth });
       }
       const parents: string[] = [];
       let node = el.closest('.elementor-element[data-id]');
@@ -147,13 +181,16 @@ async function inspectPinTarget(url: string, width: number, selector: string): P
         html: el.outerHTML.slice(0, 1500),
         classes: typeof el.className === 'string' ? el.className : '',
         styles,
+        // Layout size (ignores transforms such as entrance animations)
+        box: { width: (el as HTMLElement).offsetWidth ?? Math.round(rect.width), height: (el as HTMLElement).offsetHeight ?? Math.round(rect.height) },
+        layout,
         elementorId: own,
         elementorType: ownType,
         elementorParents: parents,
         diviModule,
         diviParents,
       };
-    }, selector);
+    }, selector, point || null);
   } finally {
     await page.close().catch(() => {});
   }
@@ -184,7 +221,8 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json({ limit: '10mb' }));
+  // Large enough for a 15 MB file sent as a data URL (base64 is about 4/3 of the size)
+  app.use(express.json({ limit: '25mb' }));
 
   // Health check endpoint
   // ---------- Sign-in and access (decided on the server) ----------
@@ -222,12 +260,46 @@ async function startServer() {
     if (!projectId || !(await adminDb.doc(`projects/${projectId}`).get()).exists) {
       return res.status(404).json({ error: 'This shared project no longer exists or the link is incorrect.' });
     }
+    // Settings → Workspace Details → "Allow guest review links without an account"
+    const access = (await adminDb.doc('settings/access').get()).data() || {};
+    if (access.guestLinksEnabled === false) {
+      return res.status(403).json({ error: 'Guest review links are turned off for this workspace. Ask the team that shared it for access.' });
+    }
     const token = await adminAuth.createCustomToken(`guest_${guestId}`, { guestProject: projectId });
     res.json({ token, guestId });
   });
 
+  // ---------- Pin and comment files (members and guests upload; links are unguessable) ----------
+  app.post('/api/uploads', requireSignedIn, (req: AuthedRequest, res) => {
+    try {
+      res.json({ url: saveDataUrl(String(req.body?.dataUrl || '')) });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || 'Could not save the file.' });
+    }
+  });
+  app.get('/api/uploads/:file', (req, res) => {
+    const name = String(req.params.file);
+    if (!SAFE_FILE.test(name)) return res.status(404).end();
+    // Files are shown as-is, never run: no scripts even for SVG/HTML-like content
+    res.setHeader('Content-Type', CONTENT_TYPES[name.split('.').pop()!] || 'application/octet-stream');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; media-src 'self'; sandbox");
+    res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+    res.sendFile(path.join(UPLOAD_DIR, name), (err) => {
+      if (err && !res.headersSent) res.status(404).end();
+    });
+  });
+
   // AI features and screenshots need a signed-in caller (they use the Gemini key / server Chrome)
   app.use('/api/ai', requireMember);
+  // AI usage is recorded per feature, project and person
+  app.use('/api/ai', (req: AuthedRequest, res, next) => {
+    aiContext.run({
+      feature: req.path.replace(/^\//, '') || 'other',
+      projectId: typeof req.body?.projectId === 'string' ? req.body.projectId : null,
+      actor: req.token ? { uid: req.token.uid, email: req.member?.email || req.token.email || '', name: req.member?.name || '' } : null,
+    }, next);
+  });
   app.use('/api/screenshot', requireSignedIn);
 
   // ---------- WordPress connections (admins connect/disconnect; members can check and look up pages) ----------
@@ -275,17 +347,32 @@ async function startServer() {
 
   // ---------- Fix with AI (members ask for a fix; admins apply, undo; admins or the asker dismiss) ----------
 
+  // Owners/Admins always; Members when the permission is turned on in Team → Roles & Permissions
+  const memberMay = async (req: AuthedRequest, permission: 'membersCanUseAiFix' | 'membersCanApplyAiFix') => {
+    if (isAdminRole(req.member?.role)) return true;
+    const settings = (await adminDb.doc('settings/permissions').get()).data() || {};
+    return settings[permission] === true;
+  };
+  const requirePermission = (permission: 'membersCanUseAiFix' | 'membersCanApplyAiFix', message: string) =>
+    async (req: AuthedRequest, res: express.Response, next: express.NextFunction) => {
+      if (await memberMay(req, permission)) return next();
+      res.status(403).json({ error: message });
+    };
+  const canAskAi = requirePermission('membersCanUseAiFix', 'Fix with AI is turned off for members. A workspace admin can turn it on in Team → Roles & Permissions.');
+  const canApplyAi = requirePermission('membersCanApplyAiFix', 'Only admins, or members allowed in Team → Roles & Permissions, can apply or undo AI fixes.');
+
   const actorOf = (req: AuthedRequest) => ({
     uid: req.token!.uid,
     email: req.member?.email || req.token?.email || '',
     name: req.member?.name || req.token?.email || 'Member',
   });
 
-  app.post('/api/wp/:projectId/fixes', requireMember, async (req: AuthedRequest, res) => {
+  app.post('/api/wp/:projectId/fixes', requireMember, canAskAi, async (req: AuthedRequest, res) => {
     const { projectId } = req.params;
     const pinId = String(req.body?.pinId || '');
     try {
-      const run = () => prepareFix({ projectId, pinId, actor: actorOf(req), ai: getAIClient(), inspect: inspectPinTarget });
+      const run = () => aiContext.run({ feature: 'fix-with-ai', projectId, actor: actorOf(req) }, () =>
+        prepareFix({ projectId, pinId, actor: actorOf(req), ai: getAIClient(), inspect: inspectPinTarget }));
       // An AI answer that fails our checks (422) is asked for once more before giving up
       const fix = await run().catch((err) => (err instanceof WpError && err.status === 422 ? run() : Promise.reject(err)));
       await logAudit(req, 'wordpress.fix_prepared', { projectId, pinId, fixId: fix.id, kind: fix.kind });
@@ -296,10 +383,10 @@ async function startServer() {
     }
   });
 
-  app.post('/api/wp/:projectId/fixes/:fixId/apply', requireAdmin, async (req: AuthedRequest, res) => {
+  app.post('/api/wp/:projectId/fixes/:fixId/apply', requireMember, canApplyAi, async (req: AuthedRequest, res) => {
     const { projectId, fixId } = req.params;
     try {
-      const result = await applyFix(projectId, fixId, actorOf(req));
+      const result = await applyFix(projectId, fixId, actorOf(req), inspectPinTarget);
       await logAudit(req, 'wordpress.fix_applied', { projectId, fixId, snapshotId: result.snapshotId });
       res.json(result);
     } catch (err) {
@@ -308,7 +395,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/wp/:projectId/fixes/:fixId/undo', requireAdmin, async (req: AuthedRequest, res) => {
+  app.post('/api/wp/:projectId/fixes/:fixId/undo', requireMember, canApplyAi, async (req: AuthedRequest, res) => {
     const { projectId, fixId } = req.params;
     try {
       await undoFix(projectId, fixId, actorOf(req), req.body?.force === true);
@@ -322,12 +409,29 @@ async function startServer() {
   app.post('/api/wp/:projectId/fixes/:fixId/reject', requireMember, async (req: AuthedRequest, res) => {
     const { projectId, fixId } = req.params;
     try {
-      await rejectFix(projectId, fixId, actorOf(req), isAdminRole(req.member?.role));
+      await rejectFix(projectId, fixId, actorOf(req), await memberMay(req, 'membersCanApplyAiFix'));
       await logAudit(req, 'wordpress.fix_dismissed', { projectId, fixId });
       res.json({ ok: true });
     } catch (err) {
       wpFail(res, err);
     }
+  });
+
+  // AI Credits: price per million tokens used for the cost estimate (admins)
+  app.get('/api/ai-pricing', requireAdmin, async (req, res) => {
+    const doc = (await adminDb.doc('settings/aiPricing').get()).data() || {};
+    res.json({ ...DEFAULT_PRICING, ...doc, defaults: DEFAULT_PRICING });
+  });
+  app.post('/api/ai-pricing', requireAdmin, async (req: AuthedRequest, res) => {
+    const input = Number(req.body?.inputPerMillion);
+    const output = Number(req.body?.outputPerMillion);
+    if (!(input >= 0 && input < 1000) || !(output >= 0 && output < 1000)) {
+      return res.status(400).json({ error: 'Enter prices between 0 and 1000 USD per million tokens.' });
+    }
+    await adminDb.doc('settings/aiPricing').set({ inputPerMillion: input, outputPerMillion: output, updatedBy: req.token?.email || '', updatedAt: new Date().toISOString() });
+    forgetPricingCache();
+    await logAudit(req, 'ai.pricing_changed', { inputPerMillion: input, outputPerMillion: output });
+    res.json({ ok: true });
   });
 
   // Latest WebReview Connector plugin: its version, and the zip for admins to install or update
@@ -981,6 +1085,12 @@ html, body {
   addProjectIdToPins()
     .then((n) => n && console.log(`Migration: added projectId to ${n} pins`))
     .catch((err) => console.warn('Migration failed:', err?.message));
+  // Local emulator data is saved every 10 minutes (see server/snapshots.ts)
+  startAutoSnapshots();
+
+  moveEmbeddedFilesOut()
+    .then((n) => n && console.log(`Migration: moved ${n} embedded files out of pins`))
+    .catch((err) => console.warn('File migration failed:', err?.message));
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 MarkFlow Server running on http://localhost:${PORT}`);

@@ -1,5 +1,8 @@
 import { apiFetch } from '../lib/api';
 import { WpFixPanel } from './WpFixPanel';
+import { pinDevice, pinColor } from '../lib/pins';
+import { toMillis, timeAgo, fullTime } from '../lib/time';
+import { Tablet, Smartphone, RotateCcw } from 'lucide-react';
 import { filesToAttachments, rejectedFilesMessage } from '../lib/attachments';
 import React, { useState, useRef } from 'react';
 import { Pin, PinStatus, Teammate, Comment, Attachment, QARubricRule, QAPinError, FilterState } from '../types';
@@ -59,6 +62,9 @@ interface SidebarDiscussionProps {
   rubricRules?: QARubricRule[];
   onUpdatePinQAError?: (pinId: string, qaError?: QAPinError) => void;
   onDeletePin?: (pinId: string) => void;
+  // Deleted tab (team only)
+  onRestorePin?: (pinId: string) => void;
+  onPurgePin?: (pinId: string) => void;
   onDeleteComment?: (pinId: string, commentId: string) => void;
   onClose?: () => void;
   pages?: { id: string; url: string }[];
@@ -74,10 +80,92 @@ interface SidebarDiscussionProps {
     connected: boolean;
     onConnect: () => void;
     isAdmin: boolean;
+    // From Team → Roles & Permissions (always true for Owners and Admins)
+    canAsk: boolean;
+    canApply: boolean;
     onSiteChanged: () => void;
     onPreviewCss: (css: string | null) => void;
   };
 }
+
+const PIN_STATUSES: Array<{ value: PinStatus; label: string; dot: string }> = [
+  { value: 'open', label: 'Open', dot: 'bg-rose-500' },
+  { value: 'in_progress', label: 'In Progress', dot: 'bg-amber-400' },
+  { value: 'waiting_on_customer', label: 'Waiting on Customer', dot: 'bg-sky-500' },
+  { value: 'ready_for_review', label: 'In Review', dot: 'bg-purple-500' },
+  { value: 'resolved', label: 'Resolved', dot: 'bg-emerald-500' },
+  { value: 'archived', label: 'Archived', dot: 'bg-slate-300' },
+];
+
+// Pin status picker: the selected name may wrap to two lines (a plain <select> can't)
+const StatusPicker: React.FC<{ value: PinStatus; onChange: (status: PinStatus) => void }> = ({ value, onChange }) => {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    document.addEventListener('mousedown', close);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+  const current = PIN_STATUSES.find((s) => s.value === value) || PIN_STATUSES[0];
+  return (
+    <div ref={ref} className="relative min-w-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={`Status: ${current.label}`}
+        className="flex items-center gap-1.5 bg-white hover:bg-slate-50 text-slate-900 text-xs font-bold pl-2 pr-1.5 py-1 rounded-md border border-slate-200 focus:outline-none focus:border-indigo-600 cursor-pointer shadow-xs max-w-[150px] text-left leading-tight"
+      >
+        <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${current.dot}`} />
+        <span className="min-w-0">{current.label}</span>
+        <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+      </button>
+      {open && (
+        <ul role="listbox" className="absolute left-0 mt-1 w-52 bg-white border border-slate-200 rounded-xl shadow-xl py-1 z-50 text-xs">
+          {PIN_STATUSES.map((s) => (
+            <li key={s.value}>
+              <button
+                type="button"
+                role="option"
+                aria-selected={s.value === value}
+                onClick={() => {
+                  setOpen(false);
+                  if (s.value !== value) onChange(s.value);
+                }}
+                className={`w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-100 ${s.value === value ? 'font-bold text-slate-900' : 'text-slate-700'}`}
+              >
+                <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${s.dot}`} />
+                <span className="flex-1">{s.label}</span>
+                {s.value === value && <Check className="w-3.5 h-3.5 text-indigo-600" />}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+};
+
+// Which view the pin was dropped in (desktop / tablet / mobile)
+const DeviceLabel: React.FC<{ pin: Pin }> = ({ pin }) => {
+  const device = pinDevice(pin);
+  const Icon = device === 'mobile' ? Smartphone : device === 'tablet' ? Tablet : Monitor;
+  return (
+    <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-slate-500 bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5 capitalize" title={`Added in ${device} view`}>
+      <Icon className="w-3 h-3" />
+      {device}
+    </span>
+  );
+};
 
 export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
   pins,
@@ -92,6 +180,8 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
   rubricRules = [],
   onUpdatePinQAError,
   onDeletePin,
+  onRestorePin,
+  onPurgePin,
   onDeleteComment,
   onClose,
   pages = [],
@@ -102,11 +192,21 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
   onTogglePinned,
   wpFix,
 }) => {
+  // Re-render every minute so "5 minutes ago" stays current
+  const [now, setNow] = useState(Date.now());
+  React.useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60000);
+    return () => clearInterval(timer);
+  }, []);
   const [commentInput, setCommentInput] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const [showMoreDetails, setShowMoreDetails] = useState(false);
-  const listTab: 'active' | 'resolved' = filterState?.showResolved ? 'resolved' : 'active';
-  const setListTab = (tab: 'active' | 'resolved') => onUpdateFilter?.({ showResolved: tab === 'resolved' });
+  const [showDeleted, setShowDeleted] = useState(false);
+  const listTab: 'active' | 'resolved' | 'deleted' = showDeleted ? 'deleted' : filterState?.showResolved ? 'resolved' : 'active';
+  const setListTab = (tab: 'active' | 'resolved' | 'deleted') => {
+    setShowDeleted(tab === 'deleted');
+    if (tab !== 'deleted') onUpdateFilter?.({ showResolved: tab === 'resolved' });
+  };
   const [showSearch, setShowSearch] = useState(false);
   const [collapsedPages, setCollapsedPages] = useState<Set<string>>(new Set());
   const isGuest = currentUser.role === 'Guest';
@@ -267,6 +367,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          projectId: selectedPin.projectId,
           pinTitle: selectedPin.title,
           category: selectedPin.category,
           comments: selectedPin.comments.map(c => `${c.author.name} (${c.author.role}): ${c.text}`),
@@ -289,6 +390,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          projectId: selectedPin.projectId,
           pin: selectedPin,
           comments: selectedPin.comments,
           platform: ticketPlatform,
@@ -312,6 +414,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          projectId: selectedPin.projectId,
           pinTitle: selectedPin.title,
           category: selectedPin.category,
           currentComment: lastCmt,
@@ -338,6 +441,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
     switch (status) {
       case 'open': return <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2 py-0.5 rounded-full text-[10px] font-bold">Open</span>;
       case 'in_progress': return <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded-full text-[10px] font-bold">In Progress</span>;
+      case 'waiting_on_customer': return <span className="bg-sky-500/20 text-sky-300 border border-sky-500/40 px-2 py-0.5 rounded-full text-[10px] font-bold">Waiting on Customer</span>;
       case 'ready_for_review': return <span className="bg-purple-500/20 text-purple-300 border border-purple-500/40 px-2 py-0.5 rounded-full text-[10px] font-bold">In Review</span>;
       case 'resolved': return <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2 py-0.5 rounded-full text-[10px] font-bold">Resolved</span>;
       case 'archived': return <span className="bg-slate-500/20 text-slate-300 border border-slate-500/40 px-2 py-0.5 rounded-full text-[10px] font-bold">Archived</span>;
@@ -356,7 +460,12 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
   // IF NO PIN SELECTED: Show summary list of all pins on this asset
   if (!selectedPin) {
     const q = (filterState?.search || '').trim().toLowerCase();
-    const matching = pins.filter(
+    const livePins = pins.filter((p) => !p.deletedAt);
+    const matchesFilter = (p: Pin) =>
+      (!filterState || filterState.category === 'all' || p.category === filterState.category) &&
+      (!q || p.title.toLowerCase().includes(q) || p.comments.some((c) => c.text.toLowerCase().includes(q)));
+    const deletedPins = isGuest ? [] : pins.filter((p) => p.deletedAt && matchesFilter(p));
+    const matching = livePins.filter(
       (p) =>
         (!filterState || filterState.category === 'all' || p.category === filterState.category) &&
         (!q || p.title.toLowerCase().includes(q) || p.comments.some((c) => c.text.toLowerCase().includes(q)))
@@ -373,7 +482,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
             <span className="bg-slate-200 border border-slate-300 px-2 py-0.5 rounded text-[10px] text-slate-700 font-mono font-bold">
-              {pins.length} total
+              {livePins.length} total
             </span>
             {onTogglePinned && (
               <button
@@ -400,7 +509,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
 
         {/* Active / Resolved tabs (like Markup.io) */}
         <div className="flex items-center gap-4 px-3 border-b border-slate-200 text-xs shrink-0">
-          {(['active', 'resolved'] as const).map((tab) => (
+          {(isGuest ? (['active', 'resolved'] as const) : (['active', 'resolved', 'deleted'] as const)).map((tab) => (
             <button
               key={tab}
               type="button"
@@ -409,7 +518,8 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
                 listTab === tab ? 'border-indigo-600 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-700'
               }`}
             >
-              {tab === 'active' ? openPins.length : resolvedPins.length} {tab === 'active' ? 'Active' : 'Resolved'}
+              {tab === 'active' ? openPins.length : tab === 'resolved' ? resolvedPins.length : deletedPins.length}{' '}
+              {tab === 'active' ? 'Active' : tab === 'resolved' ? 'Resolved' : 'Deleted'}
             </button>
           ))}
           {filterState && onUpdateFilter && (
@@ -460,11 +570,15 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
         {/* Comments for the whole website, grouped by page (current page first) */}
         <div className="flex-1 overflow-y-auto">
           {(() => {
-            const shown = listTab === 'active' ? openPins : resolvedPins;
+            const shown = listTab === 'active' ? openPins : listTab === 'resolved' ? resolvedPins : deletedPins;
             if (shown.length === 0) {
               return (
                 <div className="m-3 bg-slate-50 border border-slate-200 rounded-lg p-5 text-center text-xs text-slate-500">
-                  {listTab === 'active' ? 'No open comments. Switch to Comment mode and click the page to add one.' : 'No resolved comments yet.'}
+                  {listTab === 'active'
+                    ? 'No open comments. Switch to Comment mode and click the page to add one.'
+                    : listTab === 'resolved'
+                      ? 'No resolved comments yet.'
+                      : 'Nothing deleted. Deleted pins stay here so they can be restored.'}
                 </div>
               );
             }
@@ -499,8 +613,8 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
                         {items.map((pin) => (
                           <div
                             key={pin.id}
-                            onClick={() => onSelectPin(pin)}
-                            className={`border p-3 rounded-lg cursor-pointer transition-all group ${
+                            onClick={() => listTab !== 'deleted' && onSelectPin(pin)}
+                            className={`border p-3 rounded-lg transition-all group ${listTab === 'deleted' ? 'cursor-default' : 'cursor-pointer'} ${
                               listTab === 'active'
                                 ? 'bg-white hover:bg-slate-50 border-slate-200 hover:border-slate-300 shadow-xs'
                                 : 'bg-slate-50 hover:bg-slate-100 border-slate-200'
@@ -508,8 +622,8 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
                           >
                             <div className="flex items-center gap-2 mb-1 min-w-0">
                               <span
-                                className={`w-5 h-5 rounded-full text-white font-extrabold text-[10px] flex items-center justify-center shrink-0 ${
-                                  listTab === 'active' ? 'bg-indigo-600' : 'bg-emerald-600'
+                                className={`w-5 h-5 rounded-full text-white font-extrabold text-[10px] flex items-center justify-center shrink-0 ${pinColor(pin.category).bg} ${
+                                  listTab === 'active' ? '' : 'opacity-60'
                                 }`}
                               >
                                 {pin.number}
@@ -523,11 +637,47 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
                             )}
                             <div className="mt-1.5 pl-7 flex items-center justify-between text-[10px] text-slate-500">
                               <span className="truncate">{pin.author.name}</span>
-                              <span className="flex items-center gap-1 shrink-0">
-                                <MessageSquare className="w-3 h-3" />
-                                {pin.comments.length}
+                              <span className="flex items-center gap-2 shrink-0">
+                                <DeviceLabel pin={pin} />
+                                <span className="flex items-center gap-1">
+                                  <MessageSquare className="w-3 h-3" />
+                                  {pin.comments.length}
+                                </span>
                               </span>
                             </div>
+                            {listTab === 'deleted' && (
+                              <div className="mt-2 pl-7 flex items-center justify-between gap-2 text-[10px]">
+                                <span className="text-slate-400 truncate">
+                                  Deleted{pin.deletedBy?.name ? ` by ${pin.deletedBy.name}` : ''}{pin.deletedAt ? ` · ${new Date(pin.deletedAt).toLocaleDateString()}` : ''}
+                                </span>
+                                <span className="flex items-center gap-1 shrink-0">
+                                  {onRestorePin && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onRestorePin(pin.id);
+                                      }}
+                                      className="flex items-center gap-1 bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 font-bold px-2 py-0.5 rounded"
+                                    >
+                                      <RotateCcw className="w-3 h-3" /> Restore
+                                    </button>
+                                  )}
+                                  {onPurgePin && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (window.confirm(`Delete Pin #${pin.number} permanently? This can't be undone.`)) onPurgePin(pin.id);
+                                      }}
+                                      className="text-rose-600 hover:bg-rose-50 font-bold px-1.5 py-0.5 rounded"
+                                    >
+                                      Delete permanently
+                                    </button>
+                                  )}
+                                </span>
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -549,33 +699,24 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
       <div className="p-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between gap-2">
         <button
           onClick={() => onSelectPin(null)}
-          className="flex items-center gap-1 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-white px-2 py-1 rounded-md border border-slate-200 transition-colors shadow-xs"
+          className="flex items-center gap-1 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-white px-2 py-1 rounded-md border border-slate-200 transition-colors shadow-xs whitespace-nowrap shrink-0"
+          title="Back to all pins"
         >
           <ChevronLeft className="w-3.5 h-3.5" />
-          <span>All Pins</span>
+          <span>All</span>
         </button>
 
         <div className="flex items-center gap-2">
-          <span className="w-5 h-5 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-extrabold text-[10px] flex items-center justify-center shadow-xs">
+          <span className={`min-w-5 h-5 px-1 rounded-full text-white font-extrabold text-[10px] flex items-center justify-center shadow-xs ${pinColor(selectedPin.category).bg}`}>
             #{selectedPin.number}
           </span>
           
-          {/* Status Dropdown */}
-          <select
-            value={selectedPin.status}
-            onChange={(e) => onUpdatePinStatus(selectedPin.id, e.target.value as PinStatus)}
-            className="bg-white hover:bg-slate-50 text-slate-900 text-xs font-bold px-2 py-1 rounded-md border border-slate-200 focus:outline-none focus:border-indigo-600 cursor-pointer capitalize shadow-xs"
-          >
-            <option value="open">🔴 Open</option>
-            <option value="in_progress">🟡 In Progress</option>
-            <option value="ready_for_review">🟣 In Review</option>
-            <option value="resolved">🟢 Resolved</option>
-            <option value="archived">⚪ Archived</option>
-          </select>
+          {/* Status (custom dropdown so long names like "Waiting on Customer" can wrap to two lines) */}
+          <StatusPicker value={selectedPin.status} onChange={(status) => onUpdatePinStatus(selectedPin.id, status)} />
 
           {/* Delete Pin Button */}
-          {onDeletePin && (() => {
-            const isOwnerOrAdmin = currentUser.role === 'Admin' || currentUser.role === 'Owner' || currentUser.email === 'nehemiahc@yourdigitalagents.com' || currentUser.id === 'usr_nehemiah';
+          {onDeletePin && !isGuest && (() => {
+            const isOwnerOrAdmin = currentUser.role === 'Admin' || currentUser.role === 'Owner';
             const isPinCreator = selectedPin.author?.id === currentUser.id || selectedPin.author?.email === currentUser.email || selectedPin.author?.name === currentUser.name;
             const canDeletePin = isOwnerOrAdmin || isPinCreator;
 
@@ -634,8 +775,11 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
         {/* Pin Title & Attributes */}
         <div>
           <div className="flex items-center justify-between gap-2 mb-1">
-            <span className="text-[10px] uppercase font-extrabold tracking-wider bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded border border-indigo-200">
-              {selectedPin.category}
+            <span className="flex items-center gap-1.5">
+              <span className="text-[10px] uppercase font-extrabold tracking-wider bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded border border-indigo-200">
+                {selectedPin.category}
+              </span>
+              <DeviceLabel pin={selectedPin} />
             </span>
             <span className={`text-xs capitalize ${getPriorityColor(selectedPin.priority)}`}>
               ⚡ {selectedPin.priority} Priority
@@ -723,6 +867,8 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
             onConnect={wpFix.onConnect}
             pin={selectedPin}
             isAdmin={wpFix.isAdmin}
+            canAsk={wpFix.canAsk}
+            canApply={wpFix.canApply}
             currentUserId={currentUser.id}
             onSiteChanged={wpFix.onSiteChanged}
             onPreviewCss={wpFix.onPreviewCss}
@@ -1041,9 +1187,11 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
                     <span className="text-[10px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-600 font-medium shrink-0">{cmt.author.role}</span>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
-                    <span className="text-[10px] text-slate-500">{cmt.createdAt}</span>
+                    <span className="text-[10px] text-slate-500" title={fullTime(toMillis(cmt.createdAt, cmt.id))}>
+                      {timeAgo(toMillis(cmt.createdAt, cmt.id), now)}
+                    </span>
                     {onDeleteComment && (() => {
-                      const isOwnerOrAdmin = currentUser.role === 'Admin' || currentUser.role === 'Owner' || currentUser.email === 'nehemiahc@yourdigitalagents.com' || currentUser.id === 'usr_nehemiah';
+                      const isOwnerOrAdmin = currentUser.role === 'Admin' || currentUser.role === 'Owner';
                       const isCommentCreator = cmt.author?.id === currentUser.id || cmt.author?.email === currentUser.email || cmt.author?.name === currentUser.name;
                       const canDeleteComment = isOwnerOrAdmin || isCommentCreator;
 

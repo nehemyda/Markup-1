@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { Project, Asset, Teammate, Folder } from '../types';
 import { projectUrl } from '../lib/routes';
 import { copyText } from '../lib/clipboard';
+import { useGuestPolicy } from '../lib/workspaceSettings';
+import { InviteForm } from './InviteForm';
 import { 
   Plus, 
   X, 
@@ -234,15 +236,17 @@ interface ShareModalProps {
   isOpen: boolean;
   onClose: () => void;
   currentProject: Project | null;
-  onInviteTeammate?: (name: string, email: string, role: Teammate['role']) => void;
+  onInviteTeammate?: (name: string, email: string, role: Teammate['role']) => Promise<void>;
+  // Admins pick the invite role; Owners may also invite Owners
+  canChooseRole?: boolean;
+  allowOwner?: boolean;
 }
 
-export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, currentProject, onInviteTeammate }) => {
+export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, currentProject, onInviteTeammate, canChooseRole = false, allowOwner = false }) => {
+  const guestPolicy = useGuestPolicy();
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedGuestLink, setCopiedGuestLink] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState('');
-  const [sentInvite, setSentInvite] = useState(false);
 
   if (!isOpen) return null;
 
@@ -266,17 +270,6 @@ export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, current
     setTimeout(() => setCopiedGuestLink(false), 2000);
   };
 
-  const handleSendEmail = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!inviteEmail.trim()) return;
-    const email = inviteEmail.trim();
-    onInviteTeammate?.(email.split('@')[0].replace(/[._]/g, ' '), email, 'Member');
-    setSentInvite(true);
-    setTimeout(() => {
-      setInviteEmail('');
-      setSentInvite(false);
-    }, 2500);
-  };
 
   return (
     <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-in fade-in duration-150">
@@ -302,7 +295,9 @@ export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, current
           )}
 
           {currentProject && (<>
-          {/* Guest Client Link (No Login Required) */}
+          {/* Guest Client Link (No Login Required) — only when allowed in Settings */}
+          {guestPolicy.guestLinksEnabled ? (
+            <>
           <div className="bg-amber-50/80 border border-amber-200 rounded-xl p-3.5 space-y-2">
             <div className="flex items-center justify-between">
               <label className="font-extrabold text-amber-900 flex items-center gap-1.5 uppercase tracking-wider text-[11px]">
@@ -333,6 +328,12 @@ export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, current
               </button>
             </div>
           </div>
+            </>
+          ) : (
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 text-[11px] text-slate-600">
+              Guest review links are turned off in <strong>Settings → Workspace Details</strong>, so clients can't open this project without an account.
+            </div>
+          )}
 
           {/* Regular Workspace Member Link */}
           <div>
@@ -363,37 +364,22 @@ export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, current
             </div>
           )}
 
-          {/* Email Invite */}
-          <div className="pt-2 border-t border-slate-200 space-y-1.5">
-            <label className="font-extrabold text-slate-700 uppercase tracking-wider block">Invite Teammate via Email</label>
-            <p className="text-[11px] text-slate-500">
-              Invited people can sign in with this email, even if it is outside your allowed domains. They join as a <strong>Member</strong>.
-            </p>
-            <form onSubmit={handleSendEmail} className="flex gap-1.5">
-              <input
-                type="email"
-                required
-                placeholder="colleague@company.com"
-                value={inviteEmail}
-                onChange={(e) => setInviteEmail(e.target.value)}
-                className="flex-1 bg-white border border-slate-300 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-blue-600 shadow-2xs"
-              />
-              <button
-                type="submit"
-                disabled={sentInvite}
-                className="bg-slate-900 hover:bg-slate-800 text-white font-bold px-4 py-2 rounded-xl transition-colors shadow-2xs cursor-pointer"
-              >
-                {sentInvite ? '✅ Invite Sent!' : 'Invite Member'}
-              </button>
-            </form>
-          </div>
+          {/* Invite a teammate (role choice for admins; shows a sign-up link afterwards) */}
+          {onInviteTeammate && (
+            <div className="pt-2 border-t border-slate-200 space-y-1.5">
+              <label className="font-extrabold text-slate-700 uppercase tracking-wider block">Invite a Teammate</label>
+              <InviteForm canChooseRole={canChooseRole} allowOwner={allowOwner} onInvite={onInviteTeammate} />
+            </div>
+          )}
 
+          {guestPolicy.guestLinksEnabled && (
           <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex items-center justify-between text-[11px] text-slate-600 shadow-2xs font-medium">
             <div className="flex items-center gap-1.5">
               <Lock className="w-3.5 h-3.5 text-emerald-600" />
               <span>Permissions: Anyone with Guest link can view & comment</span>
             </div>
           </div>
+          )}
 
           <div className="pt-2 flex justify-end border-t border-slate-200">
             <button

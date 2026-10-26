@@ -36,7 +36,8 @@ export function getGoogleAvatarColor(email?: string): string {
  */
 export function getUserInitials(name?: string, email?: string): string {
   if (name && name.trim()) {
-    const parts = name.replace(/\(you\)|\(QA Lead\)|\(QA Tester\)/gi, '').trim().split(/\s+/);
+    // Ignore labels in brackets, e.g. "John (Guest)" -> "JO", "Ana Silva (you)" -> "AS"
+    const parts = name.replace(/\([^)]*\)/g, '').trim().split(/\s+/).filter(Boolean);
     if (parts.length >= 2) {
       return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
     } else if (parts.length === 1 && parts[0].length > 0) {

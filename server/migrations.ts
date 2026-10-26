@@ -19,3 +19,36 @@ export async function addProjectIdToPins() {
   if (count) await batch.commit();
   return count;
 }
+
+// Files used to be embedded in pins as data URLs (screenshots and attachments). Move them to stored files and keep
+// links, so pins stay small. Reads one pin at a time because some of the old pins are very large.
+export async function moveEmbeddedFilesOut() {
+  const { saveDataUrl } = await import('./uploads');
+  const ids = (await adminDb.collection('pins').select().get()).docs.map((d) => d.id);
+  let moved = 0;
+  for (const id of ids) {
+    const ref = adminDb.collection('pins').doc(id);
+    const pin = (await ref.get()).data();
+    if (!pin) continue;
+    let changed = false;
+    const fix = (url: unknown) => {
+      if (typeof url === 'string' && url.startsWith('data:')) {
+        try {
+          changed = true;
+          moved++;
+          return saveDataUrl(url);
+        } catch {
+          return url;
+        }
+      }
+      return url;
+    };
+    const fixList = (list: any[] | undefined) => (Array.isArray(list) ? list.map((a) => (a && a.url ? { ...a, url: fix(a.url) } : a)) : list);
+    const update: Record<string, unknown> = {};
+    if (pin.screenshotUrl) update.screenshotUrl = fix(pin.screenshotUrl);
+    if (pin.attachments) update.attachments = fixList(pin.attachments);
+    if (pin.comments) update.comments = pin.comments.map((c: any) => (c?.attachments ? { ...c, attachments: fixList(c.attachments) } : c));
+    if (changed) await ref.update(update);
+  }
+  return moved;
+}

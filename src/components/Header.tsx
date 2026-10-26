@@ -96,6 +96,8 @@ export const Header: React.FC<HeaderProps> = ({
   onNotificationClick,
   onMarkAllNotificationsRead
 }) => {
+  // Project pages get the project header (views, WordPress, Share); workspace pages (dashboard, QA scores) don't
+  const inProject = viewMode !== 'dashboard' && viewMode !== 'qascore';
   const [showProjectDropdown, setShowProjectDropdown] = useState(false);
   const [showAssetDropdown, setShowAssetDropdown] = useState(false);
   const [showUserDropdown, setShowUserDropdown] = useState(false);
@@ -165,7 +167,7 @@ export const Header: React.FC<HeaderProps> = ({
           )}
 
           {/* Clean Navigation: All Projects Grid Button + Project Title (hidden for guests: they only see the shared project) */}
-          {viewMode !== 'dashboard' && !isGuestMode && (
+          {inProject && !isGuestMode && (
             <>
               <div className="h-6 w-px bg-slate-200 hidden md:block" />
 
@@ -183,7 +185,7 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         {/* Center: View Switcher Tabs (Only shown inside studio views, not for guests) */}
-        {viewMode !== 'dashboard' && !isGuestMode && (
+        {inProject && !isGuestMode && (
           <div className="hidden lg:flex items-center bg-slate-100 p-1 rounded-md border border-slate-200 shrink-0">
             <button
               onClick={() => onViewModeChange('studio')}
@@ -232,26 +234,13 @@ export const Header: React.FC<HeaderProps> = ({
               <Activity className="w-3.5 h-3.5" />
               <span>Activity</span>
             </button>
-
-            <button
-              onClick={() => onViewModeChange('qascore')}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-all cursor-pointer ${
-                viewMode === 'qascore'
-                  ? 'bg-indigo-600 text-white shadow-sm font-bold'
-                  : 'text-slate-700 hover:text-indigo-600 font-semibold'
-              }`}
-              title="View & Edit QA Rubric Rules, Error Weightages, and Project Ratings"
-            >
-              <Award className="w-3.5 h-3.5 text-indigo-500" />
-              <span>QA Score</span>
-            </button>
           </div>
         )}
 
         {/* Right Controls */}
         <div className="flex items-center gap-2.5">
           {/* Share (only inside a project, not for guests) */}
-          {viewMode !== 'dashboard' && !isGuestMode && (
+          {inProject && !isGuestMode && (
             <>
               {onOpenWordPress && wpStatus && (
                 <button
@@ -436,8 +425,8 @@ export const Header: React.FC<HeaderProps> = ({
 
       </div>
 
-      {/* Mobile / Tablet View Switcher Sub-bar (not for guests) */}
-      {!isGuestMode && (
+      {/* Mobile / Tablet View Switcher Sub-bar (inside a project; not for guests) */}
+      {inProject && !isGuestMode && (
       <div className="lg:hidden flex items-center overflow-x-auto whitespace-nowrap px-3 py-1.5 gap-1.5 border-t border-slate-200 bg-white text-xs font-medium text-slate-700 scrollbar-none justify-start sm:justify-center">
         <button
           onClick={() => onViewModeChange('studio')}
@@ -470,14 +459,6 @@ export const Header: React.FC<HeaderProps> = ({
           }`}
         >
           <Activity className="w-3.5 h-3.5" /> Activity
-        </button>
-        <button
-          onClick={() => onViewModeChange('qascore')}
-          className={`flex items-center gap-1.5 px-3 py-1 rounded-md shrink-0 cursor-pointer ${
-            viewMode === 'qascore' ? 'bg-indigo-600 text-white font-bold' : 'text-slate-600 hover:text-slate-900'
-          }`}
-        >
-          <Award className="w-3.5 h-3.5" /> QA Score
         </button>
       </div>
       )}

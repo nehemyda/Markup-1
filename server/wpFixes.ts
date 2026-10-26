@@ -5,6 +5,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 import type { GoogleGenAI } from '@google/genai';
 import { Type } from '@google/genai';
 import { adminDb } from './firebaseAdmin';
+import { readAttachment } from './uploads';
 import { compareVersions, loadCredentials, sameSite, uploadMedia, wpRequest, WpError } from './wordpress';
 
 const MODEL = 'gemini-3.6-flash';
@@ -30,9 +31,12 @@ export interface PinTarget {
   // Divi module class at the pin, e.g. "et_pb_text_1" (matches the page's 2nd text module); "_tb_" = Theme Builder
   diviModule?: string | null;
   diviParents?: string[];
+  box?: { width: number; height: number };
+  // The element and the boxes around it, with their widths (what limits its size)
+  layout?: Array<{ element: string; width: number; maxWidth: string }>;
 }
 
-export type InspectTarget = (url: string, width: number, selector: string) => Promise<PinTarget | null>;
+export type InspectTarget = (url: string, width: number, selector: string, point?: { x: number; y: number }) => Promise<PinTarget | null>;
 
 interface Actor {
   uid: string;
@@ -177,23 +181,65 @@ const DIVI_CLOSE = /\[\/et_pb_[a-z0-9_]+\]/g;
 
 // Images attached to the pin's comments (data URLs), labelled A1, A2, ... in thread order
 function pinImages(pin: any) {
-  const out: Array<{ label: string; commentId: string; attachmentId: string; name: string; author: string; mime: string; base64: string }> = [];
-  for (const comment of pin.comments || []) {
-    for (const att of comment.attachments || []) {
-      const m = String(att.url || '').match(/^data:(image\/(?:jpeg|png|webp|gif));base64,(.+)$/);
-      if (!m) continue;
+  const out: Array<{ label: string; commentId: string | null; attachmentId: string; name: string; author: string; mime: string; base64: string }> = [];
+  const seen = new Set<string>();
+  // Images attached to the pin itself (new pin form), then to its comments
+  const sources = [
+    { comment: { id: null, author: pin.author }, attachments: pin.attachments || [] },
+    ...(pin.comments || []).map((comment: any) => ({ comment, attachments: comment.attachments || [] })),
+  ];
+  for (const { comment, attachments } of sources) {
+    for (const att of attachments) {
+      const file = readAttachment(String(att.url || ''));
+      if (!file || !/^image\/(jpeg|png|webp|gif)$/.test(file.mime) || seen.has(att.id)) continue;
+      seen.add(att.id);
       out.push({
         label: `A${out.length + 1}`,
         commentId: comment.id,
         attachmentId: att.id,
         name: String(att.name || 'image'),
         author: comment.author?.name || 'Reviewer',
-        mime: m[1],
-        base64: m[2],
+        mime: file.mime,
+        base64: file.data.toString('base64'),
       });
     }
   }
   return out;
+}
+
+// What we compare before and after a fix: text, layout size and visible styles
+function lookOf(t: PinTarget) {
+  // Markup too: e.g. bold text is a <strong> inside the element, which doesn't change the element's own styles
+  return { text: t.text, box: t.box || null, styles: t.styles, html: (t.html || '').replace(/\s+/g, ' ') };
+}
+
+function sameLook(a: ReturnType<typeof lookOf>, b: ReturnType<typeof lookOf>) {
+  const sizeSame = !a.box || !b.box || (Math.abs(a.box.width - b.box.width) <= 1 && Math.abs(a.box.height - b.box.height) <= 1);
+  // max-width alone isn't visible (e.g. 100% on an element that already fills its column); the real width is compared
+  const visible = (st: Record<string, string> = {}) => JSON.stringify({ ...st, maxWidth: undefined });
+  return a.text === b.text && sizeSame && visible(a.styles) === visible(b.styles) && (a.html ?? '') === (b.html ?? '');
+}
+
+// After a fix is live: did the element at the pin actually change? Saved on the fix as visibleChange.
+async function checkVisibleChange(fixId: string, check: any, inspect: InspectTarget) {
+  try {
+    const after = await inspect(check.url, check.width, check.selector, check.point || undefined);
+    if (!after) return;
+    const look = lookOf(after);
+    await adminDb.collection('wpFixes').doc(fixId).update({ visibleChange: !sameLook(check.before, look), 'check.after': look });
+  } catch (err: any) {
+    console.warn('Could not check the page after a fix:', err?.message);
+  }
+}
+
+// Longest start of `replacement`, ending at a block boundary, that appears exactly once in `content`
+function existingLeadingBlocks(content: string, replacement: string) {
+  const ends = Array.from(replacement.matchAll(/<!-- \/wp:[a-z0-9/-]+\s*-->|\[\/et_pb_[a-z0-9_]+\]/g)).map((m) => m.index! + m[0].length);
+  for (let i = ends.length - 1; i >= 0; i--) {
+    const candidate = replacement.slice(0, ends[i]).trim();
+    if (candidate && candidate !== replacement.trim() && countOf(content, candidate) === 1) return candidate;
+  }
+  return '';
 }
 
 // Fill in an uploaded image's address and Media Library id
@@ -287,7 +333,9 @@ ${input.siteCss.trim() || '(none)'}
 - Change as little as possible and only what the feedback asks for. Keep the site's existing style, fonts and colors unless the feedback is about them.
 - elementor_settings: use real Elementor control names for that widget type and only the keys that change. Examples: heading → title, title_color, align, header_size; text-editor → editor, text_color; button → text, background_color, button_text_color, border_radius, link. Typography needs "typography_typography": "custom" plus e.g. "typography_font_size": {"unit": "px", "size": 32}, "typography_font_weight": "600". Sizes and spacing use {"unit": "px", "size": N} or {"unit":"px","top":"0","right":"0","bottom":"0","left":"0","isLinked":false}. For a fix only on ${device === 'desktop' ? 'desktop, use the plain keys' : `${device}, add the _${device} suffix (e.g. typography_font_size_${device})`}.
 ${builder === 'divi' ? `- Divi: the element at the pin belongs to module ${target?.diviModule || '(unknown)'}${target?.diviModule?.includes('_tb_') ? ', which is in a Theme Builder layout (header/footer/template), not this page: use css instead' : ''}. Edit that module's own shortcode or block. Divi 4 attribute examples: et_pb_text → text_text_color, text_font_size, header_text_color, header_font_size, text_orientation; et_pb_button → button_text, button_url, custom_button="on" with button_text_color, button_bg_color, button_text_size; et_pb_blurb → title, header_text_color. Sizes are strings like "48px". For tablet/phone only, use the _tablet / _phone suffix and set <attr>_last_edited="on|desktop". Keep every [et_pb_...] / [/et_pb_...] tag (or <!-- wp:divi/... --> comment) balanced.
-` : ''}- content_replace: "find" must be copied character for character from the page content and be unique; keep Gutenberg block comments (<!-- wp:... -->) valid and balanced.
+` : ''}- content_replace: "find" is REQUIRED and never empty: the existing text the change replaces. To ADD something (e.g. an image below a button), find = the existing block it goes after, copied exactly, and replace = that same block followed by the new one.
+- content_replace: "find" must be copied character for character from the page content and be unique; keep Gutenberg block comments (<!-- wp:... -->) valid and balanced.
+- Size and spacing requests (wider, narrower, bigger, more space): use "layout" above to find what actually limits the element, the first box with a max width or a narrow width, and change THAT setting (e.g. a Divi module's max_width, a row's width/max_width, or the column structure; an Elementor widget's or container's width). A change that is already the effective value (e.g. max_width 100% on an element that fills its column) does nothing: don't propose it.
 - If the element is not in this page's own content (e.g. the page title, header, footer or menu printed by the theme template), you can't remove or edit it here: use css for this page and say in the explanation that it comes from the theme template, so CSS hides it on this page only and editing the template would change every page.
 - css: start every selector with body.${input.bodyClass} unless the problem is site-wide${device !== 'desktop' ? `; wrap it in a media query for ${device} (${device === 'mobile' ? 'max-width: 767px' : 'min-width: 768px and max-width: 1024px'})` : ''}. No @import, no external URLs.
 - To place an attached image, set imageAttachment to its label and write ${IMAGE_URL} and ${IMAGE_ID} where its address and Media Library id go (they are filled in when the image is uploaded on approval). Use a short descriptive alt text. Gutenberg: <!-- wp:image {"id":${IMAGE_ID},"sizeSlug":"full","linkDestination":"none"} --><figure class="wp-block-image size-full"><img src="${IMAGE_URL}" alt="..." class="wp-image-${IMAGE_ID}"/></figure><!-- /wp:image --> as its own block (e.g. find = the block it goes after, replace = that block followed by the image block). Divi: [et_pb_image src="${IMAGE_URL}" alt="..." _builder_version="4.27.4"][/et_pb_image] as its own module in the same column. Elementor: kind elementor_insert, afterElementId = the element it goes below, widgetJson = {"widgetType":"image","settings":{"image":{"url":"${IMAGE_URL}","id":"${IMAGE_ID}"},"image_size":"full"}}.
@@ -330,8 +378,9 @@ export async function prepareFix(opts: {
 
   const device: string = pin.metadata?.deviceType || 'desktop';
   const selector: string = pin.metadata?.selector || '';
-  const target = selector
-    ? await opts.inspect(pageUrl, DEVICE_WIDTHS[device] || 1440, selector).catch((err) => {
+  const point = typeof pin.x === 'number' && typeof pin.y === 'number' ? { x: pin.x, y: pin.y } : undefined;
+  const target = selector || point
+    ? await opts.inspect(pageUrl, DEVICE_WIDTHS[device] || 1440, selector, point).catch((err) => {
       console.warn('Could not read the element at the pin:', err?.message);
       return null;
     })
@@ -361,8 +410,8 @@ export async function prepareFix(opts: {
       attachments: images.map((img) => ({ label: img.label, name: img.name, author: img.author })),
     }),
   }];
-  const shot = String(pin.screenshotUrl || '').match(/^data:(image\/(?:png|jpeg|webp));base64,(.+)$/);
-  if (shot) parts.push({ inlineData: { mimeType: shot[1], data: shot[2] } });
+  const shot = readAttachment(String(pin.screenshotUrl || ''));
+  if (shot && /^image\/(png|jpeg|webp)$/.test(shot.mime)) parts.push({ inlineData: { mimeType: shot.mime, data: shot.data.toString('base64') } });
   for (const img of images) parts.push({ inlineData: { mimeType: img.mime, data: img.base64 } });
 
   const response = await ai.models.generateContent({
@@ -377,6 +426,12 @@ export async function prepareFix(opts: {
     throw new WpError('The AI answer could not be read. Try again.', 502);
   }
 
+  // When a proposal fails the checks below, the server log shows what the AI answered
+  const describe = () => JSON.stringify({ kind: proposal.kind, find: String(proposal.find || '').slice(0, 300), replace: String(proposal.replace || '').slice(0, 300), image: proposal.imageAttachment, elementId: proposal.elementId, afterElementId: proposal.afterElementId, widget: String(proposal.widgetJson || '').slice(0, 200) });
+  const reject = (message: string): never => {
+    console.warn(`Fix with AI: rejected proposal (${message}) ${describe()}`);
+    throw new WpError(message, 422);
+  };
   const summary = String(proposal.summary || 'AI fix').slice(0, 120);
   const remaining = (Array.isArray(proposal.remainingRequests) ? proposal.remainingRequests : [])
     .map((r: unknown) => String(r).trim().slice(0, 160))
@@ -391,8 +446,8 @@ export async function prepareFix(opts: {
     || (placesImage && images.length === 1 ? images[0] : undefined);
   const image = chosen ? { commentId: chosen.commentId, attachmentId: chosen.attachmentId, name: chosen.name } : null;
   const checkImageUse = (text: string) => {
-    if (usesImage(text) && !image) throw new WpError('The AI referred to an attached image it did not pick. Try again.', 422);
-    if (image && !text.includes(IMAGE_URL)) throw new WpError('The AI picked an image but did not place it. Try again.', 422);
+    if (usesImage(text) && !image) reject('The AI referred to an attached image it did not pick. Try again.');
+    if (image && !text.includes(IMAGE_URL)) reject('The AI picked an image but did not place it. Try again.');
   };
   const base = {
     projectId,
@@ -410,6 +465,8 @@ export async function prepareFix(opts: {
     model: MODEL,
     image,
     remaining,
+    // How the element at the pin looked, to check after applying that the fix visibly changed it
+    check: target ? { url: pageUrl, width: DEVICE_WIDTHS[device] || 1440, selector, point: point || null, before: lookOf(target) } : null,
   };
 
   let fix: Record<string, any> & { kind: string; status: string };
@@ -418,18 +475,18 @@ export async function prepareFix(opts: {
   } else if (proposal.kind === 'elementor_settings' && builder === 'elementor') {
     const elementId = String(proposal.elementId || '');
     const element = findElementor(page.elementor || [], elementId);
-    if (!element) throw new WpError('The AI pointed at an element that is not on this page. Try again.', 422);
+    if (!element) reject('The AI pointed at an element that is not on this page. Try again.');
     let settings: Record<string, any>;
     try {
       settings = JSON.parse(proposal.settingsJson || '{}');
     } catch {
-      throw new WpError('The AI suggested settings that could not be read. Try again.', 422);
+      reject('The AI suggested settings that could not be read. Try again.');
     }
     const keys = Object.keys(settings || {});
     if (!settings || typeof settings !== 'object' || Array.isArray(settings) || keys.length === 0 || keys.length > 15) {
-      throw new WpError('The AI suggested an empty or too large change. Try again.', 422);
+      reject('The AI suggested an empty or too large change. Try again.');
     }
-    if (keys.some((k) => !/^[a-z][a-z0-9_]*$/i.test(k))) throw new WpError('The AI suggested invalid setting names.', 422);
+    if (keys.some((k) => !/^[a-z][a-z0-9_]*$/i.test(k))) reject('The AI suggested invalid setting names.');
     checkSettingValue(settings);
     const before = Object.fromEntries(keys.map((k) => [k, element.settings?.[k] ?? null]));
     const sameValue = (a: any, b: any) => JSON.stringify(a) === JSON.stringify(b) || (typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase());
@@ -455,7 +512,7 @@ export async function prepareFix(opts: {
     const replace = String(proposal.replace ?? '').trim();
     const wholeWord = proposal.wholeWord !== false;
     if (find.length < 2 || find.length > 100 || replace.length > 200 || /[<>[\]]/.test(find + replace) || find === replace) {
-      throw new WpError('The AI suggested an invalid site-wide text change. Try again.', 422);
+      reject('The AI suggested an invalid site-wide text change. Try again.');
     }
     // Site-wide replace arrived in plugin 0.5.0
     const site = (await adminDb.collection('wpSites').doc(projectId).get()).data();
@@ -475,17 +532,17 @@ export async function prepareFix(opts: {
   } else if (proposal.kind === 'elementor_insert' && builder === 'elementor') {
     const afterElementId = String(proposal.afterElementId || '');
     const after = findElementor(page.elementor || [], afterElementId);
-    if (!after) throw new WpError('The AI pointed at an element that is not on this page. Try again.', 422);
+    if (!after) reject('The AI pointed at an element that is not on this page. Try again.');
     let widget: { widgetType?: string; settings?: Record<string, any> };
     try {
       widget = JSON.parse(proposal.widgetJson || '{}');
     } catch {
-      throw new WpError('The AI suggested a widget that could not be read. Try again.', 422);
+      reject('The AI suggested a widget that could not be read. Try again.');
     }
-    if (!widget.widgetType || !ELEMENTOR_INSERTABLE.includes(widget.widgetType)) throw new WpError('The AI suggested a kind of widget that cannot be added.', 422);
+    if (!widget.widgetType || !ELEMENTOR_INSERTABLE.includes(widget.widgetType)) reject('The AI suggested a kind of widget that cannot be added.');
     const settings = widget.settings && typeof widget.settings === 'object' && !Array.isArray(widget.settings) ? widget.settings : {};
     if (Object.keys(settings).some((k) => !/^[a-z][a-z0-9_]*$/i.test(k)) || Object.keys(settings).length > 20) {
-      throw new WpError('The AI suggested invalid widget settings.', 422);
+      reject('The AI suggested invalid widget settings.');
     }
     checkSettingValue(settings);
     const settingsJson = JSON.stringify(settings);
@@ -501,23 +558,26 @@ export async function prepareFix(opts: {
       settingsJson,
     };
   } else if (proposal.kind === 'content_replace' && builder !== 'elementor') {
-    const find = String(proposal.find || '');
+    let find = String(proposal.find || '');
+    // The AI sometimes leaves "find" empty when inserting. If its replacement starts with blocks that are already on
+    // the page exactly once (e.g. the button the image goes below), those blocks are what it meant to keep in place.
+    if (!find && proposal.replace) find = existingLeadingBlocks(String(page.content || ''), String(proposal.replace));
     const replace = String(proposal.replace ?? '');
     const content = String(page.content || '');
-    if (!find || find === replace) throw new WpError('The AI did not suggest a change. Try again.', 422);
+    if (!find || find === replace) reject('The AI did not suggest a change. Try again.');
     const matches = countOf(content, find);
     if (matches !== 1) throw new WpError(matches ? 'The AI picked text that appears more than once. Try again.' : 'The AI picked text that is not on the page. Try again.', 422);
-    if (replace.length > 20000) throw new WpError('The suggested change is too long.', 422);
+    if (replace.length > 20000) reject('The suggested change is too long.');
     checkMarkup(replace, 'content');
     checkImageUse(replace);
     if (!structureKept(find, replace, GUTENBERG_OPEN, GUTENBERG_CLOSE)) {
-      throw new WpError('The suggested change would break the page blocks. Try again.', 422);
+      reject('The suggested change would break the page blocks. Try again.');
     }
     if (!structureKept(find, replace, DIVI_OPEN, DIVI_CLOSE)) {
-      throw new WpError('The suggested change would break the Divi layout. Try again.', 422);
+      reject('The suggested change would break the Divi layout. Try again.');
     }
     if (find.length > 8000 && replace.length < find.length / 4) {
-      throw new WpError('The suggested change would remove a large part of the page. Do this one by hand.', 422);
+      reject('The suggested change would remove a large part of the page. Do this one by hand.');
     }
     fix = { ...base, kind: 'content_replace', status: 'proposed', baseHash: page.hash, find, replace };
   } else if (proposal.kind === 'css') {
@@ -525,7 +585,7 @@ export async function prepareFix(opts: {
     checkCss(css);
     fix = { ...base, kind: 'css', status: 'proposed', css };
   } else {
-    throw new WpError('The AI suggested a kind of change this page does not support. Try again.', 422);
+    reject('The AI suggested a kind of change this page does not support. Try again.');
   }
 
   const ref = adminDb.collection('wpFixes').doc();
@@ -547,7 +607,7 @@ async function claimFix(projectId: string, fixId: string, from: string[], to: st
   });
 }
 
-export async function applyFix(projectId: string, fixId: string, actor: Actor) {
+export async function applyFix(projectId: string, fixId: string, actor: Actor, inspect?: InspectTarget) {
   const { ref, fix } = await claimFix(projectId, fixId, ['proposed'], 'applying');
   try {
     const creds = await loadCredentials(projectId);
@@ -557,12 +617,13 @@ export async function applyFix(projectId: string, fixId: string, actor: Actor) {
     let media: { id: number; url: string } | null = fix.media || null;
     if (fix.image && !media) {
       const pin = (await adminDb.collection('pins').doc(fix.pinId).get()).data();
-      const att = pin?.comments?.find((c: any) => c.id === fix.image.commentId)?.attachments?.find((a: any) => a.id === fix.image.attachmentId);
-      const m = String(att?.url || '').match(/^data:(image\/(?:jpeg|png|webp|gif));base64,(.+)$/);
-      if (!m) throw new WpError('The attached image is no longer on the pin.', 409);
-      const ext = m[1].split('/')[1].replace('jpeg', 'jpg');
+      const holder = fix.image.commentId ? pin?.comments?.find((c: any) => c.id === fix.image.commentId) : pin;
+      const att = holder?.attachments?.find((a: any) => a.id === fix.image.attachmentId);
+      const file = readAttachment(String(att?.url || ''));
+      if (!file || !file.mime.startsWith('image/')) throw new WpError('The attached image is no longer on the pin.', 409);
+      const ext = file.mime.split('/')[1].replace('jpeg', 'jpg');
       const name = /\.[a-z0-9]+$/i.test(fix.image.name) ? fix.image.name : `${fix.image.name}.${ext}`;
-      media = await uploadMedia(creds, { name, mime: m[1], data: Buffer.from(m[2], 'base64'), alt: fix.summary });
+      media = await uploadMedia(creds, { name, mime: file.mime, data: file.data, alt: fix.summary });
       await ref.update({ media });
     }
     const withImage = (text: string) => (media ? fillImage(text, media) : text);
@@ -601,8 +662,12 @@ export async function applyFix(projectId: string, fixId: string, actor: Actor) {
     } else {
       throw new WpError('This fix cannot be applied.', 400);
     }
-    const applied = { status: 'applied', snapshotId: result.snapshot_id, appliedBy: actor, appliedAt: FieldValue.serverTimestamp(), lastError: null };
+    const applied = { status: 'applied', snapshotId: result.snapshot_id, appliedBy: actor, appliedAt: FieldValue.serverTimestamp(), lastError: null, visibleChange: null };
     await ref.update(applied);
+    // Check in the background (it loads the page again); inserts and site-wide changes don't change the pinned element itself
+    if (inspect && fix.check && !['elementor_insert', 'site_replace'].includes(fix.kind)) {
+      checkVisibleChange(fixId, fix.check, inspect);
+    }
     return { snapshotId: result.snapshot_id };
   } catch (err: any) {
     const stale = err instanceof WpError && err.status === 409;

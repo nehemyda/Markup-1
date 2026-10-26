@@ -31,8 +31,21 @@ service cloud.firestore {
       allow create, delete: if false;
     }
 
+    // Invitations: admins invite with any role; members only as Member, when "Invite teammates" is allowed in
+    // Team → Roles & Permissions. The inviter (or an admin) can cancel or change it; it can't be raised above Member
+    // by a non-admin.
+    function membersMayInvite() {
+      let perms = /databases/$(database)/documents/settings/permissions;
+      return !exists(perms) || get(perms).data.get('membersCanInvite', true) == true;
+    }
     match /invites/{email} {
-      allow read, write: if isMember();
+      allow read: if isMember();
+      allow create: if isAdmin()
+        || (isMember() && membersMayInvite() && request.resource.data.role == 'Member'
+            && request.resource.data.invitedBy == request.auth.token.email);
+      allow update: if isAdmin()
+        || (isMember() && resource.data.invitedBy == request.auth.token.email && request.resource.data.role == 'Member');
+      allow delete: if isAdmin() || (isMember() && resource.data.invitedBy == request.auth.token.email);
     }
 
     match /folders/{folderId} {
@@ -66,6 +79,28 @@ service cloud.firestore {
     match /settings/access {
       allow read: if true;
       allow write: if isAdmin();
+    }
+
+    // App name and logo: shown on the sign-in page and guest links too, so anyone may read it
+    match /settings/branding {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Role permission matrix: members read it (the app shows what they may do), admins change it
+    match /settings/permissions {
+      allow read: if isMember();
+      allow write: if isAdmin();
+    }
+
+    // AI Credits: usage records and monthly totals are written by the server; admins read them
+    match /aiUsage/{entryId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+    match /aiUsageMonthly/{month} {
+      allow read: if isAdmin();
+      allow write: if false;
     }
 
     match /auditLog/{entryId} {

@@ -1,6 +1,15 @@
 import React, { useState } from 'react';
-import { Project, Asset, Teammate, ViewMode, Pin, Folder } from '../types';
+import { Project, Asset, Teammate, ViewMode, Pin, Folder, RolePermissions } from '../types';
 import { projectUrl } from '../lib/routes';
+import { useRolePermissions, saveRolePermission } from '../lib/permissions';
+import { AiCreditsView } from './AiCreditsView';
+import { AppSidebar } from './AppSidebar';
+import { toMillis, timeAgo } from '../lib/time';
+import { InviteForm } from './InviteForm';
+import { inviteLink } from '../lib/firebaseSync';
+import { AppLogo } from './AppLogo';
+import { useBranding, useGuestPolicy, saveBranding, saveGuestPolicy, brandInitials, Branding, GuestPolicy } from '../lib/workspaceSettings';
+import { masterAdminDomains } from '../lib/userProfile';
 import { copyText } from '../lib/clipboard';
 import { ARCHIVED_PROJECTS } from '../data/mockData';
 import { getAllowedDomains, saveAllowedDomains, useAllowedDomains, DEFAULT_ALLOWED_DOMAINS } from '../utils/domains';
@@ -23,6 +32,10 @@ import {
   ChevronDown, 
   ExternalLink,
   Sparkles,
+  Zap,
+  Coins,
+  PanelLeftClose,
+  PanelLeftOpen,
   HelpCircle,
   MessageCircle,
   Info,
@@ -80,9 +93,10 @@ interface ProjectsGridViewProps {
   onAddNewUrlAsset: (url: string) => void;
   onDeleteProject?: (projectId: string) => void;
   onDeleteTeammate?: (id: string) => void;
+  onInviteTeammate?: (name: string, email: string, role: Teammate['role']) => Promise<void>;
   onRestoreProject?: (item: typeof ARCHIVED_PROJECTS[0]) => void;
-  initialTab?: 'dashboard' | 'archive' | 'team' | 'settings';
-  onTabChange?: (tab: 'dashboard' | 'archive' | 'team' | 'settings') => void;
+  initialTab?: 'dashboard' | 'archive' | 'team' | 'credits' | 'settings';
+  onTabChange?: (tab: 'dashboard' | 'archive' | 'team' | 'credits' | 'settings') => void;
   onSettingsSubTabChange?: (tab: 'details' | 'domains') => void;
   initialSettingsSubTab?: 'details' | 'domains';
 }
@@ -213,16 +227,17 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
   onAddNewUrlAsset,
   onDeleteProject,
   onDeleteTeammate,
+  onInviteTeammate,
   onRestoreProject,
   initialTab,
   onTabChange,
   onSettingsSubTabChange,
   initialSettingsSubTab
 }) => {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'archive' | 'team' | 'settings'>(initialTab || 'dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'archive' | 'team' | 'credits' | 'settings'>(initialTab || 'dashboard');
   const [settingsSubTab, setSettingsSubTab] = useState<'details' | 'domains'>(initialSettingsSubTab || 'details');
 
-  const handleTabClick = (tab: 'dashboard' | 'archive' | 'team' | 'settings') => {
+  const handleTabClick = (tab: 'dashboard' | 'archive' | 'team' | 'credits' | 'settings') => {
     setActiveTab(tab);
     if (onTabChange) onTabChange(tab);
   };
@@ -251,8 +266,9 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
   const [domainSuccessMsg, setDomainSuccessMsg] = useState<string | null>(null);
 
   // Master Admin or Admin Permission Check
-  const isMasterAdmin = currentUser.email === 'nehemiahc@yourdigitalagents.com' || currentUser.id === 'usr_nehemiah' || currentUser.role === 'Owner';
-  const canEditDomainAccess = isMasterAdmin || currentUser.role === 'Admin';
+  // Owners (the master admin is always an Owner) and Admins manage workspace settings
+  const isMasterAdmin = currentUser.role === 'Owner';
+  const canEditDomainAccess = currentUser.role === 'Owner' || currentUser.role === 'Admin';
 
   const handleAddDomain = (e: React.FormEvent) => {
     e.preventDefault();
@@ -333,33 +349,12 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
   // Team tab state
   const [teamSubTab, setTeamSubTab] = useState<'members' | 'guests' | 'roles'>('members');
 
-  // Role Permissions Matrix State
-  const [rolePermissions, setRolePermissions] = useState<{
-    membersCanViewAllQAScores: boolean;
-    membersCanManageRubric: boolean;
-    membersCanInvite: boolean;
-    membersCanManageRoles: boolean;
-    membersCanDeleteProjects: boolean;
-    membersCanArchiveProjects: boolean;
-  }>(() => {
-    try {
-      const saved = localStorage.getItem('webreview_role_permissions_v1');
-      if (saved) return JSON.parse(saved);
-    } catch (e) {}
-    return {
-      membersCanViewAllQAScores: false,
-      membersCanManageRubric: false,
-      membersCanInvite: true,
-      membersCanManageRoles: false,
-      membersCanDeleteProjects: false,
-      membersCanArchiveProjects: true
-    };
-  });
-
-  const handleTogglePermission = (key: keyof typeof rolePermissions) => {
-    const updated = { ...rolePermissions, [key]: !rolePermissions[key] };
-    setRolePermissions(updated);
-    localStorage.setItem('webreview_role_permissions_v1', JSON.stringify(updated));
+  // Role permission matrix: shared by the workspace (Firestore); only Owners and Admins can change it
+  const rolePermissions = useRolePermissions();
+  const canEditPermissions = currentUser.role === 'Owner' || currentUser.role === 'Admin';
+  const handleTogglePermission = (key: keyof RolePermissions) => {
+    if (!canEditPermissions) return;
+    saveRolePermission(key, !rolePermissions[key]).catch(() => alert('Could not save the permission. Only workspace admins can change it.'));
   };
 
   // Open pins across all projects in the workspace
@@ -369,16 +364,39 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
   }, [projects, pins]);
 
   // Branding & Settings state
-  const [customLogoText, setCustomLogoText] = useState(appName);
-  const [customLogoIcon, setCustomLogoIcon] = useState(appIcon);
-  const [workspaceUrl, setWorkspaceUrl] = useState('EB858DB0D1');
-  const [isSavedBranding, setIsSavedBranding] = useState(false);
+  // Workspace branding and guest policy (saved in Firestore; Settings page)
+  const branding = useBranding();
+  const guestPolicy = useGuestPolicy();
+  const [brandDraft, setBrandDraft] = useState<Branding | null>(null);
+  const draft = brandDraft || branding;
+  const [brandingNote, setBrandingNote] = useState('');
+  const [policyNote, setPolicyNote] = useState('');
   const [copiedCardId, setCopiedCardId] = useState<string | null>(null);
-
-  // Settings Toggles State
-  const [allowGuestNoLogin, setAllowGuestNoLogin] = useState(true);
-  const [requireGuestName, setRequireGuestName] = useState(true);
-  const [notifyOnGuestFeedback, setNotifyOnGuestFeedback] = useState(true);
+  // Team page: invite dialog and "Copy invite link" feedback
+  const [showInvite, setShowInvite] = useState(false);
+  const [copiedInvite, setCopiedInvite] = useState<string | null>(null);
+  // Guests who reviewed through a guest link (from their pins and comments)
+  const guestReviewers = React.useMemo(() => {
+    const byKey = new Map<string, { key: string; name: string; email: string; projectIds: Set<string>; count: number; lastMs: number }>();
+    const note = (author: any, projectId: string | undefined, ms: number) => {
+      if (!author || !(author.role === 'Guest' || String(author.id || '').startsWith('guest_'))) return;
+      const name = String(author.name || 'Guest').replace(/\s*\(Guest\)$/, '');
+      const key = author.email ? String(author.email).toLowerCase() : `${author.id || ''}|${name}`;
+      const entry = byKey.get(key) || { key, name, email: author.email || '', projectIds: new Set<string>(), count: 0, lastMs: 0 };
+      if (projectId) entry.projectIds.add(projectId);
+      entry.count += 1;
+      entry.lastMs = Math.max(entry.lastMs, ms);
+      byKey.set(key, entry);
+    };
+    for (const pin of pins) {
+      if (pin.deletedAt) continue;
+      const projectId = pin.projectId || projects.find((p) => p.assets?.some((a) => a.id === pin.assetId))?.id;
+      for (const c of pin.comments || []) note(c.author, projectId, toMillis(c.createdAt, c.id));
+    }
+    return Array.from(byKey.values())
+      .map((g) => ({ ...g, projects: projects.filter((p) => g.projectIds.has(p.id)) }))
+      .sort((a, b) => b.lastMs - a.lastMs);
+  }, [pins, projects]);
 
   // Archive State
   const [archivedItems, setArchivedItems] = useState<typeof ARCHIVED_PROJECTS>([]);
@@ -457,11 +475,19 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
   };
 
   const handleSaveBranding = () => {
-    if (onUpdateBranding) {
-      onUpdateBranding(customLogoText, customLogoIcon);
-    }
-    setIsSavedBranding(true);
-    setTimeout(() => setIsSavedBranding(false), 2500);
+    setBrandingNote('');
+    saveBranding(draft)
+      .then(() => {
+        setBrandDraft(null);
+        setBrandingNote('Saved. The new name and logo show for everyone.');
+      })
+      .catch(() => setBrandingNote('Could not save. Only workspace Owners and Admins can change branding.'));
+  };
+  const changeGuestPolicy = (change: Partial<GuestPolicy>) => {
+    setPolicyNote('');
+    saveGuestPolicy(change)
+      .then(() => setPolicyNote('Saved.'))
+      .catch(() => setPolicyNote('Could not save. Only workspace Owners and Admins can change this.'));
   };
 
   const copyGuestLinkForProject = (projId: string, e: React.MouseEvent) => {
@@ -481,6 +507,22 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
   const currentFolder = folders.find((f) => f.id === currentFolderId) || null;
   const folderOf = (project: Project) => folders.find((f) => f.id === project.folderId) || null;
   const projectCountIn = (folderId: string) => projects.filter((p) => p.folderId === folderId).length;
+
+  // Dates and counts come from the real data: a project's creation time is in its id (proj_<ms>), its last activity is
+  // its newest pin or comment, and a folder sorts by its most recently active project
+  const createdMs = (project: Project) => Number(project.id.match(/(\d{10,})/)?.[1]) || 0;
+  const pinsOf = (project: Project) =>
+    pins.filter((pin) => pin.projectId === project.id || project.assets.some((a) => a.id === pin.assetId));
+  const activityMs = (project: Project) =>
+    pinsOf(project).reduce(
+      (max, pin) => Math.max(max, toMillis(pin.createdAt, pin.id), ...(pin.comments || []).map((c) => toMillis(c.createdAt, c.id))),
+      createdMs(project)
+    );
+  const isDone = (pin: Pin) => pin.status === 'resolved' || pin.status === 'archived';
+  const folderProjects = (folderId: string) => projects.filter((p) => p.folderId === folderId);
+  const folderActivityMs = (folder: Folder) =>
+    folderProjects(folder.id).reduce((max, p) => Math.max(max, activityMs(p)), Date.parse(folder.createdAt) || 0);
+  const hostOf = (url = '') => url.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '');
   // Searching looks everywhere: folder names (e.g. a partner ID like "PRBS") and projects in any folder
   const visibleFolders = isSearching
     ? folders.filter((f) => f.name.toLowerCase().includes(query))
@@ -515,109 +557,43 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
       })
       .sort((a, b) => {
         if (sortBy === 'name') return a.name.localeCompare(b.name);
-        if (sortBy === 'comments') {
-          const countA = a.assets.reduce((acc, asset) => acc + (asset.pinCount || 0), 0);
-          const countB = b.assets.reduce((acc, asset) => acc + (asset.pinCount || 0), 0);
-          return countB - countA;
-        }
-        if (sortBy === 'oldest') return a.id.localeCompare(b.id);
-        return b.id.localeCompare(a.id);
+        if (sortBy === 'comments') return pinsOf(b).filter((p) => !isDone(p)).length - pinsOf(a).filter((p) => !isDone(p)).length;
+        if (sortBy === 'oldest') return activityMs(a) - activityMs(b);
+        return activityMs(b) - activityMs(a);
       });
-  }, [projects, searchQuery, filterOwner, sortBy, currentUser, folders, currentFolderId]);
+  }, [projects, pins, searchQuery, filterOwner, sortBy, currentUser, folders, currentFolderId]);
+
+  // Folders and projects in one list, in the chosen order (newest activity first by default)
+  const gridOrder = React.useMemo(() => {
+    const items = [
+      ...visibleFolders.map((f) => ({
+        key: `f:${f.id}`,
+        ms: folderActivityMs(f),
+        name: f.name,
+        open: folderProjects(f.id).reduce((n, p) => n + pinsOf(p).filter((pin) => !isDone(pin)).length, 0),
+      })),
+      ...filteredProjects.map((p) => ({ key: `p:${p.id}`, ms: activityMs(p), name: p.name, open: pinsOf(p).filter((pin) => !isDone(pin)).length })),
+    ];
+    items.sort((a, b) =>
+      sortBy === 'name' ? a.name.localeCompare(b.name)
+        : sortBy === 'comments' ? b.open - a.open
+        : sortBy === 'oldest' ? a.ms - b.ms
+        : b.ms - a.ms
+    );
+    return new Map(items.map((item, i) => [item.key, i + 1]));
+  }, [visibleFolders, filteredProjects, pins, sortBy]);
 
   return (
     <div className="flex-1 min-w-0 flex bg-slate-100/70 text-slate-900 overflow-hidden h-[calc(100vh-3.5rem)]">
       
-      {/* LEFT MARKUP.IO STYLE SIDEBAR */}
-      <aside className="w-60 bg-white border-r border-slate-200 flex flex-col justify-between shrink-0 hidden md:flex">
-        
-        <div className="p-4 space-y-4">
-          
-          {/* Navigation Items */}
-          <nav className="space-y-1">
-            <button
-              onClick={() => handleTabClick('dashboard')}
-              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                activeTab === 'dashboard'
-                  ? 'bg-slate-200/90 text-slate-900 shadow-xs'
-                  : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-              }`}
-            >
-              <LayoutGrid className="w-4 h-4 text-slate-700" />
-              <span>Dashboard</span>
-            </button>
-
-            <button
-              onClick={() => handleTabClick('archive')}
-              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                activeTab === 'archive'
-                  ? 'bg-slate-200/90 text-slate-900 shadow-xs'
-                  : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-              }`}
-            >
-              <Archive className="w-4 h-4 text-slate-700" />
-              <span>Archive</span>
-            </button>
-
-            <button
-              onClick={() => handleTabClick('team')}
-              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                activeTab === 'team'
-                  ? 'bg-slate-200/90 text-slate-900 shadow-xs'
-                  : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-              }`}
-            >
-              <Users className="w-4 h-4 text-slate-700" />
-              <span>Team</span>
-            </button>
-
-            <button
-              onClick={() => onViewModeChange('qascore')}
-              className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-bold text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 transition-all cursor-pointer group"
-              title="View QA Score Matrix, Error Weightage Rubric & Project Ratings"
-            >
-              <div className="flex items-center gap-3">
-                <Award className="w-4 h-4 text-indigo-600 group-hover:scale-110 transition-transform" />
-                <span>QA Score Matrix</span>
-              </div>
-              <span className="text-[10px] bg-indigo-100 text-indigo-800 font-extrabold px-1.5 py-0.5 rounded">
-                NEW
-              </span>
-            </button>
-
-            <button
-              onClick={() => handleTabClick('settings')}
-              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                activeTab === 'settings'
-                  ? 'bg-slate-200/90 text-slate-900 shadow-xs'
-                  : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-              }`}
-            >
-              <Settings className="w-4 h-4 text-slate-700" />
-              <span>Settings</span>
-            </button>
-          </nav>
-
-        </div>
-
-        {/* BOTTOM SIDEBAR STATS CARD (real counts, no limits) */}
-        <div className="p-4 border-t border-slate-200 bg-slate-50/50">
-          <div className="bg-white rounded-2xl border border-slate-200 p-3.5 shadow-2xs space-y-2">
-            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-              Workspace
-            </div>
-            <div className="flex justify-between items-center text-xs">
-              <span className="text-slate-600 font-medium">Projects</span>
-              <span className="font-bold text-slate-900">{projects.length}</span>
-            </div>
-            <div className="flex justify-between items-center text-xs">
-              <span className="text-slate-600 font-medium">Open feedback pins</span>
-              <span className="font-bold text-slate-900">{openPinCount}</span>
-            </div>
-          </div>
-        </div>
-
-      </aside>
+      {/* LEFT MENU (shared by every workspace page) */}
+      <AppSidebar
+        active={activeTab}
+        onNavigate={(item) => (item === 'qascore' ? onViewModeChange('qascore') : handleTabClick(item))}
+        showCredits={canEditPermissions}
+        projectCount={projects.length}
+        openPinCount={openPinCount}
+      />
 
       {/* RIGHT MAIN CONTENT AREA */}
       <main className="flex-1 min-w-0 overflow-y-auto">
@@ -783,64 +759,98 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                   </div>
                 )}
 
-                {/* FOLDER CARDS */}
+                {/* FOLDER CARDS (same size as project cards; placed among them by date) */}
                 {visibleFolders.map((folder) => {
                   const count = projectCountIn(folder.id);
+                  const inside = folderProjects(folder.id).sort((a, b) => activityMs(b) - activityMs(a));
+                  const openPins = inside.reduce((n, p) => n + pinsOf(p).filter((pin) => !isDone(pin)).length, 0);
+                  const donePins = inside.reduce((n, p) => n + pinsOf(p).filter(isDone).length, 0);
                   return (
                     <div
                       key={folder.id}
+                      style={{ order: gridOrder.get(`f:${folder.id}`) }}
                       onClick={() => {
                         setSearchQuery('');
                         onOpenFolder?.(folder.id);
                       }}
-                      className="relative cursor-pointer group pt-3"
+                      className="bg-white rounded-2xl border border-slate-200 shadow-2xs hover:shadow-xl transition-all duration-200 overflow-hidden group cursor-pointer flex flex-col justify-between hover:-translate-y-0.5 relative"
                     >
-                      {/* folder tab */}
-                      <div className="absolute top-0 left-0 w-2/5 h-6 bg-slate-200 group-hover:bg-blue-100 rounded-t-xl transition-colors" />
-                      <div className="relative bg-white border border-slate-200 group-hover:border-blue-300 rounded-2xl rounded-tl-none shadow-2xs group-hover:shadow-lg transition-all p-5 min-h-[140px] flex flex-col justify-between">
-                        <div className="flex items-start justify-between gap-2">
-                          <FolderIcon className="w-8 h-8 text-blue-500 shrink-0" />
-                          <div className="relative" onClick={(e) => e.stopPropagation()}>
+                      <div className="absolute top-3 right-3 z-30" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          onClick={() => setActiveFolderMenuId(activeFolderMenuId === folder.id ? null : folder.id)}
+                          className="bg-slate-900/60 hover:bg-slate-900/90 text-white p-1.5 rounded-lg backdrop-blur-md transition-all cursor-pointer shadow-md"
+                          title="Folder options"
+                        >
+                          <MoreHorizontal className="w-4 h-4" />
+                        </button>
+                        {activeFolderMenuId === folder.id && (
+                          <div className="absolute right-0 mt-1 w-40 bg-white border border-slate-200 rounded-xl shadow-xl py-1 z-50 text-xs">
                             <button
-                              onClick={() => setActiveFolderMenuId(activeFolderMenuId === folder.id ? null : folder.id)}
-                              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
-                              title="Folder options"
+                              onClick={() => {
+                                setActiveFolderMenuId(null);
+                                setFolderDialog({ mode: 'rename', folderId: folder.id, value: folder.name });
+                              }}
+                              className="w-full text-left px-3 py-2 text-slate-700 hover:bg-slate-100 font-medium cursor-pointer"
                             >
-                              <MoreHorizontal className="w-4 h-4" />
+                              Rename
                             </button>
-                            {activeFolderMenuId === folder.id && (
-                              <div className="absolute right-0 mt-1 w-40 bg-white border border-slate-200 rounded-xl shadow-xl py-1 z-50 text-xs">
-                                <button
-                                  onClick={() => {
-                                    setActiveFolderMenuId(null);
-                                    setFolderDialog({ mode: 'rename', folderId: folder.id, value: folder.name });
-                                  }}
-                                  className="w-full text-left px-3 py-2 text-slate-700 hover:bg-slate-100 font-medium cursor-pointer"
-                                >
-                                  Rename
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    setActiveFolderMenuId(null);
-                                    if (window.confirm(`Delete the folder "${folder.name}"? Its ${count} ${count === 1 ? 'project' : 'projects'} will move back to All projects (nothing is deleted).`)) {
-                                      onDeleteFolder?.(folder.id);
-                                    }
-                                  }}
-                                  className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 font-medium cursor-pointer"
-                                >
-                                  Delete folder
-                                </button>
-                              </div>
+                            <button
+                              onClick={() => {
+                                setActiveFolderMenuId(null);
+                                if (window.confirm(`Delete the folder "${folder.name}"? Its ${count} ${count === 1 ? 'project' : 'projects'} will move back to All projects (nothing is deleted).`)) {
+                                  onDeleteFolder?.(folder.id);
+                                }
+                              }}
+                              className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 font-medium cursor-pointer"
+                            >
+                              Delete folder
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      {/* Folder preview: the folder and the sites inside it */}
+                      <div className="relative aspect-[16/10] bg-gradient-to-br from-blue-50 via-indigo-50 to-slate-100 border-b border-slate-100 flex flex-col items-center justify-center gap-3 p-4 overflow-hidden">
+                        <FolderIcon className="w-14 h-14 text-blue-500 group-hover:scale-105 transition-transform" strokeWidth={1.5} />
+                        {inside.length > 0 ? (
+                          <div className="flex flex-wrap justify-center gap-1.5 max-w-full">
+                            {inside.slice(0, 3).map((p) => (
+                              <span key={p.id} className="flex items-center gap-1 bg-white/90 border border-slate-200 rounded-full pl-1 pr-2 py-0.5 text-[10px] font-medium text-slate-600 max-w-[140px]">
+                                <img src={`https://www.google.com/s2/favicons?domain=${hostOf(p.assets[0]?.url)}&sz=32`} alt="" className="w-3.5 h-3.5 rounded-sm shrink-0" />
+                                <span className="truncate">{hostOf(p.assets[0]?.url) || p.name}</span>
+                              </span>
+                            ))}
+                            {inside.length > 3 && (
+                              <span className="bg-white/90 border border-slate-200 rounded-full px-2 py-0.5 text-[10px] font-semibold text-slate-500">+{inside.length - 3} more</span>
                             )}
                           </div>
-                        </div>
+                        ) : (
+                          <span className="text-[11px] text-slate-400">Empty folder</span>
+                        )}
+                      </div>
+                      <div className="p-4 space-y-3 flex-1 flex flex-col justify-between">
                         <div>
-                          <h3 className="font-bold text-sm text-slate-900 group-hover:text-blue-600 truncate" title={folder.name}>
+                          <h3 className="font-bold text-sm text-slate-900 group-hover:text-blue-600 transition-colors truncate" title={folder.name}>
                             {folder.name}
                           </h3>
-                          <p className="text-xs text-slate-500 mt-0.5">
+                          <div className="flex items-center gap-1.5 text-xs text-slate-500 mt-0.5">
+                            <Clock className="w-3.5 h-3.5 text-slate-400" />
+                            <span>Updated {timeAgo(folderActivityMs(folder))}</span>
+                          </div>
+                        </div>
+                        <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+                          <div className="flex items-center gap-3 font-semibold text-slate-600">
+                            <span className="flex items-center gap-1 text-slate-500" title="Resolved comments">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-slate-400" />
+                              <span>{donePins}</span>
+                            </span>
+                            <span className="flex items-center gap-1 text-slate-700 font-bold" title="Open comments">
+                              <MessageSquare className="w-3.5 h-3.5 text-slate-400" />
+                              <span>{openPins}</span>
+                            </span>
+                          </div>
+                          <span className="text-[11px] font-semibold text-blue-600">
                             {count} {count === 1 ? 'project' : 'projects'}
-                          </p>
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -848,28 +858,21 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                 })}
 
                 {filteredProjects.map((project) => {
-                  const primaryAsset = project.assets[0] || {
-                    id: 'asset_placeholder',
-                    title: project.name,
-                    type: 'url',
-                    url: 'https://example.com',
-                    thumbnailUrl: 'https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=600&auto=format&fit=crop&q=80',
-                    pinCount: 3,
-                    resolvedCount: 1
-                  };
+                  const primaryAsset = project.assets[0] || { id: '', title: project.name, type: 'url', url: '', thumbnailUrl: undefined };
 
-                  const totalResolved = project.assets.reduce((acc, a) => acc + (a.resolvedCount || 0), 0);
-                  const totalUnresolved = project.assets.reduce((acc, a) => acc + (a.pinCount || 0), 0);
+                  const projectPins = pinsOf(project);
+                  const totalResolved = projectPins.filter(isDone).length;
+                  const totalUnresolved = projectPins.length - totalResolved;
+                  const isNew = Date.now() - createdMs(project) < 24 * 60 * 60 * 1000;
 
-                  const owner = teammates.find(t => t.id === project.ownerId) || {
-                    id: 'usr_nehemiah',
-                    name: 'Nehemiah',
-                    avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80'
-                  };
+                  const owner = teammates.find(
+                    (t) => t.id === project.ownerId || t.id === project.createdBy || t.email === project.createdBy
+                  );
 
                   return (
                     <div
                       key={project.id}
+                      style={{ order: gridOrder.get(`p:${project.id}`) }}
                       onClick={() => {
                         onSelectProject(project);
                         if (project.assets && project.assets.length > 0) {
@@ -881,11 +884,13 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                     >
                       
                       {/* TOP OVERLAY CONTROLS */}
-                      <div className="absolute top-3 left-3 z-20 flex items-center gap-1.5">
-                        <span className="bg-red-600 text-white font-extrabold text-[10px] uppercase tracking-wider px-2 py-0.5 rounded shadow-xs flex items-center gap-1">
-                          New
-                        </span>
-                      </div>
+                      {isNew && (
+                        <div className="absolute top-3 left-3 z-20 flex items-center gap-1.5">
+                          <span className="bg-red-600 text-white font-extrabold text-[10px] uppercase tracking-wider px-2 py-0.5 rounded shadow-xs flex items-center gap-1">
+                            New
+                          </span>
+                        </div>
+                      )}
 
                       <div className="absolute top-3 right-3 z-30">
                         <button
@@ -971,7 +976,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                             )}
 
                             {onDeleteProject && (() => {
-                              const isOwnerOrAdmin = currentUser.role === 'Admin' || currentUser.role === 'Owner' || currentUser.email === 'nehemiahc@yourdigitalagents.com' || currentUser.id === 'usr_nehemiah';
+                              const isOwnerOrAdmin = currentUser.role === 'Admin' || currentUser.role === 'Owner';
                               const isProjectCreator = project.ownerId === currentUser.id || project.ownerId === currentUser.email || project.createdBy === currentUser.email || project.createdBy === currentUser.id;
                               const canDeleteThisProject = isOwnerOrAdmin || isProjectCreator;
 
@@ -1068,7 +1073,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
 
                           <div className="flex items-center gap-1.5 text-xs text-slate-500 mt-0.5">
                             <Clock className="w-3.5 h-3.5 text-slate-400" />
-                            <span>Updated {project.lastUpdated || 'recently'}</span>
+                            <span>Updated {timeAgo(activityMs(project))}</span>
                           </div>
                           {isSearching && folderOf(project) && (
                             <div className="flex items-center gap-1 text-[11px] text-blue-600 mt-1 truncate">
@@ -1091,16 +1096,20 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                             </span>
                           </div>
 
-                          <div className="flex items-center gap-1.5" title={`Created by ${owner.name}`}>
-                            <img
-                              src={owner.avatar}
-                              alt={owner.name}
-                              className="w-5 h-5 rounded-full object-cover border border-slate-200"
-                            />
-                            <span className="text-[11px] font-medium text-slate-500 max-w-[80px] truncate">
-                              {owner.name.split(' ')[0]}
-                            </span>
-                          </div>
+                          {owner && (
+                            <div className="flex items-center gap-1.5" title={`Created by ${owner.name}`}>
+                              {owner.avatar ? (
+                                <img src={owner.avatar} alt={owner.name} className="w-5 h-5 rounded-full object-cover border border-slate-200" />
+                              ) : (
+                                <span className="w-5 h-5 rounded-full bg-indigo-100 text-indigo-700 text-[10px] font-bold flex items-center justify-center">
+                                  {owner.name.charAt(0).toUpperCase()}
+                                </span>
+                              )}
+                              <span className="text-[11px] font-medium text-slate-500 max-w-[80px] truncate">
+                                {owner.name.split(' ')[0]}
+                              </span>
+                            </div>
+                          )}
                         </div>
                       </div>
 
@@ -1589,13 +1598,36 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
               </div>
               
               <button
-                onClick={() => onOpenShareModal()}
+                onClick={() => setShowInvite(true)}
                 className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition-all shadow-2xs flex items-center gap-1.5 cursor-pointer"
               >
                 <Plus className="w-4 h-4" />
-                <span>Invite Teammate / Client</span>
+                <span>Invite Teammate</span>
               </button>
             </div>
+
+            {showInvite && (
+              <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50 p-4" onClick={() => setShowInvite(false)}>
+                <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-center justify-between">
+                    <h2 className="font-extrabold text-base text-slate-900">Invite a teammate</h2>
+                    <button onClick={() => setShowInvite(false)} className="text-slate-400 hover:text-slate-700 p-1 rounded-lg" aria-label="Close">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                  {onInviteTeammate ? (
+                    <InviteForm
+                      canChooseRole={currentUser.role === 'Owner' || currentUser.role === 'Admin'}
+                      allowOwner={currentUser.role === 'Owner'}
+                      onInvite={onInviteTeammate}
+                    />
+                  ) : null}
+                  <p className="text-[11px] text-slate-500 border-t border-slate-100 pt-3">
+                    Clients don't need an account: share a project's guest review link from the <strong>Share</strong> button instead.
+                  </p>
+                </div>
+              </div>
+            )}
 
             {/* Members / Guests / Roles Sub-tabs */}
             <div className="border-b border-slate-200 flex items-center gap-6 text-xs font-bold overflow-x-auto">
@@ -1607,7 +1639,12 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                     : 'text-slate-400 hover:text-slate-700'
                 }`}
               >
-                Workspace Members ({teammates.length})
+                Workspace Members ({teammates.filter((t) => !t.pendingInvite).length})
+                {teammates.some((t) => t.pendingInvite) && (
+                  <span className="ml-1.5 text-[10px] bg-amber-100 text-amber-800 font-bold px-1.5 py-0.5 rounded-full">
+                    {teammates.filter((t) => t.pendingInvite).length} invited
+                  </span>
+                )}
               </button>
               <button
                 onClick={() => setTeamSubTab('guests')}
@@ -1617,7 +1654,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                     : 'text-slate-400 hover:text-slate-700'
                 }`}
               >
-                External Guests & Clients (0)
+                External Guests & Clients ({guestReviewers.length})
               </button>
               <button
                 onClick={() => setTeamSubTab('roles')}
@@ -1634,7 +1671,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
 
             {/* MEMBERS SUB-TAB TABLE WITH ROLE DROPDOWN MANAGEMENT */}
             {teamSubTab === 'members' && (
-              <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-2xs">
+              <div className="bg-white rounded-2xl border border-slate-200 overflow-x-auto shadow-2xs">
                 <table className="w-full text-left text-xs">
                   <thead>
                     <tr className="border-b border-slate-200 text-slate-500 font-bold bg-slate-50/70">
@@ -1647,14 +1684,14 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {teammates.map((tm) => {
-                      const isCurrentUserMasterAdmin = currentUser.email === 'nehemiahc@yourdigitalagents.com' || currentUser.id === 'usr_nehemiah';
-                      const isCurrentUserAdminOrOwner = isCurrentUserMasterAdmin || currentUser.role === 'Admin' || currentUser.role === 'Owner';
+                      // Owners and Admins manage the team; nobody changes their own role; the master admin is fixed
+                      const isCurrentUserAdminOrOwner = currentUser.role === 'Admin' || currentUser.role === 'Owner';
                       const isSelf = tm.id === currentUser.id || tm.email.toLowerCase() === currentUser.email.toLowerCase();
-                      const canEditThisMemberRole = isCurrentUserAdminOrOwner && (!isSelf || isCurrentUserMasterAdmin);
-
-                      const isTeammateCreator = tm.createdBy === currentUser.id || tm.createdBy === currentUser.email;
-                      const isTargetMasterAdmin = tm.email === 'nehemiahc@yourdigitalagents.com' || tm.id === 'usr_nehemiah';
-                      const canRemoveThisTeammate = !isSelf && !isTargetMasterAdmin && (isCurrentUserAdminOrOwner || isTeammateCreator);
+                      const isTargetMasterAdmin = tm.isMasterAdmin === true;
+                      const canEditThisMemberRole = isCurrentUserAdminOrOwner && !isSelf && !isTargetMasterAdmin;
+                      const isTeammateCreator = tm.createdBy === currentUser.email;
+                      // Active members: admins only. Pending invites: admins or whoever sent the invite
+                      const canRemoveThisTeammate = !isSelf && !isTargetMasterAdmin && (isCurrentUserAdminOrOwner || (tm.pendingInvite === true && isTeammateCreator));
 
                       return (
                         <tr key={tm.id} className="hover:bg-slate-50/50 transition-colors">
@@ -1675,11 +1712,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                                   You
                                 </span>
                               )}
-                              {tm.lastActive === 'Invitation pending' && (
-                                <span className="ml-2 text-[10px] bg-amber-100 text-amber-700 font-bold px-2 py-0.5 rounded-full">
-                                  Invitation pending
-                                </span>
-                              )}
+
                             </div>
                           </td>
                           <td className="py-3.5 px-5 text-slate-600 font-mono text-[11px]">
@@ -1687,9 +1720,9 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                           </td>
                           <td className="py-3.5 px-5">
                             {/* PROTECTED MASTER ADMIN BADGE VS ROLE DROPDOWN VS LOCKED BADGE FOR MEMBERS */}
-                            {tm.email === 'nehemiahc@yourdigitalagents.com' || tm.id === 'usr_nehemiah' ? (
+                            {isTargetMasterAdmin ? (
                               <span className="inline-flex items-center gap-1.5 bg-amber-100 text-amber-900 border border-amber-300/80 px-3 py-1.5 rounded-lg text-xs font-black shadow-2xs">
-                                <span>👑 Master Admin (Primary Owner)</span>
+                                <span>👑 Master Admin</span>
                               </span>
                             ) : canEditThisMemberRole ? (
                               <select
@@ -1701,17 +1734,17 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                                 }}
                                 className="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-800 focus:outline-none focus:border-blue-600 cursor-pointer"
                               >
-                                <option value="Member">Member (Editor & Annotator)</option>
-                                <option value="Admin">Admin (User Management)</option>
-                                <option value="Owner">Owner (Full Admin Access)</option>
-                                <option value="Guest">Guest (Comment-Only)</option>
+                                <option value="Member">Member</option>
+                                <option value="Admin">Admin</option>
+                                {(currentUser.role === 'Owner' || tm.role === 'Owner') && <option value="Owner">Owner</option>}
+                                {!['Member', 'Admin', 'Owner'].includes(tm.role) && <option value={tm.role}>{tm.role}</option>}
                               </select>
                             ) : (
                               <span 
                                 className="inline-flex items-center gap-1.5 bg-slate-100 text-slate-800 border border-slate-200/80 px-3 py-1.5 rounded-lg text-xs font-bold cursor-not-allowed"
                                 title={isSelf ? "Members cannot change their own role." : "Only Admins can change member roles."}
                               >
-                                <span>{tm.role === 'Member' ? 'Member (Editor & Annotator)' : tm.role}</span>
+                                <span>{tm.role}</span>
                                 <Lock className="w-3 h-3 text-slate-400" />
                               </span>
                             )}
@@ -1730,14 +1763,31 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                             )}
                           </td>
                           <td className="py-3.5 px-5 text-right font-medium">
-                            {!isSelf && !isTargetMasterAdmin && (
+                            <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                            {tm.pendingInvite && (
                               <button
                                 onClick={() => {
-                                  if (!canRemoveThisTeammate) {
-                                    alert("Permission Denied: Members can only remove teammates they invited or created.");
-                                    return;
-                                  }
-                                  if (window.confirm(`Are you sure you want to remove ${tm.name} from the workspace?`)) {
+                                  copyText(inviteLink(tm.email)).then((ok) => {
+                                    if (ok) {
+                                      setCopiedInvite(tm.id);
+                                      setTimeout(() => setCopiedInvite(null), 2000);
+                                    }
+                                  });
+                                }}
+                                className="p-1.5 rounded-lg border bg-white border-slate-200 text-slate-600 hover:text-blue-600 hover:bg-blue-50 hover:border-blue-200 inline-flex items-center gap-1 text-xs font-semibold cursor-pointer"
+                                title="Copy a sign-up link with their email filled in"
+                              >
+                                {copiedInvite === tm.id ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <LinkIcon className="w-3.5 h-3.5" />}
+                                <span>{copiedInvite === tm.id ? 'Copied' : 'Copy link'}</span>
+                              </button>
+                            )}
+                            {!isSelf && !isTargetMasterAdmin && canRemoveThisTeammate && (
+                              <button
+                                onClick={() => {
+                                  const question = tm.pendingInvite
+                                    ? `Cancel the invitation for ${tm.email}?`
+                                    : `Remove ${tm.name} from the workspace? They can no longer sign in.`;
+                                  if (window.confirm(question)) {
                                     if (onDeleteTeammate) {
                                       onDeleteTeammate(tm.id);
                                     }
@@ -1755,10 +1805,10 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                                 }
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
-                                <span>Remove</span>
-                                {!canRemoveThisTeammate && <Lock className="w-3 h-3 text-slate-400" />}
+                                <span>{tm.pendingInvite ? 'Cancel' : 'Remove'}</span>
                               </button>
                             )}
+                            </div>
                           </td>
                         </tr>
                       );
@@ -1786,17 +1836,47 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                     <thead>
                       <tr className="border-b border-slate-200 text-slate-500 font-bold bg-slate-50/70">
                         <th className="py-3.5 px-5">Guest Name / Email</th>
-                        <th className="py-3.5 px-5">Shared Markup Project</th>
-                        <th className="py-3.5 px-5">Share Link</th>
+                        <th className="py-3.5 px-5">Projects Reviewed</th>
+                        <th className="py-3.5 px-5">Activity</th>
                         <th className="py-3.5 px-5 text-right">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      <tr>
-                        <td colSpan={5} className="py-10 px-5 text-center text-xs text-slate-400">
-                          No external guests yet. Guests appear here once they review a project through a Guest Share Link.
-                        </td>
-                      </tr>
+                      {guestReviewers.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="py-10 px-5 text-center text-xs text-slate-400">
+                            No external guests yet. Guests appear here once they leave a pin or comment through a guest review link.
+                          </td>
+                        </tr>
+                      ) : (
+                        guestReviewers.map((g) => (
+                          <tr key={g.key} className="hover:bg-slate-50/50">
+                            <td className="py-3.5 px-5">
+                              <div className="font-bold text-slate-900">{g.name}</div>
+                              {g.email && <div className="text-[11px] text-slate-500 font-mono">{g.email}</div>}
+                            </td>
+                            <td className="py-3.5 px-5 text-slate-700">
+                              {g.projects.map((p) => (
+                                <div key={p.id} className="truncate max-w-[260px]">{(p.assets?.[0]?.url || p.name).replace(/^https?:\/\//, '').replace(/\/$/, '')}</div>
+                              ))}
+                            </td>
+                            <td className="py-3.5 px-5 text-slate-500">
+                              {g.count} {g.count === 1 ? 'comment' : 'comments'} · last {timeAgo(g.lastMs)}
+                            </td>
+                            <td className="py-3.5 px-5 text-right">
+                              {g.projects[0] && (
+                                <button
+                                  onClick={(e) => copyGuestLinkForProject(g.projects[0].id, e)}
+                                  className="p-1.5 rounded-lg border bg-white border-slate-200 text-slate-600 hover:text-blue-600 hover:bg-blue-50 inline-flex items-center gap-1 text-xs font-semibold cursor-pointer"
+                                >
+                                  {copiedCardId === g.projects[0].id ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <LinkIcon className="w-3.5 h-3.5" />}
+                                  <span>{copiedCardId === g.projects[0].id ? 'Copied' : 'Copy guest link'}</span>
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -1862,6 +1942,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                               type="checkbox"
                               checked={rolePermissions.membersCanViewAllQAScores}
                               onChange={() => handleTogglePermission('membersCanViewAllQAScores')}
+                              disabled={!canEditPermissions}
                               className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer accent-indigo-600"
                             />
                             <span className="text-[11px] font-bold text-slate-700">
@@ -1897,6 +1978,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                               type="checkbox"
                               checked={rolePermissions.membersCanManageRubric}
                               onChange={() => handleTogglePermission('membersCanManageRubric')}
+                              disabled={!canEditPermissions}
                               className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer accent-indigo-600"
                             />
                             <span className="text-[11px] font-bold text-slate-700">
@@ -1932,6 +2014,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                               type="checkbox"
                               checked={rolePermissions.membersCanInvite}
                               onChange={() => handleTogglePermission('membersCanInvite')}
+                              disabled={!canEditPermissions}
                               className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer accent-indigo-600"
                             />
                             <span className="text-[11px] font-bold text-slate-700">
@@ -1995,6 +2078,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                               type="checkbox"
                               checked={rolePermissions.membersCanDeleteProjects}
                               onChange={() => handleTogglePermission('membersCanDeleteProjects')}
+                              disabled={!canEditPermissions}
                               className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer accent-indigo-600"
                             />
                             <span className="text-[11px] font-bold text-slate-700">
@@ -2030,10 +2114,83 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                               type="checkbox"
                               checked={rolePermissions.membersCanArchiveProjects}
                               onChange={() => handleTogglePermission('membersCanArchiveProjects')}
+                              disabled={!canEditPermissions}
                               className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer accent-indigo-600"
                             />
                             <span className="text-[11px] font-bold text-slate-700">
                               {rolePermissions.membersCanArchiveProjects ? 'Allowed' : 'Restricted'}
+                            </span>
+                          </label>
+                        </td>
+                        <td className="py-4 px-4 text-center text-slate-400 font-mono text-[11px]">
+                          —
+                        </td>
+                      </tr>
+
+                      {/* Ask AI for WordPress Fixes */}
+                      <tr className="hover:bg-slate-50/50 transition-colors">
+                        <td className="py-4 px-6">
+                          <div className="font-bold text-slate-900 flex items-center gap-2">
+                            <Sparkles className="w-4 h-4 text-indigo-600 shrink-0" />
+                            <span>Ask AI for WordPress Fixes</span>
+                          </div>
+                          <p className="text-[11px] text-slate-500 mt-0.5">
+                            Use Fix with AI on pins of projects connected to WordPress. Gemini prepares a change; nothing goes live until someone allowed to apply it approves.
+                          </p>
+                        </td>
+                        <td className="py-4 px-4 text-center">
+                          <Check className="w-5 h-5 mx-auto text-emerald-600" />
+                        </td>
+                        <td className="py-4 px-4 text-center">
+                          <Check className="w-5 h-5 mx-auto text-emerald-600" />
+                        </td>
+                        <td className="py-4 px-4 text-center bg-indigo-50/20 border-x border-indigo-100">
+                          <label className="inline-flex items-center gap-2 cursor-pointer p-1">
+                            <input
+                              type="checkbox"
+                              checked={rolePermissions.membersCanUseAiFix}
+                              onChange={() => handleTogglePermission('membersCanUseAiFix')}
+                              disabled={!canEditPermissions}
+                              className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer accent-indigo-600"
+                            />
+                            <span className="text-[11px] font-bold text-slate-700">
+                              {rolePermissions.membersCanUseAiFix ? 'Enabled' : 'Disabled'}
+                            </span>
+                          </label>
+                        </td>
+                        <td className="py-4 px-4 text-center text-slate-400 font-mono text-[11px]">
+                          —
+                        </td>
+                      </tr>
+
+                      {/* Approve, Apply & Undo AI Fixes */}
+                      <tr className="hover:bg-slate-50/50 transition-colors">
+                        <td className="py-4 px-6">
+                          <div className="font-bold text-slate-900 flex items-center gap-2">
+                            <Zap className="w-4 h-4 text-amber-600 shrink-0" />
+                            <span>Approve, Apply & Undo AI Fixes</span>
+                          </div>
+                          <p className="text-[11px] text-slate-500 mt-0.5">
+                            Make AI fixes live on the WordPress site and undo them. Every change is backed up first and recorded in the audit log.
+                          </p>
+                        </td>
+                        <td className="py-4 px-4 text-center">
+                          <Check className="w-5 h-5 mx-auto text-emerald-600" />
+                        </td>
+                        <td className="py-4 px-4 text-center">
+                          <Check className="w-5 h-5 mx-auto text-emerald-600" />
+                        </td>
+                        <td className="py-4 px-4 text-center bg-indigo-50/20 border-x border-indigo-100">
+                          <label className="inline-flex items-center gap-2 cursor-pointer p-1">
+                            <input
+                              type="checkbox"
+                              checked={rolePermissions.membersCanApplyAiFix}
+                              onChange={() => handleTogglePermission('membersCanApplyAiFix')}
+                              disabled={!canEditPermissions}
+                              className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer accent-indigo-600"
+                            />
+                            <span className="text-[11px] font-bold text-slate-700">
+                              {rolePermissions.membersCanApplyAiFix ? 'Allowed' : 'Restricted'}
                             </span>
                           </label>
                         </td>
@@ -2053,6 +2210,16 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
         )}
 
         {/* TAB 4: SETTINGS PAGE */}
+        {activeTab === 'credits' && (
+          <div className="flex-1 overflow-y-auto">
+            {canEditPermissions ? (
+              <AiCreditsView projects={projects} canEdit={canEditPermissions} />
+            ) : (
+              <div className="p-8 text-sm text-slate-500">AI Credits is visible to workspace Owners and Admins.</div>
+            )}
+          </div>
+        )}
+
         {activeTab === 'settings' && (
           <div className="px-8 py-6 space-y-6 max-w-4xl">
             
@@ -2096,185 +2263,130 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
             {settingsSubTab === 'details' && (
               <div className="space-y-6">
                 
-                {/* MASTER ADMIN PERMISSION LOCK NOTICE BOX */}
-                <div className="bg-slate-900 text-white rounded-2xl p-5 shadow-lg space-y-2 border border-slate-800">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 font-extrabold text-sm text-blue-400">
-                      <ShieldAlert className="w-4 h-4" />
-                      <span>🔒 Master Admin Access Privilege</span>
-                    </div>
-                    <span className="bg-blue-600/30 text-blue-300 font-mono text-[10px] px-2.5 py-0.5 rounded-full border border-blue-500/30 font-bold">
-                      Master Admin: Nehemiah C.
-                    </span>
+                {!canEditDomainAccess && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-center gap-3 text-amber-900 text-xs font-medium">
+                    <Lock className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>You're signed in as <strong>{currentUser.role || 'Member'}</strong>. Only workspace Owners and Admins can change these settings.</span>
                   </div>
-                  <p className="text-xs text-slate-300 leading-snug">
-                    Only Master Admin accounts (<strong>nehemiahc@yourdigitalagents.com</strong>) have authorization to update global branding, logo icon text, and workspace access policies.
-                  </p>
-                </div>
+                )}
 
-                {/* BRANDING & LOGO CUSTOMIZATION PANEL */}
+                {/* BRANDING (saved for the whole workspace) */}
                 <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-6 shadow-2xs">
                   <div className="border-b border-slate-100 pb-3">
                     <h2 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
                       <Palette className="w-4 h-4 text-blue-600" />
-                      <span>Application Branding & Logo Customization</span>
+                      <span>Application Branding & Logo</span>
                     </h2>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      Update the application title and emblem shown in the top navigation header and client share links.
+                      The name and logo shown in the header, on the sign-in page, on guest review links and in the browser tab.
                     </p>
                   </div>
 
-                  {/* Logo Text Input */}
                   <div className="grid grid-cols-1 md:grid-cols-3 items-center gap-4">
-                    <label className="text-xs font-extrabold text-slate-700 uppercase tracking-wider">
+                    <label htmlFor="brand-name" className="text-xs font-extrabold text-slate-700 uppercase tracking-wider">
                       Logo Text / App Title
                     </label>
                     <div className="md:col-span-2">
                       <input
+                        id="brand-name"
                         type="text"
-                        value={customLogoText}
-                        onChange={(e) => setCustomLogoText(e.target.value)}
+                        maxLength={40}
+                        value={draft.appName}
+                        onChange={(e) => setBrandDraft({ ...draft, appName: e.target.value })}
                         placeholder="e.g. WebReview Pro"
-                        disabled={!isMasterAdmin}
-                        className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-2.5 text-xs text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white transition-all font-bold disabled:opacity-60 disabled:cursor-not-allowed"
+                        disabled={!canEditDomainAccess}
+                        className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-2.5 text-xs text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white disabled:opacity-60 disabled:cursor-not-allowed"
                       />
                     </div>
                   </div>
 
-                  {/* Logo Icon / Emblem Selector */}
                   <div className="grid grid-cols-1 md:grid-cols-3 items-center gap-4">
-                    <label className="text-xs font-extrabold text-slate-700 uppercase tracking-wider">
-                      Logo Emblem Icon
-                    </label>
-                    <div className="md:col-span-2 flex items-center gap-2">
-                      {['W', '🌐', '⚡', '💎', '🛡️', '🎨', '🚀'].map((emblem) => (
+                    <span className="text-xs font-extrabold text-slate-700 uppercase tracking-wider">Logo Emblem</span>
+                    <div className="md:col-span-2 flex items-center gap-2 flex-wrap">
+                      {['auto', '🌐', '⚡', '💎', '🛡️', '🎨', '🚀'].map((emblem) => (
                         <button
                           key={emblem}
                           type="button"
-                          onClick={() => setCustomLogoIcon(emblem)}
-                          disabled={!isMasterAdmin}
-                          className={`w-10 h-10 rounded-xl font-black text-sm flex items-center justify-center transition-all cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed ${
-                            customLogoIcon === emblem
+                          onClick={() => setBrandDraft({ ...draft, appIcon: emblem })}
+                          disabled={!canEditDomainAccess}
+                          title={emblem === 'auto' ? 'Initials of the app title' : undefined}
+                          className={`h-10 min-w-10 px-2 rounded-xl font-black text-sm flex items-center justify-center transition-all cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed ${
+                            draft.appIcon === emblem
                               ? 'bg-blue-600 text-white shadow-md ring-2 ring-blue-600 ring-offset-2'
                               : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                           }`}
                         >
-                          {emblem}
+                          {emblem === 'auto' ? brandInitials(draft.appName || 'W') : emblem}
                         </button>
                       ))}
+                      <span className="text-[11px] text-slate-400">The first option uses the initials of the title.</span>
                     </div>
                   </div>
 
-                  {/* Header Preview & Save */}
                   <div className="pt-4 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-4">
                     <div className="flex items-center gap-3">
-                      <span className="text-xs font-bold text-slate-500">Live Header Preview:</span>
+                      <span className="text-xs font-bold text-slate-500">Preview:</span>
                       <div className="flex items-center gap-2 font-bold text-sm bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200">
-                        <div className="w-6 h-6 rounded bg-blue-600 text-white font-black text-xs flex items-center justify-center">
-                          {customLogoIcon}
-                        </div>
-                        <span className="font-extrabold text-slate-900">{customLogoText}</span>
+                        <AppLogo branding={{ appName: draft.appName || 'W', appIcon: draft.appIcon }} className="w-7 h-7 text-xs" />
+                        <span className="font-extrabold text-slate-900">{draft.appName || 'Untitled'}</span>
                       </div>
                     </div>
-
-                    <button
-                      onClick={handleSaveBranding}
-                      disabled={!isMasterAdmin}
-                      className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-6 py-2.5 rounded-xl transition-all shadow-md shrink-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {isSavedBranding ? '✅ Branding Saved!' : 'Save Branding Changes'}
-                    </button>
+                    {canEditDomainAccess && (
+                      <div className="flex items-center gap-3">
+                        {brandingNote && <span className="text-[11px] text-slate-500">{brandingNote}</span>}
+                        <button
+                          onClick={handleSaveBranding}
+                          disabled={!brandDraft || !draft.appName.trim()}
+                          className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-6 py-2.5 rounded-xl transition-all shadow-md shrink-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          Save Branding
+                        </button>
+                      </div>
+                    )}
                   </div>
-
                 </div>
 
-                {/* GUEST ACCESS & SECURITY SETTINGS PANEL */}
+                {/* GUEST REVIEW POLICY (saved and enforced) */}
                 <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-5 shadow-2xs">
-                  <div className="border-b border-slate-100 pb-3">
-                    <h2 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
-                      <Lock className="w-4 h-4 text-emerald-600" />
-                      <span>Client Guest Review & Security Policy</span>
-                    </h2>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      Control how external clients interact with shared markups.
-                    </p>
+                  <div className="border-b border-slate-100 pb-3 flex items-start justify-between gap-3">
+                    <div>
+                      <h2 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
+                        <Lock className="w-4 h-4 text-emerald-600" />
+                        <span>Client Guest Review</span>
+                      </h2>
+                      <p className="text-xs text-slate-500 mt-0.5">How external clients use shared review links. Changes save right away.</p>
+                    </div>
+                    {policyNote && <span className="text-[11px] text-slate-500 shrink-0">{policyNote}</span>}
                   </div>
-
                   <div className="space-y-3 text-xs">
-                    <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-200 cursor-pointer hover:bg-slate-100/80 transition-colors">
+                    <label className="flex items-center justify-between gap-4 p-3 bg-slate-50 rounded-xl border border-slate-200 cursor-pointer hover:bg-slate-100/80 transition-colors">
                       <div>
-                        <span className="font-bold text-slate-900 block">Allow Guest Commenting Without Workspace Login</span>
-                        <span className="text-slate-500 text-[11px]">External clients can view and leave feedback pins directly via Guest Share Links.</span>
+                        <span className="font-bold text-slate-900 block">Allow guest review links without an account</span>
+                        <span className="text-slate-500 text-[11px]">Clients can open a project's share link, drop pins and comment without signing in. When off, share links stop working for guests.</span>
                       </div>
                       <input
                         type="checkbox"
-                        checked={allowGuestNoLogin}
-                        onChange={(e) => setAllowGuestNoLogin(e.target.checked)}
+                        checked={guestPolicy.guestLinksEnabled}
+                        onChange={(e) => changeGuestPolicy({ guestLinksEnabled: e.target.checked })}
                         disabled={!canEditDomainAccess}
-                        className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed"
+                        className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed shrink-0"
                       />
                     </label>
-
-                    <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-200 cursor-pointer hover:bg-slate-100/80 transition-colors">
+                    <label className="flex items-center justify-between gap-4 p-3 bg-slate-50 rounded-xl border border-slate-200 cursor-pointer hover:bg-slate-100/80 transition-colors">
                       <div>
-                        <span className="font-bold text-slate-900 block">Prompt Guest for Display Name</span>
-                        <span className="text-slate-500 text-[11px]">Ask guest reviewers for their name/organization when posting their first comment.</span>
+                        <span className="font-bold text-slate-900 block">Ask guests for their name</span>
+                        <span className="text-slate-500 text-[11px]">Guests enter their name (and optionally email) before their first pin or comment. When off, they appear as "Guest Reviewer".</span>
                       </div>
                       <input
                         type="checkbox"
-                        checked={requireGuestName}
-                        onChange={(e) => setRequireGuestName(e.target.checked)}
+                        checked={guestPolicy.askGuestName}
+                        onChange={(e) => changeGuestPolicy({ askGuestName: e.target.checked })}
                         disabled={!canEditDomainAccess}
-                        className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed"
-                      />
-                    </label>
-
-                    <label className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-200 cursor-pointer hover:bg-slate-100/80 transition-colors">
-                      <div>
-                        <span className="font-bold text-slate-900 block">Instant Email Notifications on Guest Feedback</span>
-                        <span className="text-slate-500 text-[11px]">Notify project owners instantly whenever an external guest leaves a comment.</span>
-                      </div>
-                      <input
-                        type="checkbox"
-                        checked={notifyOnGuestFeedback}
-                        onChange={(e) => setNotifyOnGuestFeedback(e.target.checked)}
-                        disabled={!canEditDomainAccess}
-                        className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed"
+                        className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed shrink-0"
                       />
                     </label>
                   </div>
                 </div>
-
-                {/* NOTIFICATIONS & INTEGRATIONS PANEL */}
-                <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4 shadow-2xs">
-                  <div className="border-b border-slate-100 pb-3">
-                    <h2 className="font-extrabold text-sm text-slate-900 flex items-center gap-2">
-                      <Bell className="w-4 h-4 text-amber-600" />
-                      <span>Notification Digests & Integrations</span>
-                    </h2>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-                    <div>
-                      <label className="font-bold text-slate-700 block mb-1">Email Digest Frequency</label>
-                      <select className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-800">
-                        <option value="instant">Instant Real-Time Alerts</option>
-                        <option value="hourly">Hourly Summary Digest</option>
-                        <option value="daily">Daily Morning Digest</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="font-bold text-slate-700 block mb-1">Slack Webhook Channel URL</label>
-                      <input
-                        type="text"
-                        placeholder="https://hooks.slack.com/services/..."
-                        className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-800 font-mono"
-                      />
-                    </div>
-                  </div>
-                </div>
-
               </div>
             )}
 
@@ -2287,7 +2399,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                   <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-center gap-3 text-amber-900 text-xs font-medium">
                     <Lock className="w-4 h-4 text-amber-600 shrink-0" />
                     <div>
-                      <strong className="font-bold">Read-Only View Mode:</strong> You are currently logged in as <strong>{currentUser.role || 'Member'}</strong>. Only Master Admin (Nehemiah C.) and Workspace Admins can edit authorized domain policies.
+                      <strong className="font-bold">Read-Only View Mode:</strong> You are signed in as <strong>{currentUser.role || 'Member'}</strong>. Only workspace Owners and Admins can change authorized domains.
                     </div>
                   </div>
                 ) : (
@@ -2404,9 +2516,9 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                               <div className="flex items-center gap-2.5">
                                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
                                 <span className="font-mono font-bold text-slate-900">@{dom}</span>
-                                {dom === 'yourdigitalagents.com' && (
+                                {masterAdminDomains().includes(dom) && (
                                   <span className="bg-amber-100 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded-full border border-amber-300">
-                                    Primary Master Admin Domain
+                                    Master admin domain
                                   </span>
                                 )}
                               </div>
@@ -2443,7 +2555,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                       <span>Security & Guest Policy Behavior</span>
                     </div>
                     <p className="leading-relaxed text-[11px]">
-                      Users attempting to log in with email addresses outside authorized domains will default to <strong>Guest (Comment-Only)</strong> access mode unless individually promoted by a Workspace Admin in the <strong>Team Management</strong> tab.
+                      People with an email outside these domains can't create an account or sign in unless a workspace admin invites them from the <strong>Team</strong> page. Clients don't need an account: they use guest review links (see Workspace Details).
                     </p>
                   </div>
 

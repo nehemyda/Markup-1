@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
@@ -11,6 +11,8 @@ import {
 import { auth } from '../lib/firebase';
 import { checkWorkspaceAccess, accessDeniedMessage } from '../lib/userProfile';
 import { useAllowedDomains } from '../utils/domains';
+import { useBranding } from '../lib/workspaceSettings';
+import { AppLogo } from './AppLogo';
 import { 
   Lock, 
   Mail, 
@@ -46,7 +48,16 @@ function describeAuthError(err: any): string {
 }
 
 export const AuthPage: React.FC<{ notice?: string | null }> = ({ notice }) => {
-  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
+  // Invite links (/?invite=<email>) open Create Account with the invited email filled in
+  const invitedEmail = (() => {
+    try {
+      const value = new URLSearchParams(window.location.search).get('invite') || '';
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) ? value.trim().toLowerCase() : '';
+    } catch (e) {
+      return '';
+    }
+  })();
+  const [authMode, setAuthMode] = useState<'signin' | 'signup'>(invitedEmail ? 'signup' : 'signin');
   const [name, setName] = useState('');
   // Email = name + a domain from the workspace's allowed list, or a full address typed in for "Other"
   const [emailName, setEmailName] = useState('');
@@ -57,12 +68,13 @@ export const AuthPage: React.FC<{ notice?: string | null }> = ({ notice }) => {
       return '';
     }
   });
-  const [otherEmail, setOtherEmail] = useState('');
+  const [otherEmail, setOtherEmail] = useState(invitedEmail);
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(notice || null);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
   const allowedDomains = useAllowedDomains();
+  const branding = useBranding();
   const OTHER = '__other';
   // No list yet, or a remembered domain that is no longer allowed: use the first one
   const domainChoice = !allowedDomains.length
@@ -80,6 +92,21 @@ export const AuthPage: React.FC<{ notice?: string | null }> = ({ notice }) => {
   };
 
   // Pasting a whole address into the name box picks its domain (or switches to Other)
+  // Put the invited email in place once the allowed domains are known (name + domain, or "Other")
+  const appliedInvite = useRef(false);
+  useEffect(() => {
+    if (!invitedEmail || appliedInvite.current) return;
+    const [local, domain] = invitedEmail.split('@');
+    if (allowedDomains.includes(domain)) {
+      setEmailName(local);
+      setEmailDomain(domain);
+    } else {
+      setOtherEmail(invitedEmail);
+      setEmailDomain(OTHER);
+    }
+    appliedInvite.current = true;
+  }, [allowedDomains]);
+
   const changeEmailName = (value: string) => {
     const at = value.indexOf('@');
     if (at === -1) return setEmailName(value);
@@ -173,12 +200,10 @@ export const AuthPage: React.FC<{ notice?: string | null }> = ({ notice }) => {
       {/* Top Header */}
       <header className="w-full max-w-7xl mx-auto px-6 py-6 flex items-center justify-between z-10">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-indigo-500 flex items-center justify-center text-white font-extrabold text-xl shadow-lg shadow-indigo-500/30 border border-indigo-400/30">
-            W
-          </div>
+          <AppLogo branding={branding} className="w-10 h-10 rounded-xl text-lg bg-gradient-to-tr from-indigo-600 to-indigo-500 shadow-lg shadow-indigo-500/30 border border-indigo-400/30" />
           <div>
             <span className="font-extrabold text-xl tracking-tight bg-gradient-to-r from-white via-slate-100 to-slate-400 bg-clip-text text-transparent">
-              WebReview Pro
+              {branding.appName}
             </span>
           </div>
         </div>
@@ -229,6 +254,11 @@ export const AuthPage: React.FC<{ notice?: string | null }> = ({ notice }) => {
           <div className="p-6 sm:p-8 space-y-6">
             
             {/* Error Message Display */}
+            {invitedEmail && authMode === 'signup' && (
+              <div className="bg-indigo-500/10 border border-indigo-400/30 text-indigo-200 rounded-xl px-3 py-2 text-xs">
+                You've been invited to <strong className="text-white">{branding.appName}</strong>. Create your account with <strong className="text-white">{invitedEmail}</strong>, or continue with Google using that address.
+              </div>
+            )}
             {errorMsg && (
               <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-lg text-rose-300 text-xs font-medium flex items-center gap-2 animate-shake">
                 <span className="w-1.5 h-1.5 rounded-full bg-rose-400 shrink-0" />

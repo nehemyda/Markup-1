@@ -33,3 +33,16 @@ export function describeClient(): { browser: string; os: string } {
 
 // Width each device view renders the page at (the canvas scales it to fit the screen)
 export const DEVICE_WIDTHS: Record<PinDevice, number> = { desktop: 1440, tablet: 768, mobile: 375 };
+
+// Pin colour by category: the same on the page markers and in the comments sidebar
+export const PIN_CATEGORY_COLORS: Record<string, { bg: string; border: string; shadow: string }> = {
+  bug: { bg: 'bg-rose-500', border: 'border-rose-600', shadow: 'shadow-rose-500/30' },
+  design: { bg: 'bg-purple-500', border: 'border-purple-600', shadow: 'shadow-purple-500/30' },
+  content: { bg: 'bg-blue-500', border: 'border-blue-600', shadow: 'shadow-blue-500/30' },
+  question: { bg: 'bg-amber-500', border: 'border-amber-600', shadow: 'shadow-amber-500/30' },
+  approved: { bg: 'bg-emerald-500', border: 'border-emerald-600', shadow: 'shadow-emerald-500/30' },
+};
+
+export function pinColor(category: string) {
+  return PIN_CATEGORY_COLORS[category] || PIN_CATEGORY_COLORS.design;
+}

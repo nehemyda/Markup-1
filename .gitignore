@@ -8,3 +8,6 @@ coverage/
 !.env.example
 emulator-data*/
 *-debug.log
+
+# Files attached to pins (local storage)
+uploads/

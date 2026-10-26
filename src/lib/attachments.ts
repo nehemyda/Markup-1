@@ -1,9 +1,8 @@
 import { Attachment } from '../types';
 
-// Pins are stored as single Firestore documents (1 MB limit in real Firebase), and files are embedded in them as
-// data URLs. So images are downscaled and saved as JPEG, and other files are capped. Large files would need
-// proper file storage (e.g. Firebase Storage).
-export const MAX_FILE_BYTES = 700 * 1024;
+// Files are uploaded to the server when the pin is saved (pins keep links, see firebaseSync). Images are still
+// downscaled and saved as JPEG to keep pages fast; other files are capped at the server's upload limit.
+export const MAX_FILE_BYTES = 15 * 1024 * 1024;
 const MAX_IMAGE_WIDTH = 1600;
 
 function readAsDataUrl(file: Blob): Promise<string> {
@@ -77,5 +76,5 @@ export async function filesToAttachments(files: File[]): Promise<{ attachments: 
 }
 
 export function rejectedFilesMessage(rejected: string[]): string {
-  return `These files are too large to attach (limit ${Math.round(MAX_FILE_BYTES / 1024)} KB, images are compressed automatically):\n${rejected.join('\n')}`;
+  return `These files are too large to attach (limit ${Math.round(MAX_FILE_BYTES / (1024 * 1024))} MB, images are compressed automatically):\n${rejected.join('\n')}`;
 }

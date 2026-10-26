@@ -1,4 +1,6 @@
 import React, { useState, useMemo } from 'react';
+import { AppSidebar, countOpenPins } from './AppSidebar';
+import { useRolePermissions } from '../lib/permissions';
 import { 
   Project, 
   Pin, 
@@ -43,7 +45,7 @@ interface QAScoreManagerProps {
   currentUser: Teammate;
   onSelectProject?: (project: Project) => void;
   onViewModeChange?: (mode: ViewMode) => void;
-  onNavigateTab?: (tab: 'dashboard' | 'archive' | 'team' | 'settings') => void;
+  onNavigateTab?: (tab: 'dashboard' | 'archive' | 'team' | 'credits' | 'settings') => void;
 }
 
 export const QAScoreManager: React.FC<QAScoreManagerProps> = ({
@@ -258,22 +260,10 @@ export const QAScoreManager: React.FC<QAScoreManagerProps> = ({
   }, [memberQAStatsList]);
 
   // Check if current user can view all member scores or only their own
-  const isMasterAdmin = currentUser.email === 'nehemiahc@yourdigitalagents.com' || currentUser.role === 'Owner' || currentUser.role === 'Admin';
+  const isMasterAdmin = currentUser.role === 'Owner' || currentUser.role === 'Admin';
 
-  const [rolePermissions] = useState(() => {
-    try {
-      const saved = localStorage.getItem('webreview_role_permissions_v1');
-      if (saved) return JSON.parse(saved);
-    } catch (e) {}
-    return {
-      membersCanViewAllQAScores: false,
-      membersCanManageRubric: false,
-      membersCanInvite: true,
-      membersCanManageRoles: false,
-      membersCanDeleteProjects: false,
-      membersCanArchiveProjects: true
-    };
-  });
+  // Shared workspace permission matrix (Team → Roles & Permissions)
+  const rolePermissions = useRolePermissions();
 
   const canViewAllQAScores = isMasterAdmin || rolePermissions.membersCanViewAllQAScores;
 
@@ -381,80 +371,14 @@ ${projStats.clientEditPins.map(p => `- Pin #${p.number}: ${p.title} (${p.qaError
   return (
     <div className="flex-1 min-w-0 flex bg-slate-100/70 text-slate-900 overflow-hidden h-[calc(100vh-3.5rem)]">
       
-      {/* 1. LEFT MARKUP.IO STYLE SIDEBAR (Identical to ProjectsGridView sidebar) */}
-      <aside className="w-60 bg-white border-r border-slate-200 flex flex-col justify-between shrink-0 hidden md:flex">
-        
-        <div className="p-4 space-y-4">
-          
-          {/* Navigation Items */}
-          <nav className="space-y-1">
-            <button
-              onClick={() => onNavigateTab ? onNavigateTab('dashboard') : onViewModeChange?.('dashboard')}
-              className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-all cursor-pointer"
-            >
-              <LayoutGrid className="w-4 h-4 text-slate-700" />
-              <span>Dashboard</span>
-            </button>
-
-            <button
-              onClick={() => onNavigateTab ? onNavigateTab('archive') : onViewModeChange?.('dashboard')}
-              className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-all cursor-pointer"
-            >
-              <Archive className="w-4 h-4 text-slate-700" />
-              <span>Archive</span>
-            </button>
-
-            <button
-              onClick={() => onNavigateTab ? onNavigateTab('team') : onViewModeChange?.('dashboard')}
-              className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-all cursor-pointer"
-            >
-              <Users className="w-4 h-4 text-slate-700" />
-              <span>Team</span>
-            </button>
-
-            {/* QA Score Matrix Active Item */}
-            <button
-              className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-bold bg-indigo-600 text-white shadow-xs cursor-default"
-            >
-              <div className="flex items-center gap-3">
-                <Award className="w-4 h-4 text-white" />
-                <span>QA Score Matrix</span>
-              </div>
-              <span className="text-[10px] bg-indigo-500 text-white font-extrabold px-1.5 py-0.5 rounded">
-                NEW
-              </span>
-            </button>
-
-            <button
-              onClick={() => onNavigateTab ? onNavigateTab('settings') : onViewModeChange?.('dashboard')}
-              className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-all cursor-pointer"
-            >
-              <Settings className="w-4 h-4 text-slate-700" />
-              <span>Settings</span>
-            </button>
-          </nav>
-
-        </div>
-
-        {/* BOTTOM SIDEBAR STATS CARD */}
-        <div className="p-4 border-t border-slate-200 bg-slate-50/50">
-          <div className="bg-white rounded-2xl border border-slate-200 p-3.5 shadow-2xs space-y-2">
-            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-              Workspace QA Score
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-xl font-black text-slate-900">{teamAverageScore}%</span>
-              <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded border border-emerald-200">
-                A+ Rating
-              </span>
-            </div>
-            <p className="text-[11px] text-slate-500 font-medium">
-              33 QA rubric error rules active
-            </p>
-          </div>
-        </div>
-
-      </aside>
+      {/* LEFT MENU (shared by every workspace page) */}
+      <AppSidebar
+        active="qascore"
+        onNavigate={(item) => (item === 'qascore' ? undefined : onNavigateTab?.(item))}
+        showCredits={currentUser.role === 'Owner' || currentUser.role === 'Admin'}
+        projectCount={projects.length}
+        openPinCount={countOpenPins(projects, pins)}
+      />
 
       {/* 2. MAIN WORKSPACE CONTENT AREA */}
       <main className="flex-1 min-w-0 overflow-y-auto flex flex-col bg-slate-50">

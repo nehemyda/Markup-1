@@ -9,7 +9,10 @@ interface WpFixPanelProps {
   connected: boolean;
   onConnect: () => void;
   pin: Pin;
+  // Connecting sites is for admins; asking/applying AI fixes follows Team → Roles & Permissions
   isAdmin: boolean;
+  canAsk: boolean;
+  canApply: boolean;
   currentUserId: string;
   // The live site changed (fix applied or undone): reload the page
   onSiteChanged: () => void;
@@ -71,7 +74,8 @@ function SettingsTable({ before, after, keys }: { before: Record<string, any>; a
 // The attached image a fix adds, shown from the pin's comment (or the uploaded copy once applied)
 function FixImage({ fix, pin }: { fix: WpFix; pin: Pin }) {
   if (!fix.image) return null;
-  const att = pin.comments.find((c) => c.id === fix.image!.commentId)?.attachments?.find((a) => a.id === fix.image!.attachmentId);
+  const holder = fix.image.commentId ? pin.comments.find((c) => c.id === fix.image!.commentId) : pin;
+  const att = holder?.attachments?.find((a) => a.id === fix.image!.attachmentId);
   const src = fix.media?.url || att?.url;
   return (
     <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded p-1.5">
@@ -208,7 +212,7 @@ const ConnectHint: React.FC<{ isAdmin: boolean; onConnect: () => void }> = ({ is
 export const WpFixPanel: React.FC<WpFixPanelProps> = (props) =>
   props.connected ? <ConnectedWpFixPanel {...props} /> : <ConnectHint isAdmin={props.isAdmin} onConnect={props.onConnect} />;
 
-const ConnectedWpFixPanel: React.FC<WpFixPanelProps> = ({ projectId, pin, isAdmin, currentUserId, onSiteChanged, onPreviewCss }) => {
+const ConnectedWpFixPanel: React.FC<WpFixPanelProps> = ({ projectId, pin, canAsk, canApply, currentUserId, onSiteChanged, onPreviewCss }) => {
   const [fixes, setFixes] = useState<WpFix[]>([]);
   const [preparing, setPreparing] = useState(false);
   const [busyFix, setBusyFix] = useState('');
@@ -303,10 +307,16 @@ const ConnectedWpFixPanel: React.FC<WpFixPanelProps> = ({ projectId, pin, isAdmi
         </div>
         {fix.explanation && fix.kind !== 'none' && <p className="text-[11px] text-slate-600">{fix.explanation}</p>}
         <ChangeDetails fix={fix} pin={pin} />
+        {fix.status === 'applied' && fix.visibleChange === false && (
+          <div className="bg-amber-50 border border-amber-200 rounded px-2 py-1.5 text-[11px] text-amber-900 flex gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
+            <span>Applied, but nothing visibly changed at the pin. {canApply ? 'Undo it and try another fix, or check the page.' : 'Someone allowed to apply AI fixes can undo it.'}</span>
+          </div>
+        )}
         {fix.lastError && <div className="text-[10px] text-rose-700 flex gap-1"><AlertTriangle className="w-3 h-3 shrink-0 mt-px" />{fix.lastError}</div>}
 
         <div className="flex items-center gap-1.5 flex-wrap">
-          {fix.status === 'proposed' && isAdmin && (
+          {fix.status === 'proposed' && canApply && (
             <button
               onClick={() => act(fix, 'apply')}
               disabled={!!busyFix}
@@ -323,7 +333,7 @@ const ConnectedWpFixPanel: React.FC<WpFixPanelProps> = ({ projectId, pin, isAdmi
               {previewId === fix.id ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />} {previewId === fix.id ? 'Stop preview' : 'Preview'}
             </button>
           )}
-          {fix.status === 'applied' && isAdmin && (
+          {fix.status === 'applied' && canApply && (
             <button
               onClick={() => act(fix, 'undo')}
               disabled={!!busyFix}
@@ -332,7 +342,7 @@ const ConnectedWpFixPanel: React.FC<WpFixPanelProps> = ({ projectId, pin, isAdmi
               {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Undo2 className="w-3 h-3" />} Undo
             </button>
           )}
-          {['proposed', 'stale', 'not_possible'].includes(fix.status) && (isAdmin || mine) && (
+          {['proposed', 'stale', 'not_possible'].includes(fix.status) && (canApply || mine) && (
             <button
               onClick={() => act(fix, 'reject')}
               disabled={!!busyFix}
@@ -346,7 +356,7 @@ const ConnectedWpFixPanel: React.FC<WpFixPanelProps> = ({ projectId, pin, isAdmi
           <div className="bg-indigo-50/70 border border-indigo-100 rounded px-2 py-1.5 text-[11px] text-indigo-950">
             <div className="flex items-center justify-between gap-2">
               <span className="font-bold">Still to do in this thread</span>
-              {fix.status === 'applied' && !hasOpenProposal && (
+              {canAsk && fix.status === 'applied' && !hasOpenProposal && (
                 <button
                   onClick={prepare}
                   disabled={preparing}
@@ -361,7 +371,7 @@ const ConnectedWpFixPanel: React.FC<WpFixPanelProps> = ({ projectId, pin, isAdmi
             </ul>
           </div>
         )}
-        {fix.status === 'proposed' && !isAdmin && <div className="text-[10px] text-slate-400">A workspace admin needs to approve this before it goes live.</div>}
+        {fix.status === 'proposed' && !canApply && <div className="text-[10px] text-slate-400">Someone allowed to apply AI fixes needs to approve this before it goes live.</div>}
         {fix.status === 'applied' && fix.appliedBy && <div className="text-[10px] text-slate-400">Applied by {fix.appliedBy.name}</div>}
       </div>
     );
@@ -373,7 +383,7 @@ const ConnectedWpFixPanel: React.FC<WpFixPanelProps> = ({ projectId, pin, isAdmi
         <span className="flex items-center gap-1.5 text-xs font-bold text-indigo-950">
           <Sparkles className="w-4 h-4 text-indigo-500" /> Fix on WordPress
         </span>
-        {!hasOpenProposal && (
+        {canAsk && !hasOpenProposal && (
           <button
             onClick={prepare}
             disabled={preparing}
@@ -384,7 +394,10 @@ const ConnectedWpFixPanel: React.FC<WpFixPanelProps> = ({ projectId, pin, isAdmi
           </button>
         )}
       </div>
-      {!fixes.length && !preparing && (
+      {!canAsk && (
+        <p className="text-[10px] text-slate-500">Fix with AI is turned off for members. A workspace admin can turn it on in Team → Roles &amp; Permissions.</p>
+      )}
+      {canAsk && !fixes.length && !preparing && (
         <p className="text-[10px] text-slate-500">Gemini reads this page in WordPress and proposes a change. Nothing goes live until an admin approves it, and every change can be undone.</p>
       )}
       {error && <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded px-2 py-1.5 text-[11px]">{error}</div>}

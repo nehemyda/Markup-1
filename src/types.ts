@@ -3,7 +3,8 @@
  */
 
 export type PinCategory = 'bug' | 'design' | 'content' | 'question' | 'approved';
-export type PinStatus = 'open' | 'in_progress' | 'ready_for_review' | 'resolved' | 'archived';
+// waiting_on_customer: the team needs an answer or material from the client before continuing
+export type PinStatus = 'open' | 'in_progress' | 'waiting_on_customer' | 'ready_for_review' | 'resolved' | 'archived';
 export type PinPriority = 'high' | 'medium' | 'low';
 export type ViewMode = 'dashboard' | 'studio' | 'kanban' | 'matrix' | 'activity' | 'organization' | 'qascore';
 export type DeviceViewport = 'desktop' | 'tablet' | 'mobile' | 'full';
@@ -68,6 +69,9 @@ export interface RolePermissions {
   membersCanManageRoles: boolean;
   membersCanDeleteProjects: boolean;
   membersCanArchiveProjects: boolean;
+  // Fix with AI on connected WordPress sites (Owners and Admins can always)
+  membersCanUseAiFix: boolean;
+  membersCanApplyAiFix: boolean;
 }
 
 export interface Teammate {
@@ -81,6 +85,10 @@ export interface Teammate {
   department?: string;
   lastActive?: string;
   createdBy?: string;
+  // The account named in VITE_ADMIN_EMAILS (always Owner, can't be changed or removed)
+  isMasterAdmin?: boolean;
+  // Pending invitation (not signed up yet)
+  pendingInvite?: boolean;
 }
 
 export interface PinMetadata {
@@ -133,6 +141,9 @@ export interface Pin {
   qaError?: QAPinError;
   screenshotUrl?: string;
   attachments?: Attachment[];
+  // Deleted pins go to the Deleted tab (restorable) until someone deletes them permanently
+  deletedAt?: string | null;
+  deletedBy?: { id: string; name: string } | null;
 }
 
 export interface Asset {
@@ -250,8 +261,10 @@ export interface WpFix {
   afterElementId?: string;
   afterElementType?: string;
   // Attached image the fix places on the page (uploaded to the Media Library on approval)
-  image?: { commentId: string; attachmentId: string; name: string } | null;
+  image?: { commentId: string | null; attachmentId: string; name: string } | null;
   media?: { id: number; url: string } | null;
+  // After applying: did the element at the pin visibly change? (null while checking)
+  visibleChange?: boolean | null;
   // Requests from the pin's thread this fix doesn't cover yet
   remaining?: string[];
   lastError?: string | null;

@@ -48,6 +48,11 @@ const ADMIN_EMAILS = (import.meta.env.VITE_ADMIN_EMAILS || '')
   .map((e) => e.trim().toLowerCase())
   .filter(Boolean);
 
+// Email domains of the master admin accounts (e.g. yourdigitalagents.com)
+export function masterAdminDomains(): string[] {
+  return Array.from(new Set(ADMIN_EMAILS.map((e) => e.split('@')[1]).filter(Boolean)));
+}
+
 export function isMasterAdmin(email: string | null | undefined): boolean {
   return !!email && ADMIN_EMAILS.includes(email.toLowerCase());
 }

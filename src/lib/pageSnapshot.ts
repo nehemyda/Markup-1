@@ -88,21 +88,31 @@ function contrastFor(el: Element, win: Window): { color: string; background: str
 }
 
 export function cssSelector(el: Element): string {
-  if (el.id) return `#${CSS.escape(el.id)}`;
+  const doc = el.ownerDocument;
+  const unique = (sel: string) => {
+    try {
+      return doc.querySelectorAll(sel).length === 1;
+    } catch {
+      return false;
+    }
+  };
+  if (el.id && unique(`#${CSS.escape(el.id)}`)) return `#${CSS.escape(el.id)}`;
+  // Walk up until the path matches only this element (a short path like "div > p" can match dozens)
   const parts: string[] = [];
   let node: Element | null = el;
-  while (node && node.tagName !== 'BODY' && parts.length < 4) {
-    let part = node.tagName.toLowerCase();
-    if (node.id) {
+  while (node && node.tagName !== 'BODY' && node.tagName !== 'HTML' && parts.length < 15) {
+    if (node.id && unique(`#${CSS.escape(node.id)}`)) {
       parts.unshift(`#${CSS.escape(node.id)}`);
       break;
     }
-    const parent = node.parentElement;
+    let part = node.tagName.toLowerCase();
+    const parent: Element | null = node.parentElement;
     if (parent) {
       const same = Array.from(parent.children).filter((c) => c.tagName === node!.tagName);
       if (same.length > 1) part += `:nth-of-type(${same.indexOf(node) + 1})`;
     }
     parts.unshift(part);
+    if (unique(parts.join(' > ')) && parts.length >= 2) break;
     node = parent;
   }
   return parts.join(' > ');

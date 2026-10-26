@@ -3,12 +3,12 @@ import { PinDevice } from './pins';
 
 // URL scheme
 //   /                               dashboard
-//   /archive  /team  /settings  /settings/access  /folders/:folderId
+//   /archive  /team  /credits  /settings  /settings/access  /folders/:folderId
 //   /projects/:projectId            project canvas
-//   /projects/:projectId/kanban | table | activity | qa-score
+//   /projects/:projectId/kanban | table | activity      /qa-score (workspace QA scores)
 //   ?view_mode=Desktop|Tablet|Mobile   ?page=<path> (when not the project's start page)   ?pin=<pinId>   ?guest_mode=true
 
-export type DashboardTab = 'dashboard' | 'archive' | 'team' | 'settings';
+export type DashboardTab = 'dashboard' | 'archive' | 'team' | 'credits' | 'settings';
 export type SettingsSubTab = 'details' | 'domains';
 
 export interface Route {
@@ -28,7 +28,6 @@ const PROJECT_VIEW_SEGMENTS: Partial<Record<ViewMode, string>> = {
   kanban: 'kanban',
   matrix: 'table',
   activity: 'activity',
-  qascore: 'qa-score',
 };
 
 export function parseRoute(pathname: string, search: string): Route {
@@ -41,8 +40,11 @@ export function parseRoute(pathname: string, search: string): Route {
     return { projectId: legacyProject, viewMode: 'studio', pinId: params.get('pin') || undefined };
   }
 
+  if (parts[0] === 'qa-score') return { viewMode: 'qascore' };
   if (parts[0] === 'projects' && parts[1]) {
     const segment = parts[2] || '';
+    // Older links had QA scores under a project
+    if (segment === 'qa-score') return { viewMode: 'qascore' };
     const viewMode = (Object.entries(PROJECT_VIEW_SEGMENTS).find(([, seg]) => seg === segment)?.[0] || 'studio') as ViewMode;
     return {
       projectId: parts[1],
@@ -55,7 +57,7 @@ export function parseRoute(pathname: string, search: string): Route {
   }
 
   if (parts[0] === 'folders' && parts[1]) return { viewMode: 'dashboard', dashboardTab: 'dashboard', folderId: parts[1] };
-  if (parts[0] === 'archive' || parts[0] === 'team') return { viewMode: 'dashboard', dashboardTab: parts[0] };
+  if (parts[0] === 'archive' || parts[0] === 'team' || parts[0] === 'credits') return { viewMode: 'dashboard', dashboardTab: parts[0] };
   if (parts[0] === 'settings') {
     return { viewMode: 'dashboard', dashboardTab: 'settings', settingsSubTab: parts[1] === 'access' ? 'domains' : 'details' };
   }
@@ -74,9 +76,11 @@ export function buildPath(state: {
   device: PinDevice;
   guestMode: boolean;
 }): string {
+  if (state.viewMode === 'qascore') return '/qa-score';
   if (state.viewMode === 'dashboard' || !state.projectId || PROJECT_VIEW_SEGMENTS[state.viewMode] === undefined) {
     if (state.dashboardTab === 'archive') return '/archive';
     if (state.dashboardTab === 'team') return '/team';
+    if (state.dashboardTab === 'credits') return '/credits';
     if (state.dashboardTab === 'settings') return state.settingsSubTab === 'domains' ? '/settings/access' : '/settings';
     if (state.folderId) return `/folders/${encodeURIComponent(state.folderId)}`;
     return '/';

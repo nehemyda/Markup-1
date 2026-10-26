@@ -1,10 +1,11 @@
 import { apiFetch } from '../lib/api';
+import { toMillis, timeAgo, fullTime } from '../lib/time';
 import { filesToAttachments, rejectedFilesMessage } from '../lib/attachments';
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import html2canvas from 'html2canvas';
 import { capturePageSnapshot, captureImageSnapshot, ReviewSnapshot, cssSelector } from '../lib/pageSnapshot';
-import { nextPinNumber, pinDevice, PinDevice, DEVICE_WIDTHS } from '../lib/pins';
+import { nextPinNumber, pinDevice, PinDevice, DEVICE_WIDTHS, pinColor } from '../lib/pins';
 import { Project, Asset, Pin, PinCategory, PinPriority, Teammate, FilterState, DeviceViewport, Attachment } from '../types';
 import { SearchableMemberSelect } from './SearchableMemberSelect';
 import { 
@@ -683,14 +684,10 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
     setNewPinAttachments([]);
   };
 
+  // Same colours as the comments sidebar (lib/pins)
   const getCategoryColor = (cat: PinCategory) => {
-    switch (cat) {
-      case 'bug': return 'bg-rose-500 border-rose-600 text-white shadow-rose-500/30';
-      case 'design': return 'bg-purple-500 border-purple-600 text-white shadow-purple-500/30';
-      case 'content': return 'bg-blue-500 border-blue-600 text-white shadow-blue-500/30';
-      case 'question': return 'bg-amber-500 border-amber-600 text-white shadow-amber-500/30';
-      case 'approved': return 'bg-emerald-500 border-emerald-600 text-white shadow-emerald-500/30';
-    }
+    const c = pinColor(cat);
+    return `${c.bg} ${c.border} text-white ${c.shadow}`;
   };
 
   const getCategoryIcon = (cat: PinCategory) => {
@@ -973,7 +970,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
                       <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-600 border border-indigo-100">
                         {pin.category}
                       </span>
-                      <span className="text-[10px] text-slate-400">{pin.createdAt}</span>
+                      <span className="text-[10px] text-slate-400" title={fullTime(toMillis(pin.createdAt, pin.id))}>{timeAgo(toMillis(pin.createdAt, pin.id))}</span>
                     </div>
                     <div className="text-xs font-bold text-slate-900 line-clamp-2">{pin.title}</div>
                     {pin.comments[0] && (

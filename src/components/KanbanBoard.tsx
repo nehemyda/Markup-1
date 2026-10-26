@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { pinColor } from '../lib/pins';
 import { Pin, PinStatus, Teammate, Project, Asset } from '../types';
 import { UserAvatar } from './UserAvatar';
 import { 
@@ -50,6 +51,13 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
       headerStyle: 'bg-amber-100/90 text-amber-950 border-amber-200', 
       badgeStyle: 'bg-amber-900 text-white font-extrabold',
       icon: <span className="w-2.5 h-2.5 rounded-full bg-amber-600 shadow-xs" /> 
+    },
+    { 
+      id: 'waiting_on_customer', 
+      label: 'Waiting on Customer', 
+      headerStyle: 'bg-sky-100/90 text-sky-950 border-sky-200', 
+      badgeStyle: 'bg-sky-900 text-white font-extrabold',
+      icon: <span className="w-2.5 h-2.5 rounded-full bg-sky-600 shadow-xs" /> 
     },
     { 
       id: 'ready_for_review', 
@@ -175,7 +183,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
 
       {/* Kanban Board Columns Area */}
       <div className="flex-1 overflow-x-auto overflow-y-hidden p-4">
-        <div className="flex gap-4 h-full min-w-[1100px]">
+        <div className="flex gap-4 h-full min-w-[1350px]">
           {columns.map((col) => {
             const colPins = projectPins.filter(p => p.status === col.id);
             const isDragTarget = dragOverColId === col.id;
@@ -257,7 +265,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                           <div className="flex items-center justify-between gap-1.5 mb-2">
                             <div className="flex items-center gap-1.5">
                               <GripVertical className="w-3.5 h-3.5 text-slate-300 group-hover:text-slate-500 shrink-0" />
-                              <span className="w-5 h-5 rounded-full bg-slate-900 text-white font-black text-[10px] flex items-center justify-center shadow-xs shrink-0">
+                              <span className={`min-w-5 h-5 px-1 rounded-full text-white font-black text-[10px] flex items-center justify-center shadow-xs shrink-0 ${pinColor(pin.category).bg}`}>
                                 #{pin.number}
                               </span>
                               <span className={`text-[10px] uppercase tracking-wider px-2 py-0.5 rounded border ${getCategoryColor(pin.category)}`}>
@@ -319,7 +327,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                             {col.id !== 'open' && (
                               <button
                                 onClick={() => {
-                                  const prev: Record<string, PinStatus> = { in_progress: 'open', ready_for_review: 'in_progress', resolved: 'ready_for_review' };
+                                  const prev: Record<string, PinStatus> = { in_progress: 'open', waiting_on_customer: 'in_progress', ready_for_review: 'waiting_on_customer', resolved: 'ready_for_review' };
                                   onUpdatePinStatus(pin.id, prev[col.id] || 'open');
                                 }}
                                 title="Move to previous column"
@@ -335,13 +343,14 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                             >
                               <option value="open">To Do</option>
                               <option value="in_progress">In Progress</option>
+                              <option value="waiting_on_customer">Waiting</option>
                               <option value="ready_for_review">Review</option>
                               <option value="resolved">Resolved</option>
                             </select>
                             {col.id !== 'resolved' && (
                               <button
                                 onClick={() => {
-                                  const next: Record<string, PinStatus> = { open: 'in_progress', in_progress: 'ready_for_review', ready_for_review: 'resolved' };
+                                  const next: Record<string, PinStatus> = { open: 'in_progress', in_progress: 'waiting_on_customer', waiting_on_customer: 'ready_for_review', ready_for_review: 'resolved' };
                                   onUpdatePinStatus(pin.id, next[col.id] || 'resolved');
                                 }}
                                 title="Move to next column"

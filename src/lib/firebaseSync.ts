@@ -11,6 +11,7 @@ import {
   orderBy
 } from 'firebase/firestore';
 import { db, firebaseConfig } from './firebase';
+import { apiFetch } from './api';
 import { Project, Pin, QARubricRule, Teammate, AuthUser, Folder, WpSite, WpFix } from '../types';
 
 // One project (guests can only read the project in their link)
@@ -99,10 +100,37 @@ export function subscribePins(onPinsUpdate: (pins: Pin[]) => void, projectId?: s
 }
 
 // Save or Update Pin in Firestore
+// Files are stored on the server; the pin keeps only a short link (embedded files made pins too big)
+async function storeFile(url: string | undefined): Promise<string | undefined> {
+  if (!url || !url.startsWith('data:')) return url;
+  const res = await apiFetch('/api/uploads', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dataUrl: url }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || !body.url) throw new Error(body.error || 'Could not upload the file.');
+  return body.url;
+}
+
+async function storeAttachments<T extends { url: string }>(list: T[] | undefined): Promise<T[] | undefined> {
+  if (!list) return list;
+  return Promise.all(list.map(async (a) => ({ ...a, url: (await storeFile(a.url)) || a.url })));
+}
+
+export async function externalizePinFiles(pin: Pin): Promise<Pin> {
+  return {
+    ...pin,
+    screenshotUrl: await storeFile(pin.screenshotUrl),
+    attachments: await storeAttachments(pin.attachments),
+    comments: await Promise.all(pin.comments.map(async (c) => ({ ...c, attachments: await storeAttachments(c.attachments) }))),
+  };
+}
+
 export async function savePinToFirestore(pin: Pin): Promise<void> {
   try {
     const docRef = doc(db, 'pins', pin.id);
-    await setDoc(docRef, pin, { merge: true });
+    await setDoc(docRef, await externalizePinFiles(pin), { merge: true });
   } catch (err) {
     console.warn("Failed saving pin to Firestore:", err);
   }
@@ -174,7 +202,7 @@ export function subscribeTeam(onTeamUpdate: (team: Teammate[]) => void): () => v
     const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
       members = [];
       snapshot.forEach((docSnap) => {
-        const u = docSnap.data() as AuthUser & { department?: string; removed?: boolean };
+        const u = docSnap.data() as AuthUser & { department?: string; removed?: boolean; isMasterAdmin?: boolean };
         if (u.removed) return;
         members.push({
           id: docSnap.id,
@@ -185,6 +213,7 @@ export function subscribeTeam(onTeamUpdate: (team: Teammate[]) => void): () => v
           status: u.status || 'offline',
           cursorColor: u.cursorColor || '#6366f1',
           department: u.department,
+          isMasterAdmin: u.isMasterAdmin === true,
         });
       });
       emit();
@@ -206,6 +235,7 @@ export function subscribeTeam(onTeamUpdate: (team: Teammate[]) => void): () => v
           cursorColor: '#94a3b8',
           lastActive: 'Invitation pending',
           createdBy: inv.invitedBy,
+          pendingInvite: true,
         });
       });
       emit();
@@ -223,18 +253,20 @@ export function subscribeTeam(onTeamUpdate: (team: Teammate[]) => void): () => v
   }
 }
 
+// Saves the invitation (the security rules decide which roles this person may invite with). Throws on failure.
 export async function inviteMember(name: string, email: string, role: Teammate['role'], invitedBy: string): Promise<void> {
-  try {
-    await setDoc(doc(db, 'invites', inviteDocId(email)), {
-      name,
-      email: email.trim(),
-      role,
-      invitedBy,
-      invitedAt: new Date().toISOString(),
-    });
-  } catch (err) {
-    console.warn("Failed saving invite to Firestore:", err);
-  }
+  await setDoc(doc(db, 'invites', inviteDocId(email)), {
+    name: name.trim() || email.split('@')[0].replace(/[._]/g, ' '),
+    email: email.trim(),
+    role,
+    invitedBy,
+    invitedAt: new Date().toISOString(),
+  });
+}
+
+// Link that opens the sign-up form with the invited email filled in (until the app sends invite emails itself)
+export function inviteLink(email: string) {
+  return `${window.location.origin}/?invite=${encodeURIComponent(email.trim())}`;
 }
 
 export async function updateMemberRole(id: string, role: Teammate['role']): Promise<void> {
