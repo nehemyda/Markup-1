@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { timeAgo, fullTime } from '../lib/time';
 import { Project, ViewMode, Teammate, Asset, AuthUser, Organization, NotificationItem } from '../types';
 import { UserAvatar } from './UserAvatar';
 import { 
@@ -287,7 +288,7 @@ export const Header: React.FC<HeaderProps> = ({
                 <div className="px-3 pb-2 border-b border-slate-100 flex items-center justify-between">
                   <div className="flex items-center gap-1.5 font-bold text-xs text-slate-900">
                     <Bell className="w-4 h-4 text-indigo-600" />
-                    <span>Notifications & @Mention Alerts</span>
+                    <span>Notifications</span>
                   </div>
                   {unreadNotificationCount > 0 && (
                     <button
@@ -298,11 +299,6 @@ export const Header: React.FC<HeaderProps> = ({
                       <span>Mark all read</span>
                     </button>
                   )}
-                </div>
-
-                <div className="mx-3 my-2 p-2 bg-indigo-50 border border-indigo-100 rounded-lg text-[10px] text-indigo-900 leading-relaxed">
-                  <strong className="block text-indigo-700 font-bold mb-0.5">📧 How team members are notified:</strong>
-                  When you tag members with <strong>@Name</strong> or assign pins, tagged people instantly receive in-app popups, push alerts & email notifications.
                 </div>
 
                 <div className="max-h-72 overflow-y-auto divide-y divide-slate-100">
@@ -318,21 +314,22 @@ export const Header: React.FC<HeaderProps> = ({
                           !n.isRead ? 'bg-indigo-50/50' : ''
                         }`}
                       >
-                        <img src={n.sender.avatar} alt={n.sender.name} className="w-7 h-7 rounded-full object-cover border border-slate-200 shrink-0 mt-0.5" />
+                        <UserAvatar name={n.actor.name} email={n.actor.email} avatar={n.actor.avatar} size={28} className="mt-0.5" />
                         <div className="min-w-0 flex-1">
-                          <div className="text-xs font-bold text-slate-900 flex items-center justify-between gap-1">
-                            <span className="truncate">{n.title}</span>
-                            <span className="text-[9px] text-slate-400 shrink-0 font-medium">{n.timestamp}</span>
+                          <div className="text-xs font-bold text-slate-900 flex items-start justify-between gap-2">
+                            <span className="line-clamp-2">{n.title}</span>
+                            <span className="text-[9px] text-slate-400 shrink-0 font-medium mt-0.5" title={fullTime(n.createdAt)}>{timeAgo(n.createdAt)}</span>
                           </div>
                           <div className="text-[11px] text-slate-600 mt-0.5 line-clamp-2">
                             {n.message}
                           </div>
                         </div>
+                        {!n.isRead && <span className="w-2 h-2 rounded-full bg-indigo-600 shrink-0 mt-1.5" aria-label="Unread" />}
                       </button>
                     ))
                   ) : (
                     <div className="p-6 text-center text-xs text-slate-500">
-                      No unread notifications. Tag team members with @mentions in comments to alert them!
+                      No notifications yet. You'll see new client feedback on your projects, replies on your pins, @mentions and pins assigned to you.
                     </div>
                   )}
                 </div>

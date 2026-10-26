@@ -42,6 +42,8 @@ import {
   normalizeRole,
   subscribeProject,
   subscribeWpSite,
+  subscribeNotifications,
+  markNotificationsRead,
 } from './lib/firebaseSync';
 import { Header } from './components/Header';
 import { AuthPage } from './components/AuthPage';
@@ -234,27 +236,11 @@ export default function App() {
   const [folders, setFolders] = useState<Folder[]>([]);
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
 
-  // Notifications State
+  // Notifications for the signed-in member (saved by the server; see server/notifications.ts)
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
 
-  const handleNotifyMember = (notif: { title: string; message: string; recipient: string; pinId?: string; assetId?: string }) => {
-    const newNotif: NotificationItem = {
-      id: `notif_${Date.now()}`,
-      type: 'mention',
-      title: notif.title,
-      message: notif.message,
-      timestamp: 'Just now',
-      isRead: false,
-      sender: currentUser,
-      recipientName: notif.recipient,
-      pinId: notif.pinId,
-      assetId: notif.assetId
-    };
-    setNotifications((prev) => [newNotif, ...prev]);
-  };
-
   const handleMarkAllNotificationsRead = () => {
-    setNotifications((prev) => prev.map(n => ({ ...n, isRead: true })));
+    markNotificationsRead(notifications.filter((n) => !n.isRead).map((n) => n.id)).catch((err) => console.warn('Could not mark notifications read:', err));
   };
 
   const unreadNotificationCount = notifications.filter(n => !n.isRead).length;
@@ -422,6 +408,13 @@ export default function App() {
     if (accessKey !== 'member' || !currentProject?.id) return;
     return subscribeWpSite(currentProject.id, setWpSite);
   }, [accessKey, currentProject?.id]);
+
+  // The signed-in member's notifications
+  useEffect(() => {
+    setNotifications([]);
+    if (accessKey !== 'member' || !authUser?.id) return;
+    return subscribeNotifications(authUser.id, setNotifications);
+  }, [accessKey, authUser?.id]);
 
   // Keep the selected project pointing at a real project (the initial value is only a placeholder)
   useEffect(() => {
@@ -871,7 +864,7 @@ export default function App() {
     setPins((prev) =>
       prev.map((pin) => {
         if (pin.id === pinId) {
-          const updated = { ...pin, assignedTo: assignee };
+          const updated = { ...pin, assignedTo: assignee, assignedBy: { id: currentUser.id, name: currentUser.name, avatar: currentUser.avatar } };
           if (selectedPin?.id === pinId) setSelectedPin(updated);
           savePinToFirestore(updated);
           return updated;
@@ -1007,6 +1000,15 @@ export default function App() {
     const project = projects.find((p) => p.id === projectId);
     if (!project) return;
     const updated = { ...project, folderId };
+    setProjects((prev) => prev.map((p) => (p.id === projectId ? updated : p)));
+    saveProjectToFirestore(updated);
+  };
+
+  // Developers told about new client feedback on a project (empty = its creator)
+  const handleAssignProject = (projectId: string, assigneeIds: string[]) => {
+    const project = projects.find((p) => p.id === projectId);
+    if (!project) return;
+    const updated = { ...project, assigneeIds };
     setProjects((prev) => prev.map((p) => (p.id === projectId ? updated : p)));
     saveProjectToFirestore(updated);
   };
@@ -1298,22 +1300,12 @@ export default function App() {
         unreadNotificationCount={unreadNotificationCount}
         onMarkAllNotificationsRead={handleMarkAllNotificationsRead}
         onNotificationClick={(n) => {
-          // Mark clicked notification as read
-          setNotifications((prev) =>
-            prev.map((item) => (item.id === n.id ? { ...item, isRead: true } : item))
-          );
+          if (!n.isRead) markNotificationsRead([n.id]).catch(() => {});
 
           // Find target pin by id or fallback to pin number match e.g. Pin #1
           let targetPin: Pin | undefined;
           if (n.pinId) {
             targetPin = pins.find((p) => p.id === n.pinId);
-          }
-          if (!targetPin) {
-            const matchNum = n.title.match(/#(\d+)/) || n.message.match(/#(\d+)/);
-            if (matchNum) {
-              const pNum = parseInt(matchNum[1], 10);
-              targetPin = pins.find((p) => p.number === pNum);
-            }
           }
 
           const targetAssetId = targetPin?.assetId || n.assetId;
@@ -1362,6 +1354,7 @@ export default function App() {
             onRenameFolder={handleRenameFolder}
             onDeleteFolder={handleDeleteFolder}
             onMoveProject={handleMoveProject}
+            onAssignProject={handleAssignProject}
             onSelectProject={handleSelectProject}
             onSelectAsset={handleSelectAsset}
             onOpenNewProjectModal={() => setShowNewProjectModal(true)}
@@ -1467,7 +1460,6 @@ export default function App() {
                       onAddComment={addCommentAsUser}
                       teammates={teammates}
                       currentUser={currentUser}
-                      onNotify={handleNotifyMember}
                       rubricRules={rubricRules}
                       onUpdatePinQAError={handleUpdatePinQAError}
                       onDeletePin={handleDeletePin}

@@ -75,6 +75,13 @@ service cloud.firestore {
       allow delete: if isMember();
     }
 
+    // Notifications are created by the server; each person reads theirs, marks them read or clears them
+    match /notifications/{notificationId} {
+      allow read, delete: if isMember() && resource.data.recipientUid == request.auth.uid;
+      allow update: if isMember() && resource.data.recipientUid == request.auth.uid && changed().hasOnly(['read', 'readAt']);
+      allow create: if false;
+    }
+
     // Allowed email domains are shown on the sign-in page
     match /settings/access {
       allow read: if true;

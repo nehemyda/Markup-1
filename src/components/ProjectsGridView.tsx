@@ -3,6 +3,7 @@ import { Project, Asset, Teammate, ViewMode, Pin, Folder, RolePermissions } from
 import { projectUrl } from '../lib/routes';
 import { useRolePermissions, saveRolePermission } from '../lib/permissions';
 import { AiCreditsView } from './AiCreditsView';
+import { AssignProjectDialog, projectAssignees } from './AssignProjectDialog';
 import { AppSidebar } from './AppSidebar';
 import { toMillis, timeAgo } from '../lib/time';
 import { InviteForm } from './InviteForm';
@@ -82,6 +83,8 @@ interface ProjectsGridViewProps {
   onRenameFolder?: (folderId: string, name: string) => void;
   onDeleteFolder?: (folderId: string) => void;
   onMoveProject?: (projectId: string, folderId: string | null) => void;
+  // Developers notified about new client feedback on a project
+  onAssignProject?: (projectId: string, assigneeIds: string[]) => void;
   onSelectProject: (project: Project) => void;
   onSelectAsset: (asset: Asset) => void;
   onOpenNewProjectModal: () => void;
@@ -216,6 +219,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
   onRenameFolder,
   onDeleteFolder,
   onMoveProject,
+  onAssignProject,
   onSelectProject,
   onSelectAsset,
   onOpenNewProjectModal,
@@ -345,6 +349,11 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
   const [filterOwner, setFilterOwner] = useState<'all' | 'mine' | string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [activeCardMenuId, setActiveCardMenuId] = useState<string | null>(null);
+  const [assignProjectId, setAssignProjectId] = useState<string | null>(null);
+  const assignProject = assignProjectId ? projects.find((p) => p.id === assignProjectId) || null : null;
+  // Admins and the project's creator choose who it is assigned to
+  const mayAssign = (project: Project) =>
+    !!onAssignProject && (currentUser.role === 'Admin' || currentUser.role === 'Owner' || project.ownerId === currentUser.id);
   
   // Team tab state
   const [teamSubTab, setTeamSubTab] = useState<'members' | 'guests' | 'roles'>('members');
@@ -879,9 +888,10 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                   const totalUnresolved = projectPins.length - totalResolved;
                   const isNew = Date.now() - createdMs(project) < 24 * 60 * 60 * 1000;
 
-                  const owner = teammates.find(
-                    (t) => t.id === project.ownerId || t.id === project.createdBy || t.email === project.createdBy
-                  );
+                  const assignees = projectAssignees(project, teammates);
+                  const assignedLabel = project.assigneeIds?.length
+                    ? `Assigned to ${assignees.map((t) => t.name).join(', ')}`
+                    : assignees[0] ? `Not assigned: ${assignees[0].name} (creator) gets client feedback` : 'Not assigned';
 
                   return (
                     <div
@@ -948,6 +958,19 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                               <ExternalLink className="w-3.5 h-3.5 text-emerald-600" />
                               <span>Open Studio & Annotate</span>
                             </button>
+                            {mayAssign(project) && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setAssignProjectId(project.id);
+                                  setActiveCardMenuId(null);
+                                }}
+                                className="w-full text-left px-3 py-2 text-slate-700 hover:bg-slate-100 flex items-center gap-2 font-medium cursor-pointer"
+                              >
+                                <UserPlus className="w-3.5 h-3.5 text-indigo-600" />
+                                <span>Assign developers</span>
+                              </button>
+                            )}
                             {onMoveProject && folders.length > 0 && (
                               <div className="border-t border-slate-100 mt-1 pt-1">
                                 <button
@@ -1110,19 +1133,28 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                             </span>
                           </div>
 
-                          {owner && (
-                            <div className="flex items-center gap-1.5" title={`Created by ${owner.name}`}>
-                              {owner.avatar ? (
-                                <img src={owner.avatar} alt={owner.name} className="w-5 h-5 rounded-full object-cover border border-slate-200" />
-                              ) : (
-                                <span className="w-5 h-5 rounded-full bg-indigo-100 text-indigo-700 text-[10px] font-bold flex items-center justify-center">
-                                  {owner.name.charAt(0).toUpperCase()}
-                                </span>
-                              )}
-                              <span className="text-[11px] font-medium text-slate-500 max-w-[80px] truncate">
-                                {owner.name.split(' ')[0]}
+                          {assignees.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (mayAssign(project)) setAssignProjectId(project.id);
+                              }}
+                              className={`flex items-center gap-1.5 rounded-full pr-1.5 ${mayAssign(project) ? 'hover:bg-slate-100 cursor-pointer' : 'cursor-default'}`}
+                              title={`${assignedLabel}${mayAssign(project) ? '. Click to change.' : ''}`}
+                              aria-label={assignedLabel}
+                            >
+                              <span className="flex -space-x-1.5">
+                                {assignees.slice(0, 3).map((t) => (
+                                  <span key={t.id} className="rounded-full ring-2 ring-white">
+                                    <UserAvatar name={t.name} email={t.email} avatar={t.avatar} size={20} title={t.name} />
+                                  </span>
+                                ))}
                               </span>
-                            </div>
+                              <span className="text-[11px] font-medium text-slate-500 max-w-[80px] truncate">
+                                {assignees.length > 3 ? `+${assignees.length - 3}` : assignees.length === 1 ? assignees[0].name.split(' ')[0] : ''}
+                              </span>
+                            </button>
                           )}
                         </div>
                       </div>
@@ -1134,6 +1166,15 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
               </div>
             </div>
           </>
+        )}
+
+        {assignProject && (
+          <AssignProjectDialog
+            project={assignProject}
+            teammates={teammates}
+            onSave={(ids) => onAssignProject?.(assignProject.id, ids)}
+            onClose={() => setAssignProjectId(null)}
+          />
         )}
 
         {folderDialog && (

@@ -58,7 +58,6 @@ interface SidebarDiscussionProps {
   onAddComment: (pinId: string, text: string, attachments?: Attachment[], audioDuration?: string) => void;
   teammates: Teammate[];
   currentUser: Teammate;
-  onNotify?: (notification: { title: string; message: string; recipient: string; pinId?: string; assetId?: string }) => void;
   rubricRules?: QARubricRule[];
   onUpdatePinQAError?: (pinId: string, qaError?: QAPinError) => void;
   onDeletePin?: (pinId: string) => void;
@@ -176,7 +175,6 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
   onAddComment,
   teammates,
   currentUser,
-  onNotify,
   rubricRules = [],
   onUpdatePinQAError,
   onDeletePin,
@@ -296,18 +294,9 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
       trimmed.toLowerCase().includes(`@${t.name.split(' ')[0].toLowerCase()}`)
     );
 
+    // The server notifies them (in their bell)
     if (mentionedNames.length > 0) {
-      const recipientStr = mentionedNames.map(m => `@${m.name}`).join(', ');
-      showToast(`🔔 Notification Sent! ${recipientStr} received an instant in-app & email notification.`);
-      if (onNotify) {
-        onNotify({
-          title: `Tagged in Pin #${selectedPin.number}`,
-          message: `${currentUser.name} tagged you: "${trimmed.slice(0, 80)}"`,
-          recipient: recipientStr,
-          pinId: selectedPin.id,
-          assetId: selectedPin.assetId,
-        });
-      }
+      showToast(`Notified ${mentionedNames.map(m => `@${m.name}`).join(', ')}`);
     }
 
     setCommentInput('');
@@ -885,16 +874,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
             teammates={teammates}
             onSelect={(tm) => {
               onUpdatePinAssignee(selectedPin.id, tm);
-              showToast(`🔔 Assigned Pin #${selectedPin.number} to ${tm.name}. Notification sent!`);
-              if (onNotify) {
-                onNotify({
-                  title: `Assigned Pin #${selectedPin.number}`,
-                  message: `${currentUser.name} assigned Pin #${selectedPin.number} (${selectedPin.title}) to you.`,
-                  recipient: tm.name,
-                  pinId: selectedPin.id,
-                  assetId: selectedPin.assetId,
-                });
-              }
+              showToast(tm.id === currentUser.id ? `Pin #${selectedPin.number} assigned to you` : `Assigned pin #${selectedPin.number} to ${tm.name}; they are notified`);
             }}
             placeholder="Search team members..."
           />

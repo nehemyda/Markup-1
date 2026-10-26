@@ -8,11 +8,13 @@ import {
   getDoc,
   deleteDoc,
   query,
-  orderBy
+  orderBy,
+  limit,
+  writeBatch
 } from 'firebase/firestore';
 import { db, firebaseConfig } from './firebase';
 import { apiFetch } from './api';
-import { Project, Pin, QARubricRule, Teammate, AuthUser, Folder, WpSite, WpFix } from '../types';
+import { Project, Pin, QARubricRule, Teammate, AuthUser, Folder, WpSite, WpFix, NotificationItem } from '../types';
 
 // One project (guests can only read the project in their link)
 export function subscribeProject(projectId: string, onUpdate: (project: Project | null) => void): () => void {
@@ -44,6 +46,40 @@ export function subscribeWpFixes(pinId: string, onUpdate: (fixes: WpFix[]) => vo
     console.warn("AI fixes subscription error:", error);
     onUpdate([]);
   });
+}
+
+// The signed-in person's notifications, newest first (the server creates them)
+export function subscribeNotifications(uid: string, onUpdate: (items: NotificationItem[]) => void): () => void {
+  const q = query(collection(db, 'notifications'), where('recipientUid', '==', uid), orderBy('createdAt', 'desc'), limit(50));
+  return onSnapshot(q, (snap) => {
+    onUpdate(snap.docs.map((d) => {
+      const n = d.data();
+      return {
+        id: d.id,
+        type: n.type,
+        title: n.title,
+        message: n.message,
+        createdAt: n.createdAt?.toMillis ? n.createdAt.toMillis() : Date.now(),
+        actor: n.actor || { id: '', name: 'Someone' },
+        projectId: n.projectId,
+        projectName: n.projectName,
+        pinId: n.pinId,
+        pinNumber: n.pinNumber,
+        assetId: n.assetId,
+        isRead: n.read === true,
+      };
+    }));
+  }, (error) => {
+    console.warn('Notifications subscription error:', error);
+    onUpdate([]);
+  });
+}
+
+export async function markNotificationsRead(ids: string[]) {
+  if (!ids.length) return;
+  const batch = writeBatch(db);
+  for (const id of ids) batch.update(doc(db, 'notifications', id), { read: true, readAt: new Date().toISOString() });
+  await batch.commit();
 }
 
 // Sync Projects to Firestore

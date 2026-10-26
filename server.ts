@@ -12,6 +12,7 @@ import { aiContext, trackUsage, forgetPricingCache, DEFAULT_PRICING } from './se
 import { saveDataUrl, UPLOAD_DIR, SAFE_FILE, CONTENT_TYPES } from './server/uploads';
 import { moveEmbeddedFilesOut } from './server/migrations';
 import { startAutoSnapshots } from './server/snapshots';
+import { startNotifications } from './server/notifications';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
@@ -1095,6 +1096,7 @@ html, body {
     .catch((err) => console.warn('Migration failed:', err?.message));
   // Local emulator data is saved every 10 minutes (see server/snapshots.ts)
   startAutoSnapshots();
+  startNotifications();
 
   moveEmbeddedFilesOut()
     .then((n) => n && console.log(`Migration: moved ${n} embedded files out of pins`))

@@ -135,6 +135,8 @@ export interface Pin {
   createdAt: string;
   author: Teammate;
   assignedTo?: Teammate;
+  // Who assigned it (so they aren't notified about their own assignment)
+  assignedBy?: { id: string; name: string; avatar?: string } | null;
   metadata: PinMetadata;
   comments: Comment[];
   isUnread?: boolean;
@@ -171,6 +173,8 @@ export interface Project {
   lastUpdated: string;
   ownerId?: string;
   createdBy?: string;
+  // Team members (ids) told about new client feedback; empty = the creator (ownerId)
+  assigneeIds?: string[];
   // Folder the project is in (null/undefined = not in a folder)
   folderId?: string | null;
   assets: Asset[];
@@ -205,16 +209,20 @@ export interface FilterState {
   showResolved: boolean;
 }
 
+// One notification for the signed-in person (created by the server, see server/notifications.ts)
 export interface NotificationItem {
   id: string;
-  type: 'mention' | 'assignment' | 'comment' | 'status';
+  type: 'pin' | 'comment' | 'mention' | 'assignment';
   title: string;
   message: string;
-  timestamp: string;
-  sender: Teammate;
-  recipientName: string;
-  pinId?: string;
-  assetId?: string;
+  // Milliseconds
+  createdAt: number;
+  actor: { id: string; name: string; avatar?: string; email?: string; isGuest?: boolean };
+  projectId?: string | null;
+  projectName?: string | null;
+  pinId?: string | null;
+  pinNumber?: number | null;
+  assetId?: string | null;
   isRead: boolean;
 }
 
