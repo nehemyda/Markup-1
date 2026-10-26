@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Markup</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="top">
+    <img src="icons/icon-32.png" alt="" width="22" height="22">
+    <strong>Markup</strong>
+    <span class="spacer"></span>
+    <button id="refresh" class="icon-btn" title="Refresh" aria-label="Refresh">↻</button>
+  </header>
+
+  <!-- Not connected -->
+  <section id="connect" class="connect" hidden>
+    <h1>Connect to Markup</h1>
+    <p>See your notifications and open pins here, and get a desktop alert when a client leaves feedback on your projects.</p>
+    <button id="connect-btn" class="primary">Connect</button>
+    <p id="connect-wait" class="muted" hidden>Approve the extension in the Markup tab that opened. This updates by itself.</p>
+    <p class="muted small">Markup address: <span id="server-label"></span> · <a href="#" id="open-options">Change</a></p>
+  </section>
+
+  <!-- Connected -->
+  <section id="main" hidden>
+    <nav class="tabs" role="tablist">
+      <button role="tab" id="tab-notes" class="tab active" aria-selected="true">Notifications <span id="unread" class="count"></span></button>
+      <button role="tab" id="tab-pins" class="tab" aria-selected="false">My open pins <span id="pin-count" class="count gray"></span></button>
+    </nav>
+    <div id="error" class="error" hidden></div>
+    <div id="list-notes" class="list" role="tabpanel"></div>
+    <div id="list-pins" class="list" role="tabpanel" hidden></div>
+    <footer class="bottom">
+      <button id="mark-all" class="link">Mark all read</button>
+      <span class="spacer"></span>
+      <button id="open-app" class="link">Open Markup ↗</button>
+    </footer>
+    <div class="account">
+      <span id="user-label"></span>
+      <span class="spacer"></span>
+      <button id="disconnect" class="link danger">Disconnect</button>
+    </div>
+  </section>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

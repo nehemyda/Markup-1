@@ -9,7 +9,7 @@ import { PinDevice } from './pins';
 //   ?view_mode=Desktop|Tablet|Mobile   ?page=<path> (when not the project's start page)   ?pin=<pinId>   ?guest_mode=true
 
 export type DashboardTab = 'dashboard' | 'archive' | 'team' | 'credits' | 'settings';
-export type SettingsSubTab = 'details' | 'domains';
+export type SettingsSubTab = 'details' | 'domains' | 'notifications';
 
 export interface Route {
   dashboardTab?: DashboardTab;
@@ -59,7 +59,7 @@ export function parseRoute(pathname: string, search: string): Route {
   if (parts[0] === 'folders' && parts[1]) return { viewMode: 'dashboard', dashboardTab: 'dashboard', folderId: parts[1] };
   if (parts[0] === 'archive' || parts[0] === 'team' || parts[0] === 'credits') return { viewMode: 'dashboard', dashboardTab: parts[0] };
   if (parts[0] === 'settings') {
-    return { viewMode: 'dashboard', dashboardTab: 'settings', settingsSubTab: parts[1] === 'access' ? 'domains' : 'details' };
+    return { viewMode: 'dashboard', dashboardTab: 'settings', settingsSubTab: parts[1] === 'access' ? 'domains' : parts[1] === 'notifications' ? 'notifications' : 'details' };
   }
   return { viewMode: 'dashboard', dashboardTab: 'dashboard' };
 }
@@ -81,7 +81,7 @@ export function buildPath(state: {
     if (state.dashboardTab === 'archive') return '/archive';
     if (state.dashboardTab === 'team') return '/team';
     if (state.dashboardTab === 'credits') return '/credits';
-    if (state.dashboardTab === 'settings') return state.settingsSubTab === 'domains' ? '/settings/access' : '/settings';
+    if (state.dashboardTab === 'settings') return state.settingsSubTab === 'domains' ? '/settings/access' : state.settingsSubTab === 'notifications' ? '/settings/notifications' : '/settings';
     if (state.folderId) return `/folders/${encodeURIComponent(state.folderId)}`;
     return '/';
   }

@@ -13,6 +13,8 @@ import { saveDataUrl, UPLOAD_DIR, SAFE_FILE, CONTENT_TYPES } from './server/uplo
 import { moveEmbeddedFilesOut } from './server/migrations';
 import { startAutoSnapshots } from './server/snapshots';
 import { startNotifications } from './server/notifications';
+import { approveConnection, claimConnection, disconnect as disconnectExtension, extensionSummary, markRead, requireExtension, ExtensionRequest } from './server/extension';
+import { APP_URL, chatStatus, postToChat, sendSummaryNow, startDailySummary, summarySettings, spaceLabel, DEFAULT_SUMMARY, WEBHOOK_PATTERN } from './server/googleChat';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
@@ -441,6 +443,125 @@ async function startServer() {
     forgetPricingCache();
     await logAudit(req, 'ai.pricing_changed', { inputPerMillion: input, outputPerMillion: output });
     res.json({ ok: true });
+  });
+
+  // ---------- Chrome extension ----------
+  // The member approves the extension in the app (signed in); the extension then claims its key once
+  app.post('/api/extension/approve', requireMember, async (req: AuthedRequest, res) => {
+    try {
+      await approveConnection(req.body?.state, { uid: req.token!.uid, name: String(req.member?.name || ''), email: req.token?.email || '' }, String(req.headers['user-agent'] || ''));
+      await logAudit(req, 'extension.connected');
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || 'Could not connect.' });
+    }
+  });
+  app.post('/api/extension/claim', async (req, res) => {
+    const claimed = await claimConnection(req.body?.state);
+    if (!claimed) return res.status(404).json({ error: 'Not approved yet.' });
+    res.json({ ...claimed, appUrl: APP_URL });
+  });
+  app.get('/api/extension/summary', requireExtension, async (req: ExtensionRequest, res) => {
+    try {
+      res.json({ user: { name: req.extensionUser!.name, email: req.extensionUser!.email }, appUrl: APP_URL, ...(await extensionSummary(req.extensionUser!.uid)) });
+    } catch (err: any) {
+      console.warn('Extension summary failed:', err?.message || err);
+      res.status(500).json({ error: 'Could not load your pins.' });
+    }
+  });
+  app.post('/api/extension/read', requireExtension, async (req: ExtensionRequest, res) => {
+    res.json({ marked: await markRead(req.extensionUser!.uid, req.body?.ids) });
+  });
+  app.post('/api/extension/disconnect', requireExtension, async (req: ExtensionRequest, res) => {
+    await disconnectExtension(req.extensionKeyId!);
+    res.json({ ok: true });
+  });
+
+  // ---------- Google Chat alerts ----------
+  // Team space (alerts for every project + the daily summary): admins only. Links are never sent back to browsers.
+  app.get('/api/chat/settings', requireAdmin, async (req, res) => {
+    const [status, summary] = await Promise.all([chatStatus(), summarySettings()]);
+    res.json({ team: status.team, summary: { ...summary, lastSentDate: undefined }, lastSentDate: summary.lastSentDate || null });
+  });
+  app.post('/api/chat/settings', requireAdmin, async (req: AuthedRequest, res) => {
+    const body = req.body || {};
+    try {
+      if (body.teamWebhookUrl !== undefined) {
+        const url = String(body.teamWebhookUrl || '').trim();
+        if (url) {
+          if (!WEBHOOK_PATTERN.test(url)) return res.status(400).json({ error: 'Paste the webhook link from Google Chat (it starts with https://chat.googleapis.com/v1/spaces/).' });
+          await postToChat(url, `✅ *Markup is connected.* New client feedback and a daily summary of open pins will be posted here.`);
+          await adminDb.collection('chatWebhooks').doc('team').set({ url, updatedBy: req.token?.email || '', updatedAt: new Date().toISOString() });
+          await logAudit(req, 'chat.team_connected', { space: spaceLabel(url) });
+        } else {
+          await adminDb.collection('chatWebhooks').doc('team').delete();
+          await logAudit(req, 'chat.team_disconnected');
+        }
+      }
+      if (body.summary) {
+        const s = body.summary;
+        const time = String(s.time || DEFAULT_SUMMARY.time);
+        if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return res.status(400).json({ error: 'Enter the time as HH:MM.' });
+        const timeZone = String(s.timeZone || DEFAULT_SUMMARY.timeZone);
+        try {
+          new Intl.DateTimeFormat('en', { timeZone });
+        } catch {
+          return res.status(400).json({ error: 'Unknown time zone.' });
+        }
+        const summary = { enabled: s.enabled !== false, time, timeZone, weekdaysOnly: s.weekdaysOnly !== false };
+        await adminDb.doc('settings/chat').set({ summary }, { merge: true });
+        await logAudit(req, 'chat.summary_changed', summary);
+      }
+      res.json({ ok: true, ...(await chatStatus()) });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || 'Could not save.' });
+    }
+  });
+  app.post('/api/chat/summary-now', requireAdmin, async (req: AuthedRequest, res) => {
+    try {
+      await sendSummaryNow();
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || 'Could not send the summary.' });
+    }
+  });
+
+  // A project's alerts: the team space (default), its own space, or off. Admins and the project's creator.
+  const projectChatEditor = async (req: AuthedRequest, projectId: string) => {
+    const project = await adminDb.collection('projects').doc(projectId).get();
+    if (!project.exists) return null;
+    return { project: project.data() as any, canEdit: isAdminRole(req.member?.role) || project.data()?.ownerId === req.token?.uid };
+  };
+  app.get('/api/projects/:projectId/chat', requireMember, async (req: AuthedRequest, res) => {
+    const found = await projectChatEditor(req, req.params.projectId);
+    if (!found) return res.status(404).json({ error: 'Project not found.' });
+    res.json({ ...(await chatStatus(req.params.projectId)), canEdit: found.canEdit });
+  });
+  app.post('/api/projects/:projectId/chat', requireMember, async (req: AuthedRequest, res) => {
+    const projectId = req.params.projectId;
+    const found = await projectChatEditor(req, projectId);
+    if (!found) return res.status(404).json({ error: 'Project not found.' });
+    if (!found.canEdit) return res.status(403).json({ error: 'Only admins and the project creator can change its Google Chat alerts.' });
+    const mode = String(req.body?.mode || 'team');
+    const ref = adminDb.collection('chatWebhooks').doc(projectId);
+    try {
+      if (mode === 'own') {
+        const url = String(req.body?.url || '').trim();
+        // Already posting to its own space and no new link: nothing to change
+        if (!url && (await ref.get()).data()?.url) return res.json({ ...(await chatStatus(projectId)), canEdit: true });
+        if (!WEBHOOK_PATTERN.test(url)) return res.status(400).json({ error: 'Paste the webhook link from Google Chat (it starts with https://chat.googleapis.com/v1/spaces/).' });
+        await postToChat(url, `✅ *Markup is connected for ${String(found.project.name || 'this project').replace(/[*_~`<>|]/g, '')}.* New client feedback on it will be posted here.`);
+        await ref.set({ url, updatedBy: req.token?.email || '', updatedAt: new Date().toISOString() });
+      } else if (mode === 'off') {
+        await ref.set({ off: true, updatedBy: req.token?.email || '', updatedAt: new Date().toISOString() });
+      } else {
+        await ref.delete();
+      }
+      await logAudit(req, 'chat.project_changed', { projectId, mode });
+      res.json({ ...(await chatStatus(projectId)), canEdit: true });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || 'Could not save.' });
+    }
   });
 
   // Latest WebReview Connector plugin: its version, and the zip for admins to install or update
@@ -1097,6 +1218,7 @@ html, body {
   // Local emulator data is saved every 10 minutes (see server/snapshots.ts)
   startAutoSnapshots();
   startNotifications();
+  startDailySummary();
 
   moveEmbeddedFilesOut()
     .then((n) => n && console.log(`Migration: moved ${n} embedded files out of pins`))

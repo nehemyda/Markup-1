@@ -47,6 +47,7 @@ import {
 } from './lib/firebaseSync';
 import { Header } from './components/Header';
 import { AuthPage } from './components/AuthPage';
+import { ExtensionConnectPage, extensionConnectState } from './components/ExtensionConnectPage';
 import { AnnotationStudio } from './components/AnnotationStudio';
 import { SidebarDiscussion } from './components/SidebarDiscussion';
 import { KanbanBoard } from './components/KanbanBoard';
@@ -463,6 +464,8 @@ export default function App() {
 
   // ---------- URL routing: every page and project has its own address (see lib/routes.ts) ----------
   const [routeReady, setRouteReady] = useState(false);
+  // Approving the Chrome extension (/extension/connect?state=…), shown instead of the workspace until done
+  const [showExtensionConnect, setShowExtensionConnect] = useState(!!extensionConnectState);
   const pendingPinId = useRef<string | null>(null);
 
   const applyRoute = (route: Route) => {
@@ -541,7 +544,7 @@ export default function App() {
 
   // Keep the address bar in step with what is on screen
   useEffect(() => {
-    if (!routeReady) return;
+    if (!routeReady || showExtensionConnect) return;
     const inProject = viewMode !== 'dashboard' && projects.some((p) => p.id === currentProject.id);
     const path = buildPath({
       viewMode: inProject ? viewMode : 'dashboard',
@@ -562,7 +565,7 @@ export default function App() {
     const isLegacyLink = new URLSearchParams(window.location.search).has('project');
     if (samePage || isLegacyLink) window.history.replaceState(null, '', path);
     else window.history.pushState(null, '', path);
-  }, [routeReady, viewMode, dashboardTab, settingsSubTab, currentProject.id, currentAsset?.id, selectedPin?.id, device, projects, currentFolderId]);
+  }, [routeReady, showExtensionConnect, viewMode, dashboardTab, settingsSubTab, currentProject.id, currentAsset?.id, selectedPin?.id, device, projects, currentFolderId]);
 
   const handleNavigateDashboardTab = (tab: 'dashboard' | 'archive' | 'team' | 'credits' | 'settings' = 'dashboard') => {
     setDashboardTab(tab);
@@ -1223,6 +1226,10 @@ export default function App() {
       return <LoadingScreen dark />;
     }
     return <AuthPage notice={authNotice} />;
+  }
+
+  if (authUser && showExtensionConnect) {
+    return <ExtensionConnectPage user={authUser} appName={appName} onClose={() => setShowExtensionConnect(false)} />;
   }
 
   // Until the page in the address bar has been opened, show a neutral loading screen. Otherwise the dashboard

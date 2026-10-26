@@ -12,7 +12,8 @@
     "lint": "tsc --noEmit",
     "emulators": "JAVA_TOOL_OPTIONS=-Xmx4g firebase emulators:start --project demo-markup --export-on-exit=./emulator-data $([ -f emulator-data/firebase-export-metadata.json ] && echo --import=./emulator-data)",
     "wp:test": "npx -y @wp-playground/cli@3.1.54 server --port=8881 --php=8.3 --workers=1 --mount-before-install=../wordpress-test-site:/wordpress --wordpress-install-mode=install-from-existing-files-if-needed --mount=./wordpress-plugin/webreview-connector:/wordpress/wp-content/plugins/webreview-connector --mount=./wordpress-plugin/dev:/webreview-dev --blueprint=./wordpress-plugin/dev/blueprint.json --define WP_ENVIRONMENT_TYPE local --login",
-    "wp:zip": "mkdir -p build && rm -f build/webreview-connector.zip && cd wordpress-plugin && zip -rq ../build/webreview-connector.zip webreview-connector -x '*.DS_Store'"
+    "wp:zip": "mkdir -p build && rm -f build/webreview-connector.zip && cd wordpress-plugin && zip -rq ../build/webreview-connector.zip webreview-connector -x '*.DS_Store'",
+    "ext:zip": "mkdir -p build && rm -f build/markup-chrome-extension.zip && cd chrome-extension && zip -rq ../build/markup-chrome-extension.zip . -x '*.DS_Store' 'icons/icon.svg' 'README.md'"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

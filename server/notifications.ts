@@ -11,6 +11,7 @@
 // The person who did it is never told about their own action.
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from './firebaseAdmin';
+import { queueChatAlert } from './googleChat';
 
 type Person = { id: string; name: string; avatar?: string; email?: string; isGuest: boolean };
 
@@ -123,6 +124,8 @@ async function onNewPin(pin: any) {
     type: 'mention', title: `${actor.name} mentioned you on pin #${pin.number}`, message: short(text), pin, project,
   }, team);
   const recipients = [...projectPeople(project), pin.assignedTo?.id].filter((id) => id && !mentioned.has(id));
+  // Client feedback also goes to the project's Google Chat space
+  if (actor.isGuest && project) queueChatAlert(project, pin, `added by client ${actor.name.replace(/\s*\(Guest\)$/i, '')}`, text);
   await send(recipients, actor, `${pin.id}_created`, {
     type: 'pin', title: `${actor.isGuest ? 'Client' : actor.name} added pin #${pin.number}${where}`, message: short(`${actor.isGuest ? `${actor.name}: ` : ''}${text}`), pin, project,
   }, team);
@@ -140,6 +143,7 @@ async function onNewComments(pin: any, before: PinState) {
       await adminDb.collection('pins').doc(pin.id).update({ status: 'open' }).catch(() => {});
     }
     const reopened = actor.isGuest && pin.status === 'waiting_on_customer' ? ' (reopened)' : '';
+    if (actor.isGuest && project) queueChatAlert(project, pin, `client ${actor.name.replace(/\s*\(Guest\)$/i, '')} replied${reopened}`, comment.text);
     const mentioned = new Set(mentionedIn(comment.text, team));
     await send(mentioned, actor, `${pin.id}_mention_${comment.id}`, {
       type: 'mention', title: `${actor.name} mentioned you on pin #${pin.number}${reopened}`, message: short(comment.text), pin, project,
