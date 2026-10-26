@@ -412,7 +412,15 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
   const [archiveCommentFilter, setArchiveCommentFilter] = useState<'all' | 'open' | 'resolved'>('all');
 
   // Sliders & Sorting
-  const [gridColumns, setGridColumns] = useState<number>(4); // 2, 3, 4, 5 columns
+  // Cards per row on wide screens: 5 by default; a different choice is remembered per browser
+  const [gridColumns, setGridColumns] = useState<number>(() => {
+    try {
+      const saved = Number(localStorage.getItem('mf_grid_columns'));
+      return [3, 4, 5].includes(saved) ? saved : 5;
+    } catch (e) {
+      return 5;
+    }
+  });
   const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'name' | 'comments'>('newest');
 
   const activeArchiveFilterCount = (archiveCategoryFilter !== 'all' ? 1 : 0) + (archiveCommentFilter !== 'all' ? 1 : 0);
@@ -730,7 +738,13 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                   {/* Grid Scale / Column Density Toggle */}
                   <button
                     onClick={() => {
-                      setGridColumns(prev => prev === 4 ? 3 : prev === 3 ? 5 : 4);
+                      setGridColumns(prev => {
+                        const next = prev === 5 ? 4 : prev === 4 ? 3 : 5;
+                        try {
+                          localStorage.setItem('mf_grid_columns', String(next));
+                        } catch (e) {}
+                        return next;
+                      });
                     }}
                     className="p-2 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-200/60 transition-colors cursor-pointer flex items-center gap-1 text-xs font-bold"
                     title={`Current layout: ${gridColumns} columns. Click to cycle density.`}
