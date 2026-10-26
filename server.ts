@@ -175,8 +175,16 @@ async function inspectPinTarget(url: string, width: number, selector: string, po
         const cls = diviClass(up);
         if (cls) diviParents.push(cls);
       }
+      // The image at the pin (the element itself, the one image inside it, or its figure's), with its shown size,
+      // so a replacement image can keep that size
+      const imgs = el.tagName === 'IMG' ? [el] : Array.from(el.querySelectorAll('img'));
+      const img = (imgs.length === 1 ? imgs[0] : el.closest('figure')?.querySelector('img')) as HTMLImageElement | null | undefined;
+      const image = img && img.offsetWidth > 0
+        ? { src: img.getAttribute('src') || '', width: img.offsetWidth, height: img.offsetHeight }
+        : null;
       return {
         tag: el.tagName.toLowerCase(),
+        image,
         text: ((el as HTMLElement).innerText || '').trim().slice(0, 400),
         html: el.outerHTML.slice(0, 1500),
         classes: typeof el.className === 'string' ? el.className : '',

@@ -8,6 +8,7 @@ import { capturePageSnapshot, captureImageSnapshot, ReviewSnapshot, cssSelector 
 import { nextPinNumber, pinDevice, PinDevice, DEVICE_WIDTHS, pinColor } from '../lib/pins';
 import { Project, Asset, Pin, PinCategory, PinPriority, Teammate, FilterState, DeviceViewport, Attachment } from '../types';
 import { SearchableMemberSelect } from './SearchableMemberSelect';
+import { UserAvatar } from './UserAvatar';
 import { 
   MousePointer, 
   MessageSquarePlus, 
@@ -956,12 +957,10 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
                   >
                     <span>{pin.number}</span>
                     
-                    {/* Tiny Author Avatar Badge */}
-                    <img 
-                      src={pin.author.avatar} 
-                      alt={pin.author.name} 
-                      className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full border border-white object-cover"
-                    />
+                    {/* Tiny author avatar: their photo, or their initials (guests have no photo) */}
+                    <span className="absolute -bottom-1 -right-1 rounded-full ring-1 ring-white">
+                      <UserAvatar name={pin.author.name} email={pin.author.email} avatar={pin.author.avatar} size={16} title={pin.author.name} />
+                    </span>
                   </div>
 
                   {/* Hover Tooltip Preview */}

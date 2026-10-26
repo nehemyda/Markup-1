@@ -43,7 +43,7 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
 
   if (typeof size === 'number') {
     pxSize = size;
-    textSizeClass = size <= 28 ? 'text-[10px]' : size <= 40 ? 'text-xs' : size <= 56 ? 'text-sm' : 'text-base';
+    textSizeClass = size <= 18 ? 'text-[7px] font-bold tracking-normal' : size <= 28 ? 'text-[10px]' : size <= 40 ? 'text-xs' : size <= 56 ? 'text-sm' : 'text-base';
   } else {
     switch (size) {
       case 'xs':

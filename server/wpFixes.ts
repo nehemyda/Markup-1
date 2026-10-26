@@ -32,6 +32,8 @@ export interface PinTarget {
   diviModule?: string | null;
   diviParents?: string[];
   box?: { width: number; height: number };
+  // The image at the pin and its shown size in pixels
+  image?: { src: string; width: number; height: number } | null;
   // The element and the boxes around it, with their widths (what limits its size)
   layout?: Array<{ element: string; width: number; maxWidth: string }>;
 }
@@ -247,6 +249,92 @@ function fillImage(text: string, media: { id: number; url: string }) {
   return text.split(`"${IMAGE_ID}"`).join(String(media.id)).split(IMAGE_ID).join(String(media.id)).split(IMAGE_URL).join(media.url);
 }
 
+// ---------- Keeping an image's size when it is replaced ----------
+// The AI writes a replacement image at its full size, so e.g. a large photo put in place of a 200px logo filled the
+// whole column. A replacement keeps the old image's shown size instead (cropped to fit, never stretched).
+
+const pixels = (value: unknown) => {
+  const n = parseFloat(String(value ?? ''));
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+};
+
+// The file an image address points at, without WordPress's size suffix (photo-300x200.jpg → photo.jpg)
+function imageFile(src: string) {
+  const name = String(src || '').split(/[?#]/)[0].split('/').pop() || '';
+  return name.replace(/-\d+x\d+(?=\.[a-z0-9]+$)/i, '').toLowerCase();
+}
+
+// The old image's size: set on it in the builder, or else as measured on the page (when the pin is on that image)
+function oldImageSize(oldSrc: string, set: { width?: unknown; height?: unknown }, target: PinTarget | null) {
+  if (pixels(set.width) && pixels(set.height)) return { width: pixels(set.width), height: pixels(set.height) };
+  if (oldSrc && target?.image && imageFile(target.image.src) === imageFile(oldSrc)) {
+    return { width: target.image.width, height: target.image.height };
+  }
+  return null;
+}
+
+const GUTENBERG_IMAGE = /<!-- wp:image (\{[\s\S]*?\}) -->([\s\S]*?)<!-- \/wp:image -->/;
+const DIVI_IMAGE = /\[et_pb_image\b[^\]]*\]/;
+
+function keepImageSize(find: string, replace: string, target: PinTarget | null) {
+  if (!replace.includes(IMAGE_URL)) return replace;
+  // Gutenberg: the new image block gets the old one's width and height, cropped to fit (as the editor's own resize does)
+  const oldBlock = GUTENBERG_IMAGE.exec(find);
+  const newBlock = GUTENBERG_IMAGE.exec(replace);
+  if (oldBlock && newBlock && newBlock[0].includes(IMAGE_URL)) {
+    const oldSrc = /<img\b[^>]*\bsrc="([^"]*)"/.exec(oldBlock[2])?.[1] || '';
+    // Old image still there: the new one is added next to it, not a replacement
+    if (oldSrc && replace.includes(oldSrc)) return replace;
+    let oldAttrs: any = {};
+    let attrs: any;
+    try {
+      oldAttrs = JSON.parse(oldBlock[1]);
+      attrs = JSON.parse(newBlock[1].replace(/"?\{\{image_id\}\}"?/g, '"__IMAGE_ID__"'));
+    } catch {
+      return replace;
+    }
+    const size = oldImageSize(oldSrc, oldAttrs, target);
+    if (!size) return replace;
+    delete attrs.aspectRatio;
+    Object.assign(attrs, { width: `${size.width}px`, height: `${size.height}px`, scale: 'cover' });
+    const markup = newBlock[2]
+      .replace(/(<figure\b[^>]*\bclass=")([^"]*)"/, (_m, start, cls) => `${start}${/\bis-resized\b/.test(cls) ? cls : `${cls} is-resized`}"`)
+      .replace(/(<img\b[^>]*?)\s+style="[^"]*"/, '$1')
+      .replace(/<img\b([^>]*?)\s*\/?>/, (_m, rest) => `<img${rest} style="object-fit:cover;width:${size.width}px;height:${size.height}px"/>`);
+    const json = JSON.stringify(attrs).split('"__IMAGE_ID__"').join(IMAGE_ID);
+    return replace.replace(newBlock[0], () => `<!-- wp:image ${json} -->${markup}<!-- /wp:image -->`);
+  }
+  // Divi: the image module keeps the old width (Divi has no crop setting, so the height follows the new image)
+  const oldModule = DIVI_IMAGE.exec(find);
+  const newModule = DIVI_IMAGE.exec(replace);
+  if (oldModule && newModule && newModule[0].includes(IMAGE_URL)) {
+    const attr = (tag: string, name: string) => new RegExp(`\\b${name}="([^"]*)"`).exec(tag)?.[1] || '';
+    const oldSrc = attr(oldModule[0], 'src');
+    if (oldSrc && replace.includes(oldSrc)) return replace;
+    const size = oldImageSize(oldSrc, { width: attr(oldModule[0], 'width'), height: 1 }, target);
+    if (!size) return replace;
+    const tag = newModule[0].replace(/\s+width="[^"]*"/, '').replace(/\]$/, ` width="${size.width}px"]`);
+    return replace.replace(newModule[0], () => tag);
+  }
+  return replace;
+}
+
+// Elementor: an image widget whose picture is replaced keeps its width and height, cropped to fit
+function keepElementorImageSize(element: any, settings: Record<string, any>, target: PinTarget | null) {
+  if (element?.widgetType !== 'image' || !String(settings.image?.url || '').includes(IMAGE_URL)) return settings;
+  if (settings.width || settings.height) return settings;
+  const old = element.settings || {};
+  const set = old.width?.unit === 'px' && old.height?.unit === 'px' ? { width: old.width.size, height: old.height.size } : {};
+  const size = oldImageSize(String(old.image?.url || ''), set, target);
+  if (!size) return settings;
+  return {
+    ...settings,
+    width: { unit: 'px', size: size.width, sizes: [] },
+    height: { unit: 'px', size: size.height, sizes: [] },
+    'object-fit': 'cover',
+  };
+}
+
 // ---------- Prepare a fix ----------
 
 const FIX_SCHEMA = {
@@ -339,6 +427,7 @@ ${builder === 'divi' ? `- Divi: the element at the pin belongs to module ${targe
 - If the element is not in this page's own content (e.g. the page title, header, footer or menu printed by the theme template), you can't remove or edit it here: use css for this page and say in the explanation that it comes from the theme template, so CSS hides it on this page only and editing the template would change every page.
 - css: start every selector with body.${input.bodyClass} unless the problem is site-wide${device !== 'desktop' ? `; wrap it in a media query for ${device} (${device === 'mobile' ? 'max-width: 767px' : 'min-width: 768px and max-width: 1024px'})` : ''}. No @import, no external URLs.
 - To place an attached image, set imageAttachment to its label and write ${IMAGE_URL} and ${IMAGE_ID} where its address and Media Library id go (they are filled in when the image is uploaded on approval). Use a short descriptive alt text. Gutenberg: <!-- wp:image {"id":${IMAGE_ID},"sizeSlug":"full","linkDestination":"none"} --><figure class="wp-block-image size-full"><img src="${IMAGE_URL}" alt="..." class="wp-image-${IMAGE_ID}"/></figure><!-- /wp:image --> as its own block (e.g. find = the block it goes after, replace = that block followed by the image block). Divi: [et_pb_image src="${IMAGE_URL}" alt="..." _builder_version="4.27.4"][/et_pb_image] as its own module in the same column. Elementor: kind elementor_insert, afterElementId = the element it goes below, widgetJson = {"widgetType":"image","settings":{"image":{"url":"${IMAGE_URL}","id":"${IMAGE_ID}"},"image_size":"full"}}.
+- To REPLACE an existing image with an attached one (not add another), change only the image itself and keep its block, module or widget with all its other settings, so it stays in the same place: Gutenberg, find = the whole old image block, replace = the same block with the new ${IMAGE_ID} and ${IMAGE_URL}; Divi, change the et_pb_image src; Elementor, kind elementor_settings on that image widget with settings {"image":{"url":"${IMAGE_URL}","id":"${IMAGE_ID}"}}. Don't set a width or height: the new image is given the old image's size automatically.
 - site_replace: use it only when the feedback asks to change wording across the whole website. find = the exact wording as written on the site (case-sensitive, plain text, no HTML), replace = the new wording, wholeWord = true unless the change is meant inside longer words. It changes visible text on every page, title, menu and layout, never links or file names; a preview of every place is shown to an admin before anything changes.
 - elementor_insert may add only one of these widgets: ${ELEMENTOR_INSERTABLE.join(', ')}.
 - Never add scripts, iframes, forms, tracking or links to other sites.`;
@@ -440,7 +529,7 @@ export async function prepareFix(opts: {
   const explanation = String(proposal.explanation || '').slice(0, 1000);
   const usesImage = (text: string) => text.includes(IMAGE_URL) || text.includes(IMAGE_ID);
   const picked = String(proposal.imageAttachment || '').trim().toLowerCase();
-  const placesImage = [proposal.replace, proposal.widgetJson].some((t) => usesImage(String(t || '')));
+  const placesImage = [proposal.replace, proposal.widgetJson, proposal.settingsJson].some((t) => usesImage(String(t || '')));
   // The label the AI gave (or the file name); if it placed an image and only one is attached, that one
   const chosen = images.find((img) => picked && (img.label.toLowerCase() === picked || img.name.toLowerCase() === picked))
     || (placesImage && images.length === 1 ? images[0] : undefined);
@@ -488,9 +577,12 @@ export async function prepareFix(opts: {
     }
     if (keys.some((k) => !/^[a-z][a-z0-9_]*$/i.test(k))) reject('The AI suggested invalid setting names.');
     checkSettingValue(settings);
-    const before = Object.fromEntries(keys.map((k) => [k, element.settings?.[k] ?? null]));
+    checkImageUse(JSON.stringify(settings));
+    settings = keepElementorImageSize(element, settings, target);
+    const changed = Object.keys(settings);
+    const before = Object.fromEntries(changed.map((k) => [k, element.settings?.[k] ?? null]));
     const sameValue = (a: any, b: any) => JSON.stringify(a) === JSON.stringify(b) || (typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase());
-    if (keys.every((k) => sameValue(before[k], settings[k]))) {
+    if (changed.every((k) => sameValue(before[k], settings[k]))) {
       fix = { ...base, kind: 'none', status: 'not_possible', reason: 'This already looks fixed on the page: the settings the AI would change already have those values.' };
       const ref = adminDb.collection('wpFixes').doc();
       await ref.set({ ...fix, id: ref.id });
@@ -562,8 +654,9 @@ export async function prepareFix(opts: {
     // The AI sometimes leaves "find" empty when inserting. If its replacement starts with blocks that are already on
     // the page exactly once (e.g. the button the image goes below), those blocks are what it meant to keep in place.
     if (!find && proposal.replace) find = existingLeadingBlocks(String(page.content || ''), String(proposal.replace));
-    const replace = String(proposal.replace ?? '');
     const content = String(page.content || '');
+    // A replaced image keeps the old one's size on the page
+    const replace = keepImageSize(find, String(proposal.replace ?? ''), target);
     if (!find || find === replace) reject('The AI did not suggest a change. Try again.');
     const matches = countOf(content, find);
     if (matches !== 1) throw new WpError(matches ? 'The AI picked text that appears more than once. Try again.' : 'The AI picked text that is not on the page. Try again.', 422);
@@ -642,7 +735,7 @@ export async function applyFix(projectId: string, fixId: string, actor: Actor, i
     } else if (fix.kind === 'elementor_settings') {
       result = await wpRequest(creds, `/webreview/v1/page/${fix.postId}/elementor-element`, {
         method: 'POST',
-        body: { ...common, element_id: fix.elementId, settings: JSON.parse(fix.settingsJson), expected_hash: fix.baseHash },
+        body: { ...common, element_id: fix.elementId, settings: JSON.parse(withImage(fix.settingsJson)), expected_hash: fix.baseHash },
       });
     } else if (fix.kind === 'content_replace') {
       const page = await wpRequest(creds, `/webreview/v1/page/${fix.postId}`);
