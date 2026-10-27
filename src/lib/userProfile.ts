@@ -1,6 +1,6 @@
-import { User } from 'firebase/auth';
-import { doc, setDoc } from 'firebase/firestore';
-import { db } from './firebase';
+import { supabase } from './supabase';
+import { apiFetch } from './api';
+import { toRow } from './rows';
 import { AuthUser, Organization } from '../types';
 import { getAllowedDomains } from '../utils/domains';
 
@@ -59,11 +59,8 @@ export function isMasterAdmin(email: string | null | undefined): boolean {
 
 // After sign-in the server loads (or creates) the member profile and decides the role.
 // Throws with a readable message when this account may not use the workspace.
-export async function startSession(fbUser: User): Promise<AuthUser> {
-  const res = await fetch('/api/auth/session', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${await fbUser.getIdToken()}` },
-  });
+export async function startSession(): Promise<AuthUser> {
+  const res = await apiFetch('/api/auth/session', { method: 'POST' });
   const body = await res.json().catch(() => ({}));
   if (!res.ok || !body.profile) throw new Error(body.error || 'Could not sign in. Please try again.');
   return body.profile as AuthUser;
@@ -78,9 +75,6 @@ export async function saveProfile(profile: AuthUser & { department?: string }): 
     cursorColor: profile.cursorColor,
   };
   if (profile.department !== undefined) editable.department = profile.department;
-  try {
-    await setDoc(doc(db, 'users', profile.id), editable, { merge: true });
-  } catch (err) {
-    console.warn('Failed saving user profile to Firestore:', err);
-  }
+  const { error } = await supabase.from('users').update(toRow('users', editable)).eq('id', profile.id);
+  if (error) console.warn('Failed saving user profile:', error.message);
 }

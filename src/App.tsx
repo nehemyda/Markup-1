@@ -18,7 +18,8 @@ import {
   QARubricRule,
   QAPinError,
   Folder,
-  WpSite
+  WpSite,
+  Revision,
 } from './types';
 import { 
   INITIAL_PROJECTS, 
@@ -27,15 +28,15 @@ import { INITIAL_QA_RUBRIC } from './data/qaRubricData';
 import { 
   subscribeProjects, 
   subscribePins, 
-  saveProjectToFirestore, 
-  deleteProjectFromFirestore,
-  savePinToFirestore, 
-  deletePinFromFirestore, 
+  saveProject,
+  deleteProject,
+  savePin,
+  deletePin,
   deletePinsForAssets,
   subscribeTeam,
   subscribeFolders,
   saveFolder,
-  deleteFolderDoc,
+  deleteFolder,
   inviteMember,
   updateMemberRole,
   removeMember,
@@ -44,7 +45,10 @@ import {
   subscribeWpSite,
   subscribeNotifications,
   markNotificationsRead,
-} from './lib/firebaseSync';
+  subscribeRevisions,
+  unsentClientPins,
+} from './lib/supabaseSync';
+import { GuestReviewBanner, UnsentPinsBar, SubmitRevisionDialog, TeamRevisionBar } from './components/RevisionControls';
 import { Header } from './components/Header';
 import { AuthPage } from './components/AuthPage';
 import { ExtensionConnectPage, extensionConnectState } from './components/ExtensionConnectPage';
@@ -58,12 +62,12 @@ import { QAScoreManager } from './components/QAScoreManager';
 import { NewProjectModal, NewAssetModal, ShareModal, GuestNameModal } from './components/Modals';
 import { WordPressModal } from './components/WordPressModal';
 import { useRolePermissions } from './lib/permissions';
-import { useBranding, useGuestPolicy, brandEmblem } from './lib/workspaceSettings';
+import { useBranding, brandEmblem } from './lib/workspaceSettings';
 import { DomainSecurityModal } from './components/DomainSecurityModal';
 import { ProfileSettingsModal } from './components/ProfileSettingsModal';
 import { getAllowedDomains } from './utils/domains';
-import { onAuthStateChanged, signOut, signInWithCustomToken } from 'firebase/auth';
-import { auth } from './lib/firebase';
+import type { Session } from '@supabase/supabase-js';
+import { supabase } from './lib/supabase';
 import { ReviewSnapshot } from './lib/pageSnapshot';
 import { nextPinNumber, pinDevice, describeClient, PinDevice } from './lib/pins';
 import { parseRoute, buildPath, Route, DashboardTab, SettingsSubTab } from './lib/routes';
@@ -101,7 +105,7 @@ function LoadingScreen({ dark = false }: { dark?: boolean }) {
 
 export default function App() {
   // Authentication State
-  // Authentication State (driven by Firebase Auth via onAuthStateChanged below)
+  // Authentication State (driven by Supabase Auth via onAuthStateChange below)
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
@@ -112,7 +116,6 @@ export default function App() {
   const branding = useBranding();
   const appName = branding.appName;
   const appIcon = brandEmblem(branding);
-  const guestPolicy = useGuestPolicy();
   useEffect(() => {
     document.title = appName;
   }, [appName]);
@@ -130,7 +133,7 @@ export default function App() {
     }
   });
   const [showGuestNameModal, setShowGuestNameModal] = useState(false);
-  const pendingGuestAction = useRef<{ kind: 'pin'; data: any } | { kind: 'comment'; args: any[] } | null>(null);
+  const pendingGuestAction = useRef<{ kind: 'pin'; data: any } | { kind: 'comment'; args: any[] } | { kind: 'submit' } | null>(null);
   const [projectsLoaded, setProjectsLoaded] = useState(false);
 
   const [projects, setProjects] = useState<Project[]>(() => {
@@ -231,7 +234,7 @@ export default function App() {
     }
   }, [selectedPin?.id]);
   const [activityLogs, setActivityLogs] = useState<ActivityItem[]>([]);
-  // Teammates are the real signed-up users (Firestore users collection), see subscribeUsers below
+  // Teammates are the real signed-up users (users table), see subscribeTeam below
   const [teammates, setTeammates] = useState<Teammate[]>([]);
   // Folders group projects (e.g. per partner); currentFolderId is the folder open on the dashboard
   const [folders, setFolders] = useState<Folder[]>([]);
@@ -263,83 +266,103 @@ export default function App() {
   // Data subscriptions start once this is known, and guests only load their project.
   const [accessKey, setAccessKey] = useState('');
 
-  // Firebase Auth: restore the session on load and react to sign-in / sign-out
+  // Opened from a password reset link: choose a new password before continuing
+  const [passwordRecovery, setPasswordRecovery] = useState(false);
+  // The account whose member session is set up (token refreshes don't start it again)
+  const sessionFor = useRef<string | null>(null);
+  // Guest pass already asked for this project (avoids asking again in a loop)
+  const guestPassAsked = useRef<string | null>(null);
+
+  // Supabase Auth: restore the session on load and react to sign-in / sign-out
   useEffect(() => {
-    const unsubAuth = onAuthStateChanged(auth, async (fbUser) => {
-      if (!fbUser) {
-        setAuthUser(null);
-        setCurrentOrganization(null);
-        setAccessKey('');
-        setAuthReady(true);
-        return;
-      }
-      let claims: Record<string, any>;
-      try {
-        ({ claims } = await fbUser.getIdTokenResult());
-      } catch {
-        // Saved session that no longer works (e.g. its account was deleted): start fresh.
-        // Signing out runs this listener again with no user, which shows sign-in or gets a new guest pass.
-        await signOut(auth).catch(() => {});
-        return;
-      }
-      if (claims.guestProject) {
-        // A guest pass only works on its own guest link
+    const signedOut = () => {
+      sessionFor.current = null;
+      setAuthUser(null);
+      setCurrentOrganization(null);
+      setAccessKey('');
+      setAuthReady(true);
+    };
+
+    const handle = async (session: Session | null) => {
+      const user = session?.user;
+      if (!user) return signedOut();
+
+      // Guests sign in anonymously; the server adds a pass for the project in their link
+      if (user.is_anonymous) {
         const linkProject = guestLinkProjectId();
-        if (!linkProject || linkProject !== claims.guestProject) {
-          await signOut(auth);
+        if (!linkProject) {
+          await supabase.auth.signOut();
           return;
         }
+        if (user.app_metadata?.guest_project !== linkProject) {
+          if (guestPassAsked.current === linkProject) return;
+          guestPassAsked.current = linkProject;
+          try {
+            const res = await apiFetch('/api/guest/session', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ projectId: linkProject }),
+              signal: AbortSignal.timeout(20000),
+            });
+            const body = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(body.error || 'Could not open this shared project.');
+            // The new pass is in the refreshed session; this listener runs again with it
+            const { error } = await supabase.auth.refreshSession();
+            if (error) throw error;
+          } catch (err: any) {
+            alert(err.message);
+            await supabase.auth.signOut();
+            window.location.href = '/';
+          }
+          return;
+        }
+        sessionFor.current = null;
         setAuthUser(null);
-        setAccessKey(`guest:${claims.guestProject}`);
+        setAccessKey(`guest:${linkProject}`);
         setAuthReady(true);
         return;
       }
+
+      if (sessionFor.current === user.id) return;
+      sessionFor.current = user.id;
       try {
         // The server checks access, applies invites and decides the role
-        const profile = await startSession(fbUser);
+        const profile = await startSession();
         setAuthNotice(null);
         setCurrentOrganization(getDefaultOrganization());
         setAuthUser(profile);
         setAccessKey('member');
         setAuthReady(true);
       } catch (err: any) {
+        sessionFor.current = null;
         setAuthNotice(err?.message || 'Could not sign in.');
-        await signOut(auth);
+        await supabase.auth.signOut();
       }
+    };
+
+    const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true);
+      // Supabase asks not to call it again from inside this callback, so the work runs right after
+      setTimeout(() => handle(session), 0);
     });
-    return () => unsubAuth();
+    return () => data.subscription.unsubscribe();
   }, []);
 
-  // Guest link without a signed-in member: get a pass for this one project from the server
+  // Guest link without anyone signed in: sign in as a guest (the listener above then gets the project pass)
   useEffect(() => {
-    if (!authReady || auth.currentUser) return;
-    const projectId = guestLinkProjectId();
-    if (!projectId) return;
-    let guestId = '';
-    try {
-      guestId = localStorage.getItem('mf_guest_id') || '';
-    } catch (e) {}
-    fetch('/api/guest/session', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ projectId, guestId }),
-      signal: AbortSignal.timeout(20000),
-    })
-      .then(async (res) => {
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(body.error || 'Could not open this shared project.');
-        try {
-          localStorage.setItem('mf_guest_id', body.guestId);
-        } catch (e) {}
-        await signInWithCustomToken(auth, body.token);
-      })
-      .catch((err) => {
-        alert(err.message);
+    if (!authReady || accessKey || !guestLinkProjectId()) return;
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      if (data.session) return;
+      const { error } = await supabase.auth.signInAnonymously();
+      if (error) {
+        alert(`Could not open this shared project: ${error.message}`);
         window.location.href = '/';
-      });
-  }, [authReady]);
+      }
+    })();
+  }, [authReady, accessKey]);
 
-  // Firebase Firestore Real-Time Synchronization (starts once we know who is signed in)
+  // Live data from Supabase (starts once we know who is signed in)
   useEffect(() => {
     if (!accessKey) {
       // Signed out: forget the data and open the page in the address bar again after the next sign-in
@@ -361,7 +384,7 @@ export default function App() {
       };
     }
 
-    // Firestore is the source of truth; its SDK queues writes made while offline
+    // The database is the source of truth
     const unsubProjects = subscribeProjects((cloudProjects) => {
       setProjects(cloudProjects);
       setProjectsLoaded(true);
@@ -416,6 +439,62 @@ export default function App() {
     if (accessKey !== 'member' || !authUser?.id) return;
     return subscribeNotifications(authUser.id, setNotifications);
   }, [accessKey, authUser?.id]);
+
+  // Client revisions of the open project (members and the project's guests)
+  const [revisions, setRevisions] = useState<Revision[]>([]);
+  useEffect(() => {
+    setRevisions([]);
+    if (!accessKey || !currentProject?.id) return;
+    return subscribeRevisions(currentProject.id, setRevisions);
+  }, [accessKey, currentProject?.id]);
+  const [showSubmitDialog, setShowSubmitDialog] = useState(false);
+  const [submitForClient, setSubmitForClient] = useState(false);
+
+  // Guests on the same link see when someone is still writing a pin (Supabase Realtime presence)
+  const [isDrafting, setIsDrafting] = useState(false);
+  const [othersDrafting, setOthersDrafting] = useState<string[]>([]);
+  const presenceChannel = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const guestKey = !authUser && guestProfile?.email ? guestProfile.id : '';
+  useEffect(() => {
+    setOthersDrafting([]);
+    if (!accessKey.startsWith('guest:') || !guestKey) return;
+    const channel = supabase.channel(`review:${accessKey.slice('guest:'.length)}`, { config: { presence: { key: guestKey } } });
+    channel
+      .on('presence', { event: 'sync' }, () => {
+        const state = channel.presenceState<{ name: string; drafting: boolean }>();
+        setOthersDrafting(
+          Object.entries(state)
+            .filter(([key]) => key !== guestKey)
+            .flatMap(([, metas]) => metas)
+            .filter((m) => m.drafting)
+            .map((m) => m.name)
+        );
+      })
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') channel.track({ name: guestProfile?.name || 'Guest', drafting: isDrafting });
+      });
+    presenceChannel.current = channel;
+    return () => {
+      presenceChannel.current = null;
+      supabase.removeChannel(channel);
+    };
+  }, [accessKey, guestKey]);
+  useEffect(() => {
+    presenceChannel.current?.track({ name: guestProfile?.name || 'Guest', drafting: isDrafting });
+  }, [isDrafting]);
+
+  // Leaving the link with pins not sent to the developer: the browser asks "Leave site?"
+  const guestUnsent =
+    accessKey.startsWith('guest:') && currentProject.reviewState !== 'submitted' ? unsentClientPins(pins, currentProject.id).length : 0;
+  useEffect(() => {
+    if (!guestUnsent) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [guestUnsent > 0]);
 
   // Keep the selected project pointing at a real project (the initial value is only a placeholder)
   useEffect(() => {
@@ -527,6 +606,7 @@ export default function App() {
     if (!guestProfile || !pending) return;
     pendingGuestAction.current = null;
     if (pending.kind === 'pin') handleAddPin(pending.data);
+    else if (pending.kind === 'submit') setShowSubmitDialog(true);
     else handleAddComment(...(pending.args as Parameters<typeof handleAddComment>));
   }, [guestProfile]);
 
@@ -696,7 +776,7 @@ export default function App() {
     if (currentProject.assets.some((a) => a.id === page.id)) return;
     const updatedProject = { ...currentProject, assets: [...currentProject.assets, page] };
     setProjects((prev) => prev.map((p) => (p.id === updatedProject.id ? updatedProject : p)));
-    saveProjectToFirestore(updatedProject);
+    saveProject(updatedProject);
     setCurrentProject(updatedProject);
   };
 
@@ -756,7 +836,7 @@ export default function App() {
     };
 
     setPins((prev) => [newPin, ...prev]);
-    savePinToFirestore(newPin);
+    savePin(newPin);
     setSelectedPin(newPin);
 
     // Update asset pin count
@@ -809,7 +889,7 @@ export default function App() {
         if (pin.id === pinId) {
           const updated = { ...pin, comments: [...pin.comments, newComment] };
           if (selectedPin?.id === pinId) setSelectedPin(updated);
-          savePinToFirestore(updated);
+          savePin(updated);
           return updated;
         }
         return pin;
@@ -839,7 +919,7 @@ export default function App() {
         if (pin.id === pinId) {
           const updated = { ...pin, status: newStatus };
           if (selectedPin?.id === pinId) setSelectedPin(updated);
-          savePinToFirestore(updated);
+          savePin(updated);
           return updated;
         }
         return pin;
@@ -869,7 +949,7 @@ export default function App() {
         if (pin.id === pinId) {
           const updated = { ...pin, assignedTo: assignee, assignedBy: { id: currentUser.id, name: currentUser.name, avatar: currentUser.avatar } };
           if (selectedPin?.id === pinId) setSelectedPin(updated);
-          savePinToFirestore(updated);
+          savePin(updated);
           return updated;
         }
         return pin;
@@ -956,7 +1036,7 @@ export default function App() {
       });
 
       setPins((prev) => [...newPins, ...prev]);
-      newPins.forEach((pin) => savePinToFirestore(pin));
+      newPins.forEach((pin) => savePin(pin));
       setSelectedPin(newPins[0]);
 
       const log: ActivityItem = {
@@ -1004,7 +1084,7 @@ export default function App() {
     if (!project) return;
     const updated = { ...project, folderId };
     setProjects((prev) => prev.map((p) => (p.id === projectId ? updated : p)));
-    saveProjectToFirestore(updated);
+    saveProject(updated);
   };
 
   // Developers told about new client feedback on a project (empty = its creator)
@@ -1013,14 +1093,14 @@ export default function App() {
     if (!project) return;
     const updated = { ...project, assigneeIds };
     setProjects((prev) => prev.map((p) => (p.id === projectId ? updated : p)));
-    saveProjectToFirestore(updated);
+    saveProject(updated);
   };
 
   // Deleting a folder keeps its projects: they move back to the main list
   const handleDeleteFolder = (folderId: string) => {
     projects.filter((p) => p.folderId === folderId).forEach((p) => handleMoveProject(p.id, null));
     setFolders((prev) => prev.filter((f) => f.id !== folderId));
-    deleteFolderDoc(folderId);
+    deleteFolder(folderId);
     if (currentFolderId === folderId) setCurrentFolderId(null);
   };
 
@@ -1069,7 +1149,7 @@ export default function App() {
       } catch (e) {}
       return updated;
     });
-    saveProjectToFirestore(newProj);
+    saveProject(newProj);
     setCurrentProject(newProj);
     setCurrentAsset(newAsset);
     setSelectedPin(null);
@@ -1083,7 +1163,7 @@ export default function App() {
   const handleDeleteProject = (projectId: string) => {
     const deletedProject = projects.find((p) => p.id === projectId);
     const assetIds = (deletedProject?.assets || []).map((a) => a.id);
-    deleteProjectFromFirestore(projectId);
+    deleteProject(projectId);
     deletePinsForAssets(assetIds);
     setPins((prev) => prev.filter((p) => !assetIds.includes(p.assetId)));
     setProjects((prev) => {
@@ -1122,7 +1202,7 @@ export default function App() {
       prev.map((pin) => {
         if (pin.id !== pinId) return pin;
         const updated = change(pin);
-        savePinToFirestore(updated);
+        savePin(updated);
         if (selectedPin?.id === pinId) setSelectedPin(updated.deletedAt ? null : updated);
         return updated;
       })
@@ -1140,12 +1220,14 @@ export default function App() {
     updatePin(pinId, (pin) => ({ ...pin, deletedAt: null, deletedBy: null }));
   };
   const handlePurgePin = (pinId: string) => {
-    deletePinFromFirestore(pinId);
+    deletePin(pinId);
     setPins((prev) => prev.filter((p) => p.id !== pinId));
     if (selectedPin?.id === pinId) setSelectedPin(null);
   };
   // Pins that aren't deleted: the page, Kanban, Table, counts and QA scores use these
   const livePins = React.useMemo(() => pins.filter((p) => !p.deletedAt), [pins]);
+  // The open pin as last saved (someone else may have changed its status or replied since it was opened)
+  const openPin = selectedPin ? pins.find((p) => p.id === selectedPin.id) || selectedPin : null;
 
   // Delete Comment
   const handleDeleteComment = (pinId: string, commentId: string) => {
@@ -1196,15 +1278,19 @@ export default function App() {
   };
 
   const handleSignOut = () => {
-    signOut(auth);
+    supabase.auth.signOut();
   };
 
   const isGuestShareLink = typeof window !== 'undefined' &&
     new URLSearchParams(window.location.search).get('guest_mode') === 'true';
 
-  // Guests must give a name before their first pin or comment; the action then runs with that name
-  const needsGuestName = !authUser && !guestProfile && guestPolicy.askGuestName;
+  // Guests must give their name and email before their first pin or comment; the action then runs with them
+  const needsGuestName = !authUser && !(guestProfile?.name && guestProfile?.email);
+  // After the client submits, their link is view-only until the team opens the next revision
+  const reviewLocked = !authUser && currentProject.reviewState === 'submitted';
+  const unsentPins = unsentClientPins(pins, currentProject.id);
   const addPinAsUser = (data: Parameters<typeof handleAddPin>[0]) => {
+    if (reviewLocked) return;
     if (needsGuestName) {
       pendingGuestAction.current = { kind: 'pin', data };
       setShowGuestNameModal(true);
@@ -1213,6 +1299,7 @@ export default function App() {
     handleAddPin(data);
   };
   const addCommentAsUser = (...args: Parameters<typeof handleAddComment>) => {
+    if (reviewLocked) return;
     if (needsGuestName) {
       pendingGuestAction.current = { kind: 'comment', args };
       setShowGuestNameModal(true);
@@ -1220,6 +1307,33 @@ export default function App() {
     }
     handleAddComment(...args);
   };
+  const openSubmit = (forClient = false) => {
+    setSubmitForClient(forClient);
+    if (!forClient && needsGuestName) {
+      pendingGuestAction.current = { kind: 'submit' };
+      setShowGuestNameModal(true);
+      return;
+    }
+    setShowSubmitDialog(true);
+  };
+  const submitRevision = async () => {
+    const res = await apiFetch(`/api/projects/${encodeURIComponent(currentProject.id)}/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(submitForClient ? {} : { name: guestProfile?.name, email: guestProfile?.email, guestId: guestProfile?.id }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || 'Could not send. Please try again.');
+  };
+  const reopenRevision = async () => {
+    const res = await apiFetch(`/api/projects/${encodeURIComponent(currentProject.id)}/reopen`, { method: 'POST' });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || 'Could not open the link.');
+  };
+
+  if (passwordRecovery) {
+    return <AuthPage recovery onRecovered={() => setPasswordRecovery(false)} />;
+  }
 
   if (!authUser && ((!isGuestMode && !isGuestShareLink) || guestWantsSignIn)) {
     if (!authReady) {
@@ -1253,25 +1367,39 @@ export default function App() {
 
   return (
     <div className="h-screen overflow-hidden bg-slate-50 text-slate-900 flex flex-col font-sans selection:bg-indigo-600 selection:text-white">
-      {/* Top Banner when in Guest Review Mode */}
+      {/* Top Banner when in Guest Review Mode: who is reviewing, and "Submit to developer" */}
       {effectiveGuestMode && (
-        <div className="bg-amber-500 text-slate-950 font-bold px-4 py-2 flex items-center justify-between text-xs shadow-sm z-50">
-          <div className="flex items-center gap-2">
-            <span className="text-sm">👁️</span>
-            <span>
-              <strong>Guest review:</strong> you are reviewing <span className="underline">{currentProject.name}</span>{guestProfile && !authUser ? ` as ${guestProfile.name}` : ''}. Drop pins and comment, no account needed.
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => (authUser ? setIsGuestMode(false) : setGuestWantsSignIn(true))}
-              className="bg-slate-950 text-white hover:bg-slate-900 px-3 py-1 rounded-lg text-xs font-extrabold transition-all cursor-pointer"
-            >
-              {authUser ? 'Exit guest preview' : 'Sign in'}
-            </button>
-          </div>
-        </div>
+        <GuestReviewBanner
+          project={currentProject}
+          latest={revisions[0]}
+          guestName={!authUser ? guestProfile?.name : undefined}
+          unsentCount={unsentPins.length}
+          isMemberPreview={!!authUser}
+          onSubmit={() => openSubmit(false)}
+          onSignIn={() => (authUser ? setIsGuestMode(false) : setGuestWantsSignIn(true))}
+          onChangeGuest={
+            !authUser && guestProfile
+              ? () => {
+                  try {
+                    localStorage.removeItem('mf_guest_profile');
+                  } catch (e) {}
+                  setGuestProfile(null);
+                }
+              : undefined
+          }
+        />
       )}
+      {!authUser && effectiveGuestMode && !reviewLocked && <UnsentPinsBar count={unsentPins.length} onSubmit={() => openSubmit(false)} />}
+      <SubmitRevisionDialog
+        isOpen={showSubmitDialog}
+        pins={unsentPins}
+        nextNumber={(currentProject.revisionCount || 0) + 1}
+        me={submitForClient || authUser ? { name: authUser?.name || '', email: authUser?.email || '' } : { name: guestProfile?.name || '', email: guestProfile?.email || '' }}
+        forClient={submitForClient}
+        othersDrafting={othersDrafting}
+        onSubmit={submitRevision}
+        onClose={() => setShowSubmitDialog(false)}
+      />
 
       {/* Top Header Navigation */}
       <Header
@@ -1331,6 +1459,11 @@ export default function App() {
             }
           }
 
+          // Project alerts (e.g. a client submitted a revision) open the project's first page
+          if (!foundProject && n.projectId) {
+            foundProject = projects.find((p) => p.id === n.projectId);
+            foundAsset = foundProject?.assets?.[0];
+          }
           if (foundProject) {
             setCurrentProject(foundProject);
           }
@@ -1413,7 +1546,18 @@ export default function App() {
 
         {viewMode === 'studio' && (
           <>
+            {accessKey === 'member' && !effectiveGuestMode && (
+              <TeamRevisionBar
+                project={currentProject}
+                revisions={revisions}
+                unsentCount={unsentPins.length}
+                onSubmitForClient={() => openSubmit(true)}
+                onReopen={reopenRevision}
+              />
+            )}
             <AnnotationStudio
+              readOnly={reviewLocked}
+              onDraftingChange={setIsDrafting}
               siteVersion={siteVersion}
               previewCss={previewCss}
               currentProject={currentProject}
@@ -1421,7 +1565,7 @@ export default function App() {
               onNavigatePage={handleNavigatePage}
               projectPageIds={projectPageIds}
               pins={livePins}
-              selectedPin={selectedPin}
+              selectedPin={openPin}
               onSelectPin={setSelectedPin}
               onAddPin={addPinAsUser}
               teammates={teammates}
@@ -1460,11 +1604,12 @@ export default function App() {
                       currentPageId={currentAsset.id}
                       filterState={filterState}
                       onUpdateFilter={handleUpdateFilter}
-                      selectedPin={selectedPin}
+                      selectedPin={openPin}
                       onSelectPin={setSelectedPin}
                       onUpdatePinStatus={handleUpdatePinStatus}
                       onUpdatePinAssignee={handleUpdatePinAssignee}
                       onAddComment={addCommentAsUser}
+                      readOnly={reviewLocked}
                       teammates={teammates}
                       currentUser={currentUser}
                       rubricRules={rubricRules}

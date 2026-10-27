@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Check, Copy, Loader2, Send } from 'lucide-react';
 import { Teammate } from '../types';
 import { copyText } from '../lib/clipboard';
-import { inviteLink } from '../lib/firebaseSync';
+import { inviteLink } from '../lib/supabaseSync';
 
 export type InviteRole = 'Member' | 'Admin' | 'Owner';
 

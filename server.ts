@@ -1,18 +1,15 @@
 import express from 'express';
-import crypto from 'crypto';
-import { adminAuth, adminDb } from './server/firebaseAdmin';
+import { deleteRow, getRow, getSetting, mergeSetting, now, replaceSetting, supabaseAdmin, upsertRow } from './server/db';
 import { checkAccess, isAdminRole, startSession } from './server/access';
-import { requireAdmin, requireMember, requireSignedIn, AuthedRequest } from './server/auth';
+import { forgetToken, readToken, requireAdmin, requireMember, requireSignedIn, AuthedRequest } from './server/auth';
 import { checkSite, connectSite, disconnectSite, resolvePage, WpError, LATEST_PLUGIN_VERSION, PLUGIN_DIR } from './server/wordpress';
 import { spawn } from 'child_process';
 import { applyFix, prepareFix, rejectFix, undoFix, PinTarget } from './server/wpFixes';
 import { logAudit } from './server/audit';
-import { addProjectIdToPins } from './server/migrations';
 import { aiContext, trackUsage, forgetPricingCache, DEFAULT_PRICING } from './server/aiUsage';
 import { saveDataUrl, UPLOAD_DIR, SAFE_FILE, CONTENT_TYPES } from './server/uploads';
-import { moveEmbeddedFilesOut } from './server/migrations';
-import { startAutoSnapshots } from './server/snapshots';
 import { startNotifications } from './server/notifications';
+import { reopenProject, RevisionError, submitRevision } from './server/revisions';
 import { approveConnection, claimConnection, disconnect as disconnectExtension, extensionSummary, markRead, requireExtension, ExtensionRequest } from './server/extension';
 import { APP_URL, chatStatus, postToChat, sendSummaryNow, startDailySummary, summarySettings, spaceLabel, DEFAULT_SUMMARY, WEBHOOK_PATTERN } from './server/googleChat';
 import path from 'path';
@@ -230,7 +227,7 @@ async function getPage(url: string, width: number): Promise<Page> {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   // Large enough for a 15 MB file sent as a data URL (base64 is about 4/3 of the size)
   app.use(express.json({ limit: '25mb' }));
@@ -246,38 +243,44 @@ async function startServer() {
 
   // After sign-in: load (or create) the member profile. 403 if this account may not use the workspace.
   app.post('/api/auth/session', async (req: AuthedRequest, res) => {
-    const header = req.headers.authorization || '';
-    const idToken = header.startsWith('Bearer ') ? header.slice(7) : '';
+    const token = await readToken(req);
+    if (!token) return res.status(401).json({ error: 'Please sign in again.' });
     try {
-      const token = await adminAuth.verifyIdToken(idToken);
       const profile = await startSession(token);
       if (!profile) {
         return res.status(403).json({
           error: `Access denied: ${token.email || 'this account'} is not allowed in this workspace. Ask a workspace admin to invite you.`,
         });
       }
-      req.token = token;
-      req.member = profile;
       res.json({ profile });
-    } catch {
-      res.status(401).json({ error: 'Please sign in again.' });
+    } catch (err: any) {
+      console.error('Sign-in failed:', err?.message || err);
+      res.status(500).json({ error: 'Could not sign in. Please try again.' });
     }
   });
 
-  // Guest link: a pass that only works for this one project (read it, add pins and comments)
+  // Guest link: the browser signs in anonymously, then gets a pass that only works for this one project
+  // (read it, add pins and comments). The pass is kept in the account's app_metadata, which only the server can set.
   app.post('/api/guest/session', async (req, res) => {
+    const token = await readToken(req);
+    if (!token) return res.status(401).json({ error: 'Could not open this shared project. Reload the page.' });
+    const { data: account } = await supabaseAdmin.auth.admin.getUserById(token.authId);
+    if (!account?.user?.is_anonymous) return res.status(400).json({ error: 'Guest passes are only for guest links.' });
     const projectId = String(req.body?.projectId || '');
-    const guestId = String(req.body?.guestId || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) || crypto.randomUUID();
-    if (!projectId || !(await adminDb.doc(`projects/${projectId}`).get()).exists) {
+    if (!projectId || !(await getRow('projects', projectId))) {
       return res.status(404).json({ error: 'This shared project no longer exists or the link is incorrect.' });
     }
     // Settings → Workspace Details → "Allow guest review links without an account"
-    const access = (await adminDb.doc('settings/access').get()).data() || {};
+    const access = await getSetting('access');
     if (access.guestLinksEnabled === false) {
       return res.status(403).json({ error: 'Guest review links are turned off for this workspace. Ask the team that shared it for access.' });
     }
-    const token = await adminAuth.createCustomToken(`guest_${guestId}`, { guestProject: projectId });
-    res.json({ token, guestId });
+    if (token.guestProject !== projectId) {
+      const { error } = await supabaseAdmin.auth.admin.updateUserById(token.authId, { app_metadata: { guest_project: projectId } });
+      if (error) return res.status(500).json({ error: 'Could not open this shared project. Please try again.' });
+      forgetToken(token.authId);
+    }
+    res.json({ ok: true, projectId });
   });
 
   // ---------- Pin and comment files (members and guests upload; links are unguessable) ----------
@@ -361,7 +364,7 @@ async function startServer() {
   // Owners/Admins always; Members when the permission is turned on in Team → Roles & Permissions
   const memberMay = async (req: AuthedRequest, permission: 'membersCanUseAiFix' | 'membersCanApplyAiFix') => {
     if (isAdminRole(req.member?.role)) return true;
-    const settings = (await adminDb.doc('settings/permissions').get()).data() || {};
+    const settings = await getSetting('permissions');
     return settings[permission] === true;
   };
   const requirePermission = (permission: 'membersCanUseAiFix' | 'membersCanApplyAiFix', message: string) =>
@@ -430,8 +433,8 @@ async function startServer() {
 
   // AI Credits: price per million tokens used for the cost estimate (admins)
   app.get('/api/ai-pricing', requireAdmin, async (req, res) => {
-    const doc = (await adminDb.doc('settings/aiPricing').get()).data() || {};
-    res.json({ ...DEFAULT_PRICING, ...doc, defaults: DEFAULT_PRICING });
+    const saved = await getSetting('aiPricing');
+    res.json({ ...DEFAULT_PRICING, ...saved, defaults: DEFAULT_PRICING });
   });
   app.post('/api/ai-pricing', requireAdmin, async (req: AuthedRequest, res) => {
     const input = Number(req.body?.inputPerMillion);
@@ -439,10 +442,50 @@ async function startServer() {
     if (!(input >= 0 && input < 1000) || !(output >= 0 && output < 1000)) {
       return res.status(400).json({ error: 'Enter prices between 0 and 1000 USD per million tokens.' });
     }
-    await adminDb.doc('settings/aiPricing').set({ inputPerMillion: input, outputPerMillion: output, updatedBy: req.token?.email || '', updatedAt: new Date().toISOString() });
+    await replaceSetting('aiPricing', { inputPerMillion: input, outputPerMillion: output, updatedBy: req.token?.email || '', updatedAt: now() });
     forgetPricingCache();
     await logAudit(req, 'ai.pricing_changed', { inputPerMillion: input, outputPerMillion: output });
     res.json({ ok: true });
+  });
+
+  // ---------- Client revisions ----------
+  const revisionFail = (res: express.Response, err: any) => {
+    if (err instanceof RevisionError) return res.status(err.status).json({ error: err.message });
+    console.error('Revision request failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  };
+
+  // The client (guest) sends their pins to the developer; a team member can also submit for the client
+  app.post('/api/projects/:projectId/submit', requireSignedIn, async (req: AuthedRequest, res) => {
+    const { projectId } = req.params;
+    const guest = !req.member;
+    if (guest && req.token?.guestProject !== projectId) return res.status(403).json({ error: 'This link is for another project.' });
+    const name = String(req.body?.name || '').trim().slice(0, 80);
+    const email = String(req.body?.email || '').trim().toLowerCase().slice(0, 120);
+    if (guest && (!name || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+      return res.status(400).json({ error: 'Please add your name and email first.' });
+    }
+    const by = guest
+      ? { id: String(req.body?.guestId || req.token!.uid).slice(0, 60), name, email, isGuest: true }
+      : { id: req.member!.id, name: req.member!.name, email: req.member!.email, isGuest: false };
+    try {
+      const result = await submitRevision(projectId, by);
+      await logAudit(req, 'revision.submitted', { projectId, revision: result.revision.number, pins: result.pinCount, by: by.email });
+      res.json(result);
+    } catch (err) {
+      revisionFail(res, err);
+    }
+  });
+
+  // Anyone on the team opens the link for the client's next round
+  app.post('/api/projects/:projectId/reopen', requireMember, async (req: AuthedRequest, res) => {
+    try {
+      const result = await reopenProject(req.params.projectId, { id: req.member!.id, name: req.member!.name, email: req.member!.email, isGuest: false });
+      await logAudit(req, 'revision.reopened', { projectId: req.params.projectId, nextRevision: result.nextRevision });
+      res.json(result);
+    } catch (err) {
+      revisionFail(res, err);
+    }
   });
 
   // ---------- Chrome extension ----------
@@ -491,10 +534,10 @@ async function startServer() {
         if (url) {
           if (!WEBHOOK_PATTERN.test(url)) return res.status(400).json({ error: 'Paste the webhook link from Google Chat (it starts with https://chat.googleapis.com/v1/spaces/).' });
           await postToChat(url, `✅ *Markup is connected.* New client feedback and a daily summary of open pins will be posted here.`);
-          await adminDb.collection('chatWebhooks').doc('team').set({ url, updatedBy: req.token?.email || '', updatedAt: new Date().toISOString() });
+          await upsertRow('chat_webhooks', { id: 'team', url, off: null, updatedBy: req.token?.email || '', updatedAt: now() });
           await logAudit(req, 'chat.team_connected', { space: spaceLabel(url) });
         } else {
-          await adminDb.collection('chatWebhooks').doc('team').delete();
+          await deleteRow('chat_webhooks', 'team');
           await logAudit(req, 'chat.team_disconnected');
         }
       }
@@ -509,7 +552,7 @@ async function startServer() {
           return res.status(400).json({ error: 'Unknown time zone.' });
         }
         const summary = { enabled: s.enabled !== false, time, timeZone, weekdaysOnly: s.weekdaysOnly !== false };
-        await adminDb.doc('settings/chat').set({ summary }, { merge: true });
+        await mergeSetting('chat', { summary });
         await logAudit(req, 'chat.summary_changed', summary);
       }
       res.json({ ok: true, ...(await chatStatus()) });
@@ -528,9 +571,9 @@ async function startServer() {
 
   // A project's alerts: the team space (default), its own space, or off. Admins and the project's creator.
   const projectChatEditor = async (req: AuthedRequest, projectId: string) => {
-    const project = await adminDb.collection('projects').doc(projectId).get();
-    if (!project.exists) return null;
-    return { project: project.data() as any, canEdit: isAdminRole(req.member?.role) || project.data()?.ownerId === req.token?.uid };
+    const project = await getRow('projects', projectId);
+    if (!project) return null;
+    return { project, canEdit: isAdminRole(req.member?.role) || project.ownerId === req.token?.uid };
   };
   app.get('/api/projects/:projectId/chat', requireMember, async (req: AuthedRequest, res) => {
     const found = await projectChatEditor(req, req.params.projectId);
@@ -543,19 +586,18 @@ async function startServer() {
     if (!found) return res.status(404).json({ error: 'Project not found.' });
     if (!found.canEdit) return res.status(403).json({ error: 'Only admins and the project creator can change its Google Chat alerts.' });
     const mode = String(req.body?.mode || 'team');
-    const ref = adminDb.collection('chatWebhooks').doc(projectId);
     try {
       if (mode === 'own') {
         const url = String(req.body?.url || '').trim();
         // Already posting to its own space and no new link: nothing to change
-        if (!url && (await ref.get()).data()?.url) return res.json({ ...(await chatStatus(projectId)), canEdit: true });
+        if (!url && (await getRow('chat_webhooks', projectId))?.url) return res.json({ ...(await chatStatus(projectId)), canEdit: true });
         if (!WEBHOOK_PATTERN.test(url)) return res.status(400).json({ error: 'Paste the webhook link from Google Chat (it starts with https://chat.googleapis.com/v1/spaces/).' });
         await postToChat(url, `✅ *Markup is connected for ${String(found.project.name || 'this project').replace(/[*_~`<>|]/g, '')}.* New client feedback on it will be posted here.`);
-        await ref.set({ url, updatedBy: req.token?.email || '', updatedAt: new Date().toISOString() });
+        await upsertRow('chat_webhooks', { id: projectId, url, off: null, updatedBy: req.token?.email || '', updatedAt: now() });
       } else if (mode === 'off') {
-        await ref.set({ off: true, updatedBy: req.token?.email || '', updatedAt: new Date().toISOString() });
+        await upsertRow('chat_webhooks', { id: projectId, url: null, off: true, updatedBy: req.token?.email || '', updatedAt: now() });
       } else {
-        await ref.delete();
+        await deleteRow('chat_webhooks', projectId);
       }
       await logAudit(req, 'chat.project_changed', { projectId, mode });
       res.json({ ...(await chatStatus(projectId)), canEdit: true });
@@ -1207,22 +1249,14 @@ html, body {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*all', (req, res) => {
+    // Any other page address opens the app (Express 4 wildcard)
+    app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
-  addProjectIdToPins()
-    .then((n) => n && console.log(`Migration: added projectId to ${n} pins`))
-    .catch((err) => console.warn('Migration failed:', err?.message));
-  // Local emulator data is saved every 10 minutes (see server/snapshots.ts)
-  startAutoSnapshots();
   startNotifications();
   startDailySummary();
-
-  moveEmbeddedFilesOut()
-    .then((n) => n && console.log(`Migration: moved ${n} embedded files out of pins`))
-    .catch((err) => console.warn('File migration failed:', err?.message));
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 MarkFlow Server running on http://localhost:${PORT}`);

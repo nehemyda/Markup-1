@@ -146,6 +146,8 @@ export interface Pin {
   // Deleted pins go to the Deleted tab (restorable) until someone deletes them permanently
   deletedAt?: string | null;
   deletedBy?: { id: string; name: string } | null;
+  // Client pins: the revision they were submitted in (null = not submitted yet, 0 = before revisions were counted)
+  revision?: number | null;
 }
 
 export interface Asset {
@@ -178,7 +180,28 @@ export interface Project {
   // Folder the project is in (null/undefined = not in a folder)
   folderId?: string | null;
   assets: Asset[];
+  // Client review round: 'open' (the client can add pins) or 'submitted' (view-only for the client). Set by the server.
+  reviewState?: 'open' | 'submitted';
+  // Revisions the client has submitted
+  revisionCount?: number;
 }
+
+// A client's submitted round of feedback (see server/revisions.ts)
+export interface Revision {
+  id: string;
+  projectId: string;
+  number: number;
+  status: 'submitted' | 'done';
+  pinIds: string[];
+  people: { name: string; email: string; count: number }[];
+  submittedBy: { id: string; name: string; email: string; isGuest: boolean } | null;
+  submittedAt: string;
+  doneAt?: string | null;
+  reopenedAt?: string | null;
+}
+
+// Revisions included per project; more are allowed but shown as chargeable
+export const INCLUDED_REVISIONS = 2;
 
 // A folder groups projects, e.g. per partner ("PRBS - Prestige Roofing"). Names are free text.
 export interface Folder {
@@ -212,7 +235,7 @@ export interface FilterState {
 // One notification for the signed-in person (created by the server, see server/notifications.ts)
 export interface NotificationItem {
   id: string;
-  type: 'pin' | 'comment' | 'mention' | 'assignment';
+  type: 'pin' | 'comment' | 'mention' | 'assignment' | 'submission' | 'revision_done';
   title: string;
   message: string;
   // Milliseconds

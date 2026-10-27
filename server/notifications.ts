@@ -1,5 +1,5 @@
 // In-app notifications. The server watches pins and decides who to tell, so a client (or a guest) can't skip or
-// fake one. Each notification is saved for one person (notifications/{id}) and shows in their bell on any device.
+// fake one. Each notification is saved for one person (notifications table) and shows in their bell on any device.
 //
 // Who is told:
 //   new pin              → the project's assigned developers (or its creator when nobody is assigned) + the pin's assignee
@@ -9,9 +9,13 @@
 //   pin assigned         → the new assignee
 //   client replies on a pin "Waiting on customer" → the pin reopens (status Open)
 // The person who did it is never told about their own action.
-import { FieldValue } from 'firebase-admin/firestore';
-import { adminDb } from './firebaseAdmin';
+import { findRows, getRow, now, supabaseAdmin, updateRow } from './db';
+import { toRow } from '../src/lib/rows';
+import { toMillis } from '../src/lib/time';
+
+const NEW_PIN_MS = 10 * 60 * 1000;
 import { queueChatAlert } from './googleChat';
+import { checkRevisionDone, projectPeople } from './revisions';
 
 type Person = { id: string; name: string; avatar?: string; email?: string; isGuest: boolean };
 
@@ -44,23 +48,13 @@ function stateOf(pin: any): PinState {
 
 // Team members who can receive notifications (signed-up and not removed), by id
 async function teamMembers() {
-  const snap = await adminDb.collection('users').get();
-  return new Map(
-    snap.docs.filter((d) => d.data().removed !== true).map((d) => [d.id, { id: d.id, name: String(d.data().name || '') }])
-  );
+  const users = await findRows('users', { removed: false });
+  return new Map(users.map((u) => [u.id, { id: u.id, name: String(u.name || '') }]));
 }
 
 async function projectOf(projectId: string) {
   if (!projectId) return null;
-  const snap = await adminDb.collection('projects').doc(projectId).get();
-  return snap.exists ? { id: snap.id, ...(snap.data() as any) } : null;
-}
-
-// The project's assigned developers; the creator when nobody is assigned
-function projectPeople(project: any): string[] {
-  const assigned: string[] = Array.isArray(project?.assigneeIds) ? project.assigneeIds.map(String) : [];
-  if (assigned.length) return assigned;
-  return project?.ownerId ? [String(project.ownerId)] : [];
+  return getRow('projects', projectId);
 }
 
 // "@Name" or "@First" in a comment
@@ -88,13 +82,12 @@ async function send(
   data: { type: 'pin' | 'comment' | 'mention' | 'assignment'; title: string; message: string; pin: any; project: any },
   team: Map<string, { id: string; name: string }>
 ) {
-  const batch = adminDb.batch();
-  let count = 0;
+  const rows: Record<string, any>[] = [];
   for (const uid of new Set(recipients)) {
     if (!uid || uid === actor.id || !team.has(uid)) continue;
     // One per event and person (the id makes a repeat harmless)
-    const ref = adminDb.collection('notifications').doc(`${key}__${uid}`.replace(/\//g, '_'));
-    batch.set(ref, {
+    rows.push(toRow('notifications', {
+      id: `${key}__${uid}`.replace(/\//g, '_'),
       recipientUid: uid,
       type: data.type,
       title: data.title,
@@ -106,11 +99,12 @@ async function send(
       assetId: data.pin.assetId || null,
       actor: { id: actor.id, name: actor.name, avatar: actor.avatar || '', email: actor.email || '', isGuest: actor.isGuest },
       read: false,
-      createdAt: FieldValue.serverTimestamp(),
-    });
-    count++;
+      createdAt: now(),
+    }));
   }
-  if (count) await batch.commit();
+  if (!rows.length) return;
+  const { error } = await supabaseAdmin.from('notifications').upsert(rows, { onConflict: 'id', ignoreDuplicates: true });
+  if (error) throw new Error(error.message);
 }
 
 async function onNewPin(pin: any) {
@@ -140,7 +134,7 @@ async function onNewComments(pin: any, before: PinState) {
     const actor = personOf(comment.author);
     // A client's reply on a pin that waits for them: back to the team
     if (actor.isGuest && pin.status === 'waiting_on_customer') {
-      await adminDb.collection('pins').doc(pin.id).update({ status: 'open' }).catch(() => {});
+      await updateRow('pins', pin.id, { status: 'open' }).catch(() => {});
     }
     const reopened = actor.isGuest && pin.status === 'waiting_on_customer' ? ' (reopened)' : '';
     if (actor.isGuest && project) queueChatAlert(project, pin, `client ${actor.name.replace(/\s*\(Guest\)$/i, '')} replied${reopened}`, comment.text);
@@ -166,30 +160,59 @@ async function onAssigned(pin: any) {
   }, team);
 }
 
-// Watch every pin; the first snapshot only records what exists (no notifications for old pins)
-export function startNotifications() {
-  let ready = false;
-  adminDb.collection('pins').onSnapshot(
-    (snap) => {
-      for (const change of snap.docChanges()) {
-        const pin = { id: change.doc.id, ...(change.doc.data() as any) };
-        const before = known.get(pin.id);
-        if (change.type === 'removed') {
-          known.delete(pin.id);
-          continue;
-        }
-        known.set(pin.id, stateOf(pin));
-        if (!ready) continue;
-        const work = change.type === 'added' || !before
-          ? onNewPin(pin)
-          : Promise.all([
-              onNewComments(pin, before),
-              stateOf(pin).assigneeId && stateOf(pin).assigneeId !== before.assigneeId ? onAssigned(pin) : null,
-            ]);
-        Promise.resolve(work).catch((err) => console.warn('Notifications:', err?.message || err));
-      }
-      ready = true;
-    },
-    (err) => console.warn('Notifications: stopped watching pins:', err.message)
-  );
+// Watch every pin (Supabase Realtime). What exists at start is only recorded (no notifications for old pins); each
+// change reads the pin again, so the comparison always uses its latest saved state.
+async function onPinChange(id: string, removed: boolean) {
+  if (removed) {
+    known.delete(id);
+    return;
+  }
+  const pin = await getRow('pins', id);
+  if (!pin) {
+    known.delete(id);
+    return;
+  }
+  const before = known.get(id);
+  const after = stateOf(pin);
+  known.set(id, after);
+  // A client revision is done when all its pins are resolved or ready for review
+  checkRevisionDone(pin).catch((err) => console.warn('Revisions:', err?.message || err));
+  // A pin first seen here but made earlier (e.g. data being imported) is only recorded
+  if (!before) return Date.now() - toMillis(pin.createdAt, pin.id) < NEW_PIN_MS ? onNewPin(pin) : undefined;
+  await Promise.all([
+    onNewComments(pin, before),
+    after.assigneeId && after.assigneeId !== before.assigneeId ? onAssigned(pin) : null,
+  ]);
+}
+
+export async function startNotifications() {
+  // Changes for the same pin are handled one after another
+  const queues = new Map<string, Promise<void>>();
+  // Changes wait until the pins that existed at start are recorded
+  let loaded!: () => void;
+  const ready = new Promise<void>((resolve) => (loaded = resolve));
+  const handle = (id: string, removed: boolean) => {
+    const next = (queues.get(id) || ready)
+      .then(() => onPinChange(id, removed))
+      .catch((err) => console.warn('Notifications:', err?.message || err));
+    queues.set(id, next);
+    next.then(() => queues.get(id) === next && queues.delete(id));
+  };
+
+  const load = async () => {
+    for (const pin of await findRows('pins')) known.set(pin.id, stateOf(pin));
+    loaded();
+  };
+
+  supabaseAdmin
+    .channel('server-pins')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'pins' }, (change: any) => {
+      const id = String(change.new?.id || change.old?.id || '');
+      if (id) handle(id, change.eventType === 'DELETE');
+    })
+    .subscribe((status, err) => {
+      // (Re)connected: start from what is saved now
+      if (status === 'SUBSCRIBED') load().catch((e) => console.warn('Notifications: could not load pins:', e?.message || e));
+      else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') console.warn('Notifications: live updates interrupted:', err?.message || status);
+    });
 }

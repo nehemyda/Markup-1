@@ -11,3 +11,6 @@ emulator-data*/
 
 # Files attached to pins (local storage)
 uploads/
+
+# Data exported from Firebase for the move to Supabase (contains workspace data; keep private)
+migration/

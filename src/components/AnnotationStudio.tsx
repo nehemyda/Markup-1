@@ -88,6 +88,10 @@ interface AnnotationStudioProps {
   siteVersion?: number;
   // CSS of an AI fix being previewed (shown on the page only, nothing is saved)
   previewCss?: string | null;
+  // Guest link after the client submitted: browse only, no new pins
+  readOnly?: boolean;
+  // A new pin is being written (lets others on the link see someone is still adding feedback)
+  onDraftingChange?: (drafting: boolean) => void;
 }
 
 // Pin title shown in lists: the first line of the comment, shortened at a word
@@ -122,6 +126,8 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
   isGuest = false,
   siteVersion = 0,
   previewCss = null,
+  readOnly = false,
+  onDraftingChange,
 }) => {
   const [mode, setMode] = useState<'browse' | 'comment'>('comment');
   const [zoom, setZoom] = useState<number>(100);
@@ -141,6 +147,35 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
   const [newPinAssignee, setNewPinAssignee] = useState<string>('');
   const [newPinScreenshot, setNewPinScreenshot] = useState<string | null>(null);
   const [newPinAttachments, setNewPinAttachments] = useState<Attachment[]>([]);
+
+  // When the link turns view-only while a pin is being written, keep its text in this browser and bring it back
+  // when the team opens the link for the next revision
+  const draftKey = `mf_pin_draft_${currentProject.id}`;
+  useEffect(() => {
+    if (readOnly) {
+      setMode('browse');
+      if (newPinCoord && newPinComment.trim()) {
+        try {
+          localStorage.setItem(draftKey, JSON.stringify({ assetId: currentAsset.id, ...newPinCoord, comment: newPinComment }));
+        } catch (e) {}
+      }
+      setNewPinCoord(null);
+      return;
+    }
+    try {
+      const draft = JSON.parse(localStorage.getItem(draftKey) || 'null');
+      if (draft && draft.assetId === currentAsset.id) {
+        localStorage.removeItem(draftKey);
+        setMode('comment');
+        setNewPinCoord({ x: draft.x, y: draft.y });
+        setNewPinComment(draft.comment || '');
+      }
+    } catch (e) {}
+  }, [readOnly, currentAsset.id]);
+
+  useEffect(() => {
+    onDraftingChange?.(!!newPinCoord);
+  }, [!!newPinCoord]);
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
   const newPinFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -295,6 +330,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
       if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
       const key = e.key.toLowerCase();
       if (key === 'c') {
+        if (readOnly) return;
         setMode('comment');
         setNewPinCoord(null);
       } else if (key === 'v') {
@@ -304,7 +340,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, []);
+  }, [readOnly]);
 
   // Simulate Partner Cursors
   useEffect(() => {
@@ -710,7 +746,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
         
         {/* Left: Mode Toggle (Browse vs Comment) */}
         <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-md border border-slate-200">
-          <button
+          {!readOnly && <button
             onClick={() => {
               setMode('comment');
               setNewPinCoord(null);
@@ -724,7 +760,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
             <MessageSquarePlus className="w-3.5 h-3.5" />
             <span>Drop Pin Mode</span>
             <span className="hidden sm:inline bg-black/10 px-1.5 py-0.2 rounded text-[10px] font-mono">C</span>
-          </button>
+          </button>}
 
           <button
             onClick={() => {

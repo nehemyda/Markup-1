@@ -1,14 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import {
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  signInWithPopup,
-  GoogleAuthProvider,
-  sendPasswordResetEmail,
-  updateProfile,
-  signOut,
-} from 'firebase/auth';
-import { auth } from '../lib/firebase';
+import { supabase } from '../lib/supabase';
 import { checkWorkspaceAccess, accessDeniedMessage } from '../lib/userProfile';
 import { useAllowedDomains } from '../utils/domains';
 import { useBranding } from '../lib/workspaceSettings';
@@ -22,32 +13,35 @@ import {
   User as UserIcon,
 } from 'lucide-react';
 
-// Turn Firebase Auth error codes into readable messages
+// Turn Supabase Auth error codes into readable messages
 function describeAuthError(err: any): string {
   switch (err?.code) {
-    case 'auth/invalid-credential':
-    case 'auth/wrong-password':
-    case 'auth/user-not-found':
+    case 'invalid_credentials':
       return 'Incorrect email or password.';
-    case 'auth/email-already-in-use':
+    case 'email_not_confirmed':
+      return 'Confirm your email first: open the link we sent you, then sign in.';
+    case 'user_already_exists':
+    case 'email_exists':
       return 'An account with this email already exists. Sign in instead.';
-    case 'auth/weak-password':
+    case 'weak_password':
       return 'Password must be at least 6 characters.';
-    case 'auth/invalid-email':
+    case 'email_address_invalid':
       return 'Please enter a valid email address.';
-    case 'auth/too-many-requests':
+    case 'over_request_rate_limit':
+    case 'over_email_send_rate_limit':
       return 'Too many attempts. Please wait a moment and try again.';
-    case 'auth/popup-closed-by-user':
-    case 'auth/cancelled-popup-request':
-      return 'Google sign-in was cancelled.';
-    case 'auth/operation-not-allowed':
-      return 'This sign-in method is not enabled in Firebase Authentication.';
+    case 'same_password':
+      return 'Choose a password different from your old one.';
+    case 'provider_disabled':
+    case 'signup_disabled':
+      return 'This sign-in method is not turned on in Supabase Authentication.';
     default:
       return err?.message || 'Something went wrong. Please try again.';
   }
 }
 
-export const AuthPage: React.FC<{ notice?: string | null }> = ({ notice }) => {
+// recovery: opened from a password reset link; the person chooses a new password, then onRecovered continues
+export const AuthPage: React.FC<{ notice?: string | null; recovery?: boolean; onRecovered?: () => void }> = ({ notice, recovery, onRecovered }) => {
   // Invite links (/?invite=<email>) open Create Account with the invited email filled in
   const invitedEmail = (() => {
     try {
@@ -134,7 +128,7 @@ export const AuthPage: React.FC<{ notice?: string | null }> = ({ notice }) => {
     setInfoMsg(null);
   };
 
-  // Email + password sign in / create account. On success, App's onAuthStateChanged takes over.
+  // Email + password sign in / create account. On success, App's onAuthStateChange takes over.
   const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
@@ -148,12 +142,20 @@ export const AuthPage: React.FC<{ notice?: string | null }> = ({ notice }) => {
     }
     try {
       if (authMode === 'signup') {
-        const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
-        if (name.trim()) {
-          await updateProfile(cred.user, { displayName: name.trim() });
+        const { data, error } = await supabase.auth.signUp({
+          email: email.trim(),
+          password,
+          options: { data: name.trim() ? { full_name: name.trim() } : {}, emailRedirectTo: window.location.origin },
+        });
+        if (error) throw error;
+        // Email confirmation is on: there is no session until the link in the email is opened
+        if (!data.session) {
+          setInfoMsg(`Almost done: we sent a confirmation link to ${email.trim()}. Open it to finish creating your account.`);
+          setIsLoading(false);
         }
       } else {
-        await signInWithEmailAndPassword(auth, email.trim(), password);
+        const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+        if (error) throw error;
       }
     } catch (err: any) {
       setErrorMsg(describeAuthError(err));
@@ -166,8 +168,10 @@ export const AuthPage: React.FC<{ notice?: string | null }> = ({ notice }) => {
     setInfoMsg(null);
     setIsLoading(true);
     try {
-      // App's onAuthStateChanged checks access and shows a message if this account is not allowed
-      await signInWithPopup(auth, new GoogleAuthProvider());
+      // Goes to Google and back here; App's onAuthStateChange then checks access and shows a message if this
+      // account is not allowed
+      const { error } = await supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.href } });
+      if (error) throw error;
     } catch (err: any) {
       setErrorMsg(describeAuthError(err));
       setIsLoading(false);
@@ -183,11 +187,24 @@ export const AuthPage: React.FC<{ notice?: string | null }> = ({ notice }) => {
       return;
     }
     try {
-      await sendPasswordResetEmail(auth, email.trim());
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin });
+      if (error) throw error;
       setInfoMsg(`If an account exists for ${email.trim()}, a password reset link has been sent.`);
     } catch (err: any) {
       setErrorMsg(describeAuthError(err));
     }
+  };
+
+  // Password reset link: choose a new password
+  const [newPassword, setNewPassword] = useState('');
+  const handleNewPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg(null);
+    setIsLoading(true);
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    setIsLoading(false);
+    if (error) return setErrorMsg(describeAuthError(error));
+    onRecovered?.();
   };
 
   return (
@@ -226,6 +243,35 @@ export const AuthPage: React.FC<{ notice?: string | null }> = ({ notice }) => {
         {/* Right Column: Interactive Login Box */}
         <div className="w-full max-w-md bg-slate-800/90 border border-slate-700/80 rounded-2xl shadow-2xl shadow-black/50 overflow-hidden backdrop-blur-xl">
           
+          {recovery ? (
+            <form onSubmit={handleNewPassword} className="p-6 sm:p-8 space-y-4">
+              <h2 className="text-lg font-bold text-white">Choose a new password</h2>
+              {errorMsg && (
+                <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-lg text-rose-300 text-xs font-medium">{errorMsg}</div>
+              )}
+              <div className="relative">
+                <Lock className="absolute left-3.5 top-3 w-4 h-4 text-slate-500" />
+                <input
+                  type="password"
+                  required
+                  minLength={6}
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="New password (at least 6 characters)"
+                  autoComplete="new-password"
+                  autoFocus
+                  className="w-full bg-slate-900/80 border border-slate-700 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white font-semibold rounded-xl py-2.5 text-sm flex items-center justify-center gap-2"
+              >
+                Save password <ArrowRight className="w-4 h-4" />
+              </button>
+            </form>
+          ) : (<>
           {/* Auth Mode Tabs */}
           <div className="grid grid-cols-2 border-b border-slate-700/80 bg-slate-900/50 text-xs font-semibold">
             <button
@@ -414,7 +460,7 @@ export const AuthPage: React.FC<{ notice?: string | null }> = ({ notice }) => {
 
 
           </div>
-
+          </>)}
 
         </div>
       </main>

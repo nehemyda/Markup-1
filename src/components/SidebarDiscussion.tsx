@@ -85,6 +85,8 @@ interface SidebarDiscussionProps {
     onSiteChanged: () => void;
     onPreviewCss: (css: string | null) => void;
   };
+  // Guest link after the client submitted: they can read the discussion but not reply
+  readOnly?: boolean;
 }
 
 const PIN_STATUSES: Array<{ value: PinStatus; label: string; dot: string }> = [
@@ -189,6 +191,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
   isPinned = true,
   onTogglePinned,
   wpFix,
+  readOnly = false,
 }) => {
   // Re-render every minute so "5 minutes ago" stays current
   const [now, setNow] = useState(Date.now());
@@ -1299,6 +1302,11 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
       )}
 
       {/* Bottom Comment Composer Input */}
+      {readOnly ? (
+        <div className="p-3 bg-slate-50 border-t border-slate-200 text-[11px] text-slate-500 text-center">
+          Your feedback was sent to the developer. Replies open again when the team starts your next revision.
+        </div>
+      ) : (
       <div className="p-3 bg-slate-50 border-t border-slate-200 space-y-2 relative">
         {/* Floating @Mention Autocomplete Menu */}
         {showMentionMenu && (
@@ -1415,6 +1423,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
           </div>
         </form>
       </div>
+      )}
 
       {/* Lightbox Image Preview Modal */}
       {previewImageUrl && (

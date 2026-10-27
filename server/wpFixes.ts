@@ -1,10 +1,10 @@
 // "Fix with AI": Gemini proposes one small change for a pin on a connected WordPress page; an admin previews it,
 // approves (applies) it, and can undo it. Proposals are checked here before they are saved or sent to WordPress,
 // and the plugin backs up the page before every change.
-import { FieldValue } from 'firebase-admin/firestore';
 import type { GoogleGenAI } from '@google/genai';
 import { Type } from '@google/genai';
-import { adminDb } from './firebaseAdmin';
+import { findRows, getRow, insertRow, now, supabaseAdmin, updateRow } from './db';
+import { fromRow } from '../src/lib/rows';
 import { readAttachment } from './uploads';
 import { compareVersions, loadCredentials, sameSite, uploadMedia, wpRequest, WpError } from './wordpress';
 
@@ -228,7 +228,7 @@ async function checkVisibleChange(fixId: string, check: any, inspect: InspectTar
     const after = await inspect(check.url, check.width, check.selector, check.point || undefined);
     if (!after) return;
     const look = lookOf(after);
-    await adminDb.collection('wpFixes').doc(fixId).update({ visibleChange: !sameLook(check.before, look), 'check.after': look });
+    await updateRow('wp_fixes', fixId, { visibleChange: !sameLook(check.before, look), pageCheck: { ...check, after: look } });
   } catch (err: any) {
     console.warn('Could not check the page after a fix:', err?.message);
   }
@@ -275,6 +275,23 @@ function oldImageSize(oldSrc: string, set: { width?: unknown; height?: unknown }
 
 const GUTENBERG_IMAGE = /<!-- wp:image (\{[\s\S]*?\}) -->([\s\S]*?)<!-- \/wp:image -->/;
 const DIVI_IMAGE = /\[et_pb_image\b[^\]]*\]/;
+
+// The one image block (Gutenberg) or module (Divi) on the page showing the image at the pin; '' when not exactly one
+export function imageBlockAtPin(content: string, target: PinTarget | null) {
+  const file = target?.image ? imageFile(target.image.src) : '';
+  if (!file) return '';
+  const blocks = [
+    ...Array.from(content.matchAll(new RegExp(GUTENBERG_IMAGE.source, 'g')), (m) => m[0]),
+    ...Array.from(content.matchAll(new RegExp(DIVI_IMAGE.source, 'g')), (m) => m[0]),
+  ].filter((block) => Array.from(block.matchAll(/\bsrc="([^"]*)"/g), (m) => imageFile(m[1])).includes(file));
+  return blocks.length === 1 && countOf(content, blocks[0]) === 1 ? blocks[0] : '';
+}
+
+// The replacement is a single image block or module (an image swap, not an addition)
+export const isOnlyImage = (text: string) => {
+  const t = text.trim();
+  return GUTENBERG_IMAGE.exec(t)?.[0] === t || DIVI_IMAGE.exec(t)?.[0] === t || new RegExp(`^${DIVI_IMAGE.source}\\s*\\[/et_pb_image\\]$`).test(t);
+};
 
 function keepImageSize(find: string, replace: string, target: PinTarget | null) {
   if (!replace.includes(IMAGE_URL)) return replace;
@@ -443,13 +460,8 @@ export async function prepareFix(opts: {
   const { projectId, pinId, actor, ai } = opts;
   if (!ai) throw new WpError('Gemini is not set up on the server (GEMINI_API_KEY).', 503);
 
-  const [pinSnap, projectSnap] = await Promise.all([
-    adminDb.collection('pins').doc(pinId).get(),
-    adminDb.collection('projects').doc(projectId).get(),
-  ]);
-  if (!pinSnap.exists || !projectSnap.exists) throw new WpError('Pin or project not found.', 404);
-  const pin = pinSnap.data()!;
-  const project = projectSnap.data()!;
+  const [pin, project] = await Promise.all([getRow('pins', pinId), getRow('projects', projectId)]);
+  if (!pin || !project) throw new WpError('Pin or project not found.', 404);
   const asset = (project.assets || []).find((a: any) => a.id === pin.assetId);
   if (!asset || asset.type !== 'url') throw new WpError('This pin is not on a live page.', 400);
   const pageUrl: string = asset.url;
@@ -484,8 +496,7 @@ export async function prepareFix(opts: {
 
   // What has already been done for this pin, so the AI moves on to the next request in the thread
   const STATUS_TEXT: Record<string, string> = { applied: 'applied', proposed: 'waiting for approval', reverted: 'undone', rejected: 'dismissed', stale: 'outdated', not_possible: 'needs a person' };
-  const earlier = (await adminDb.collection('wpFixes').where('pinId', '==', pinId).get()).docs
-    .map((d) => d.data())
+  const earlier = (await findRows('wp_fixes', { pinId }))
     .filter((f) => STATUS_TEXT[f.status])
     .map((f) => `- ${STATUS_TEXT[f.status]}: ${f.summary}`);
 
@@ -550,12 +561,12 @@ export async function prepareFix(opts: {
     summary,
     explanation,
     proposedBy: actor,
-    proposedAt: FieldValue.serverTimestamp(),
+    proposedAt: now(),
     model: MODEL,
     image,
     remaining,
     // How the element at the pin looked, to check after applying that the fix visibly changed it
-    check: target ? { url: pageUrl, width: DEVICE_WIDTHS[device] || 1440, selector, point: point || null, before: lookOf(target) } : null,
+    pageCheck: target ? { url: pageUrl, width: DEVICE_WIDTHS[device] || 1440, selector, point: point || null, before: lookOf(target) } : null,
   };
 
   let fix: Record<string, any> & { kind: string; status: string };
@@ -584,9 +595,8 @@ export async function prepareFix(opts: {
     const sameValue = (a: any, b: any) => JSON.stringify(a) === JSON.stringify(b) || (typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase());
     if (changed.every((k) => sameValue(before[k], settings[k]))) {
       fix = { ...base, kind: 'none', status: 'not_possible', reason: 'This already looks fixed on the page: the settings the AI would change already have those values.' };
-      const ref = adminDb.collection('wpFixes').doc();
-      await ref.set({ ...fix, id: ref.id });
-      return { id: ref.id, ...fix, proposedAt: new Date().toISOString() };
+      const saved = await insertRow('wp_fixes', { ...fix, id: crypto.randomUUID() });
+      return { ...fix, id: saved.id, proposedAt: saved.proposedAt };
     }
     fix = {
       ...base,
@@ -595,7 +605,7 @@ export async function prepareFix(opts: {
       baseHash: page.hash,
       elementId,
       elementType: element.widgetType || element.elType,
-      // Stored as JSON text: Elementor settings can hold shapes Firestore can't (e.g. nested arrays)
+      // Stored as JSON text, exactly as it goes to Elementor
       settingsJson: JSON.stringify(settings),
       beforeJson: JSON.stringify(before),
     };
@@ -607,7 +617,7 @@ export async function prepareFix(opts: {
       reject('The AI suggested an invalid site-wide text change. Try again.');
     }
     // Site-wide replace arrived in plugin 0.5.0
-    const site = (await adminDb.collection('wpSites').doc(projectId).get()).data();
+    const site = await getRow('wp_sites', projectId);
     if (compareVersions(site?.pluginVersion, '0.5.0') < 0) {
       throw new WpError(`Changing text across the whole site needs WebReview Connector 0.5.0 or newer; this site has ${site?.pluginVersion || 'an older version'}. An admin can download the latest plugin from the WordPress button and upload it under Plugins → Add New → Upload Plugin.`, 409);
     }
@@ -654,6 +664,10 @@ export async function prepareFix(opts: {
     // The AI sometimes leaves "find" empty when inserting. If its replacement starts with blocks that are already on
     // the page exactly once (e.g. the button the image goes below), those blocks are what it meant to keep in place.
     if (!find && proposal.replace) find = existingLeadingBlocks(String(page.content || ''), String(proposal.replace));
+    // It also leaves it empty when swapping an image: the old image is the one at the pin
+    const swapsImage = !find && isOnlyImage(String(proposal.replace || '')) && String(proposal.replace).includes(IMAGE_URL);
+    if (swapsImage) find = imageBlockAtPin(String(page.content || ''), target);
+    if (swapsImage && !find) reject('Could not tell which image to replace. Put the pin right on the image, then try again.');
     const content = String(page.content || '');
     // A replaced image keeps the old one's size on the page
     const replace = keepImageSize(find, String(proposal.replace ?? ''), target);
@@ -681,27 +695,26 @@ export async function prepareFix(opts: {
     reject('The AI suggested a kind of change this page does not support. Try again.');
   }
 
-  const ref = adminDb.collection('wpFixes').doc();
-  await ref.set({ ...fix, id: ref.id });
-  return { id: ref.id, ...fix, proposedAt: new Date().toISOString() };
+  const saved = await insertRow('wp_fixes', { ...fix, id: crypto.randomUUID() });
+  return { ...fix, id: saved.id, proposedAt: saved.proposedAt };
 }
 
 // ---------- Apply / undo / reject ----------
 
+// Move a fix from one of the given states to the next; only one request can do it
 async function claimFix(projectId: string, fixId: string, from: string[], to: string) {
-  const ref = adminDb.collection('wpFixes').doc(fixId);
-  return adminDb.runTransaction(async (tx) => {
-    const snap = await tx.get(ref);
-    if (!snap.exists || snap.data()!.projectId !== projectId) throw new WpError('Fix not found.', 404);
-    const fix = snap.data()!;
-    if (!from.includes(fix.status)) throw new WpError(`This fix is ${String(fix.status).replace('_', ' ')}.`, 409);
-    tx.update(ref, { status: to });
-    return { ref, fix };
-  });
+  const { data, error } = await supabaseAdmin.from('wp_fixes').update({ status: to })
+    .eq('id', fixId).eq('project_id', projectId).in('status', from).select('*');
+  if (error) throw new Error(error.message);
+  if (data?.length) return { fix: fromRow(data[0]) };
+  const current = await getRow('wp_fixes', fixId);
+  if (!current || current.projectId !== projectId) throw new WpError('Fix not found.', 404);
+  throw new WpError(`This fix is ${String(current.status).replace('_', ' ')}.`, 409);
 }
+const saveFix = (fixId: string, patch: Record<string, any>) => updateRow('wp_fixes', fixId, patch);
 
 export async function applyFix(projectId: string, fixId: string, actor: Actor, inspect?: InspectTarget) {
-  const { ref, fix } = await claimFix(projectId, fixId, ['proposed'], 'applying');
+  const { fix } = await claimFix(projectId, fixId, ['proposed'], 'applying');
   try {
     const creds = await loadCredentials(projectId);
     const common = { summary: `Pin #${fix.pinNumber}: ${fix.summary}`, request_id: fixId };
@@ -709,7 +722,7 @@ export async function applyFix(projectId: string, fixId: string, actor: Actor, i
     // Upload the attached image to the Media Library first (once; kept if applying is retried)
     let media: { id: number; url: string } | null = fix.media || null;
     if (fix.image && !media) {
-      const pin = (await adminDb.collection('pins').doc(fix.pinId).get()).data();
+      const pin = await getRow('pins', fix.pinId);
       const holder = fix.image.commentId ? pin?.comments?.find((c: any) => c.id === fix.image.commentId) : pin;
       const att = holder?.attachments?.find((a: any) => a.id === fix.image.attachmentId);
       const file = readAttachment(String(att?.url || ''));
@@ -717,7 +730,7 @@ export async function applyFix(projectId: string, fixId: string, actor: Actor, i
       const ext = file.mime.split('/')[1].replace('jpeg', 'jpg');
       const name = /\.[a-z0-9]+$/i.test(fix.image.name) ? fix.image.name : `${fix.image.name}.${ext}`;
       media = await uploadMedia(creds, { name, mime: file.mime, data: file.data, alt: fix.summary });
-      await ref.update({ media });
+      await saveFix(fixId, { media });
     }
     const withImage = (text: string) => (media ? fillImage(text, media) : text);
 
@@ -755,38 +768,36 @@ export async function applyFix(projectId: string, fixId: string, actor: Actor, i
     } else {
       throw new WpError('This fix cannot be applied.', 400);
     }
-    const applied = { status: 'applied', snapshotId: result.snapshot_id, appliedBy: actor, appliedAt: FieldValue.serverTimestamp(), lastError: null, visibleChange: null };
-    await ref.update(applied);
+    const applied = { status: 'applied', snapshotId: result.snapshot_id, appliedBy: actor, appliedAt: now(), lastError: null, visibleChange: null };
+    await saveFix(fixId, applied);
     // Check in the background (it loads the page again); inserts and site-wide changes don't change the pinned element itself
-    if (inspect && fix.check && !['elementor_insert', 'site_replace'].includes(fix.kind)) {
-      checkVisibleChange(fixId, fix.check, inspect);
+    if (inspect && fix.pageCheck && !['elementor_insert', 'site_replace'].includes(fix.kind)) {
+      checkVisibleChange(fixId, fix.pageCheck, inspect);
     }
     return { snapshotId: result.snapshot_id };
   } catch (err: any) {
     const stale = err instanceof WpError && err.status === 409;
-    await ref.update({ status: stale ? 'stale' : 'proposed', lastError: err.message || 'Apply failed.' });
+    await saveFix(fixId, { status: stale ? 'stale' : 'proposed', lastError: err.message || 'Apply failed.' });
     throw err;
   }
 }
 
 export async function undoFix(projectId: string, fixId: string, actor: Actor, force = false) {
-  const { ref, fix } = await claimFix(projectId, fixId, ['applied'], 'undoing');
+  const { fix } = await claimFix(projectId, fixId, ['applied'], 'undoing');
   try {
     const creds = await loadCredentials(projectId);
     await wpRequest(creds, `/webreview/v1/snapshots/${fix.snapshotId}/revert`, { method: 'POST', body: force ? { force: true } : {} });
-    await ref.update({ status: 'reverted', revertedBy: actor, revertedAt: FieldValue.serverTimestamp(), lastError: null });
+    await saveFix(fixId, { status: 'reverted', revertedBy: actor, revertedAt: now(), lastError: null });
   } catch (err: any) {
-    await ref.update({ status: 'applied', lastError: err.message || 'Undo failed.' });
+    await saveFix(fixId, { status: 'applied', lastError: err.message || 'Undo failed.' });
     throw err;
   }
 }
 
 export async function rejectFix(projectId: string, fixId: string, actor: Actor, isAdmin: boolean) {
-  const ref = adminDb.collection('wpFixes').doc(fixId);
-  const snap = await ref.get();
-  if (!snap.exists || snap.data()!.projectId !== projectId) throw new WpError('Fix not found.', 404);
-  const fix = snap.data()!;
+  const fix = await getRow('wp_fixes', fixId);
+  if (!fix || fix.projectId !== projectId) throw new WpError('Fix not found.', 404);
   if (!isAdmin && fix.proposedBy?.uid !== actor.uid) throw new WpError('Only an admin or the person who asked for this fix can dismiss it.', 403);
   if (!['proposed', 'stale', 'not_possible'].includes(fix.status)) throw new WpError(`This fix is ${fix.status}.`, 409);
-  await ref.update({ status: 'rejected', rejectedBy: actor, rejectedAt: FieldValue.serverTimestamp() });
+  await saveFix(fixId, { status: 'rejected', rejectedBy: actor, rejectedAt: now() });
 }

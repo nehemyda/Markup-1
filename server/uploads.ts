@@ -1,5 +1,5 @@
 // Files attached to pins and comments (screenshots, images, PDFs...). They used to be embedded in the pin documents as
-// data URLs, which made pins huge (1 MB limit in real Firestore; the local emulator runs out of memory). Now each file
+// data URLs, which made pins huge (slow to load and save). Now each file
 // is stored once on the server and pins keep a short link (/api/uploads/<random id>.<ext>).
 // Locally files live in ./uploads; in production this would move to cloud storage.
 import crypto from 'crypto';

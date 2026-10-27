@@ -1,11 +1,10 @@
 /**
- * Workspace access: the allowed email domains, stored in Firestore (settings/access) so they apply to everyone.
+ * Workspace access: the allowed email domains, stored in the "access" settings row so they apply to everyone.
  * Anyone with an email on an allowed domain can create an account; anyone else needs an invite.
  * An empty list makes the workspace invite-only.
  */
 import { useEffect, useState } from 'react';
-import { doc, getDoc, onSnapshot, setDoc } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { mergeSetting, readSetting, subscribeSetting } from '../lib/supabaseSync';
 
 export const DEFAULT_ALLOWED_DOMAINS = [
   'yourdigitalagents.com',
@@ -14,7 +13,6 @@ export const DEFAULT_ALLOWED_DOMAINS = [
   'vendasta.com'
 ];
 
-const accessRef = doc(db, 'settings', 'access');
 let cachedDomains: string[] = [...DEFAULT_ALLOWED_DOMAINS];
 const listeners = new Set<(domains: string[]) => void>();
 
@@ -23,19 +21,19 @@ function readDomains(data: any): string[] {
 }
 
 // Keep a live copy of the list for synchronous reads (getAllowedDomains) and React (useAllowedDomains)
-onSnapshot(accessRef, (snap) => {
-  cachedDomains = readDomains(snap.data());
+subscribeSetting('access', (data) => {
+  cachedDomains = readDomains(data);
   listeners.forEach((fn) => fn(cachedDomains));
-}, (err) => console.warn('Allowed domains subscription error:', err));
+});
 
 export function getAllowedDomains(): string[] {
   return [...cachedDomains];
 }
 
-// Fresh read from Firestore, used for sign-in checks
+// Fresh read, used for sign-in checks
 export async function fetchAllowedDomains(): Promise<string[]> {
   try {
-    return readDomains((await getDoc(accessRef)).data());
+    return readDomains(await readSetting('access'));
   } catch (err) {
     console.warn('Failed reading allowed domains:', err);
     return getAllowedDomains();
@@ -59,6 +57,5 @@ export function saveAllowedDomains(domains: string[]): void {
   ));
   cachedDomains = unique;
   listeners.forEach((fn) => fn(unique));
-  setDoc(accessRef, { allowedDomains: unique, updatedAt: new Date().toISOString() }, { merge: true })
-    .catch((err) => console.error('Error saving allowed domains:', err));
+  mergeSetting('access', { allowedDomains: unique }).catch((err) => console.error('Error saving allowed domains:', err));
 }

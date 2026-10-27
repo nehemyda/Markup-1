@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { collection, doc, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore';
 import { Coins, Sparkles, FolderKanban, CalendarDays, Receipt, Save, Loader2, TrendingUp, TrendingDown } from 'lucide-react';
-import { db } from '../lib/firebase';
+import { subscribeAiMonths, subscribeAiUsage } from '../lib/supabaseSync';
 import { apiFetch } from '../lib/api';
 import { Project } from '../types';
 
@@ -20,7 +19,7 @@ interface MonthDoc extends Totals {
 
 interface UsageRecord extends Totals {
   id: string;
-  at?: { toDate: () => Date };
+  at?: string;
   feature: string;
   projectId?: string | null;
   actor?: { name?: string; email?: string } | null;
@@ -69,19 +68,8 @@ export const AiCreditsView: React.FC<{ projects: Project[]; canEdit: boolean }> 
   const [priceNote, setPriceNote] = useState('');
 
   // Monthly totals (the history) and the selected month's latest requests
-  useEffect(
-    () => onSnapshot(query(collection(db, 'aiUsageMonthly'), orderBy('month', 'desc')), (snap) => setMonths(snap.docs.map((d) => d.data() as MonthDoc)), () => setMonths([])),
-    []
-  );
-  useEffect(
-    () =>
-      onSnapshot(
-        query(collection(db, 'aiUsage'), where('month', '==', selected), orderBy('at', 'desc'), limit(25)),
-        (snap) => setRecent(snap.docs.map((d) => ({ ...(d.data() as UsageRecord), id: d.id }))),
-        () => setRecent([])
-      ),
-    [selected]
-  );
+  useEffect(() => subscribeAiMonths<MonthDoc>(setMonths), []);
+  useEffect(() => subscribeAiUsage<UsageRecord>(selected, setRecent), [selected]);
   useEffect(() => {
     apiFetch('/api/ai-pricing')
       .then((r) => r.json())
@@ -276,7 +264,7 @@ export const AiCreditsView: React.FC<{ projects: Project[]; canEdit: boolean }> 
                   <div className="min-w-0">
                     <div className="font-semibold text-slate-800 truncate">{featureName(r.feature)} · <span className="font-normal text-slate-500">{projectName(r.projectId)}</span></div>
                     <div className="text-[11px] text-slate-400 truncate">
-                      {r.at?.toDate().toLocaleString()} · {r.actor?.name || r.actor?.email || 'Unknown'} · {tokens(r.inputTokens)} in / {tokens(r.outputTokens)} out
+                      {r.at ? new Date(r.at).toLocaleString() : ''} · {r.actor?.name || r.actor?.email || 'Unknown'} · {tokens(r.inputTokens)} in / {tokens(r.outputTokens)} out
                     </div>
                   </div>
                   <div className="font-bold text-slate-900 shrink-0">{usd(r.costUsd)}</div>

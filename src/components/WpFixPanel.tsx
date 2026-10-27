@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Sparkles, Loader2, Check, Undo2, X, Eye, EyeOff, AlertTriangle, Code } from 'lucide-react';
 import { Pin, WpFix } from '../types';
 import { apiFetch } from '../lib/api';
-import { subscribeWpFixes } from '../lib/firebaseSync';
+import { subscribeWpFixes } from '../lib/supabaseSync';
 
 interface WpFixPanelProps {
   projectId: string;

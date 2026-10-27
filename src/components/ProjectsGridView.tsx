@@ -9,7 +9,7 @@ import { AssignProjectDialog, projectAssignees } from './AssignProjectDialog';
 import { AppSidebar } from './AppSidebar';
 import { toMillis, timeAgo } from '../lib/time';
 import { InviteForm } from './InviteForm';
-import { inviteLink } from '../lib/firebaseSync';
+import { inviteLink } from '../lib/supabaseSync';
 import { AppLogo } from './AppLogo';
 import { useBranding, useGuestPolicy, saveBranding, saveGuestPolicy, brandInitials, Branding, GuestPolicy } from '../lib/workspaceSettings';
 import { masterAdminDomains } from '../lib/userProfile';
@@ -261,7 +261,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
     onSettingsSubTabChange?.(settingsSubTab);
   }, [settingsSubTab]);
 
-  // Access control: allowed domains are shared in Firestore; keep the editable copy in sync
+  // Access control: allowed domains are shared by the workspace; keep the editable copy in sync
   const sharedDomains = useAllowedDomains();
   const [domains, setDomains] = useState<string[]>(() => getAllowedDomains());
   React.useEffect(() => setDomains(sharedDomains), [sharedDomains]);
@@ -362,7 +362,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
   // Team tab state
   const [teamSubTab, setTeamSubTab] = useState<'members' | 'guests' | 'roles'>('members');
 
-  // Role permission matrix: shared by the workspace (Firestore); only Owners and Admins can change it
+  // Role permission matrix: shared by the workspace; only Owners and Admins can change it
   const rolePermissions = useRolePermissions();
   const canEditPermissions = currentUser.role === 'Owner' || currentUser.role === 'Admin';
   const handleTogglePermission = (key: keyof RolePermissions) => {
@@ -377,7 +377,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
   }, [projects, pins]);
 
   // Branding & Settings state
-  // Workspace branding and guest policy (saved in Firestore; Settings page)
+  // Workspace branding and guest policy (saved in the database; Settings page)
   const branding = useBranding();
   const guestPolicy = useGuestPolicy();
   const [brandDraft, setBrandDraft] = useState<Branding | null>(null);
@@ -2456,19 +2456,10 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                         className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed shrink-0"
                       />
                     </label>
-                    <label className="flex items-center justify-between gap-4 p-3 bg-slate-50 rounded-xl border border-slate-200 cursor-pointer hover:bg-slate-100/80 transition-colors">
-                      <div>
-                        <span className="font-bold text-slate-900 block">Ask guests for their name</span>
-                        <span className="text-slate-500 text-[11px]">Guests enter their name (and optionally email) before their first pin or comment. When off, they appear as "Guest Reviewer".</span>
-                      </div>
-                      <input
-                        type="checkbox"
-                        checked={guestPolicy.askGuestName}
-                        onChange={(e) => changeGuestPolicy({ askGuestName: e.target.checked })}
-                        disabled={!canEditDomainAccess}
-                        className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed shrink-0"
-                      />
-                    </label>
+                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
+                      <span className="font-bold text-slate-900 block">Guests give their name and email</span>
+                      <span className="text-slate-500 text-[11px]">Asked before their first pin or comment, and shown on everything they add. The email is where they hear when their revision is done.</span>
+                    </div>
                   </div>
                 </div>
               </div>

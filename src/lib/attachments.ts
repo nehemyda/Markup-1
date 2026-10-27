@@ -1,6 +1,6 @@
 import { Attachment } from '../types';
 
-// Files are uploaded to the server when the pin is saved (pins keep links, see firebaseSync). Images are still
+// Files are uploaded to the server when the pin is saved (pins keep links, see supabaseSync). Images are still
 // downscaled and saved as JPEG to keep pages fast; other files are capped at the server's upload limit.
 export const MAX_FILE_BYTES = 15 * 1024 * 1024;
 const MAX_IMAGE_WIDTH = 1600;

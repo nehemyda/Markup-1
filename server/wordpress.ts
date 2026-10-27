@@ -3,8 +3,7 @@
 // site details (wpSites). Every request to WordPress goes through here.
 import fs from 'fs';
 import path from 'path';
-import { FieldValue } from 'firebase-admin/firestore';
-import { adminDb } from './firebaseAdmin';
+import { deleteRow, getRow, now, updateRow, upsertRow } from './db';
 import { decryptSecret, encryptSecret } from './secrets';
 
 const TIMEOUT_MS = 15000;
@@ -193,8 +192,8 @@ function siteDetails(status: WpStatus) {
 }
 
 export async function connectSite(projectId: string, input: WpCredentials, actorEmail: string) {
-  const project = await adminDb.collection('projects').doc(projectId).get();
-  if (!project.exists) throw new WpError('Project not found.', 404);
+  const project = await getRow('projects', projectId);
+  if (!project) throw new WpError('Project not found.', 404);
   const username = (input.username || '').trim();
   const appPassword = (input.appPassword || '').trim();
   if (!username || !appPassword) throw new WpError('Enter the WordPress username and Application Password.');
@@ -203,13 +202,15 @@ export async function connectSite(projectId: string, input: WpCredentials, actor
   const status = await getSiteStatus(creds);
 
   // The site must be the one this project reviews, so fixes can't land on another site by mistake
-  const projectUrl: string | undefined = project.data()?.assets?.find((a: any) => a.type === 'url')?.url;
+  const projectUrl: string | undefined = project.assets?.find((a: any) => a.type === 'url')?.url;
   if (projectUrl && !sameSite(projectUrl, status.site_url)) {
     throw new WpError(`This project reviews ${new URL(projectUrl).host}, but that WordPress site is ${new URL(status.site_url).host}.`);
   }
 
-  const batch = adminDb.batch();
-  batch.set(adminDb.collection('wpSites').doc(projectId), {
+  // The secret first: a site row without its password would look connected but fail
+  await upsertRow('wp_site_secrets', { id: projectId, appPassword: encryptSecret(appPassword), updatedAt: now() });
+  await upsertRow('wp_sites', {
+    id: projectId,
     projectId,
     siteUrl: creds.siteUrl,
     username,
@@ -217,37 +218,28 @@ export async function connectSite(projectId: string, input: WpCredentials, actor
     status: 'connected',
     lastError: null,
     connectedBy: actorEmail,
-    connectedAt: FieldValue.serverTimestamp(),
-    lastCheckedAt: FieldValue.serverTimestamp(),
+    connectedAt: now(),
+    lastCheckedAt: now(),
   });
-  batch.set(adminDb.collection('wpSiteSecrets').doc(projectId), {
-    appPassword: encryptSecret(appPassword),
-    updatedAt: FieldValue.serverTimestamp(),
-  });
-  await batch.commit();
   return { siteUrl: creds.siteUrl, ...siteDetails(status) };
 }
 
 // Saved connection with its decrypted password (server use only)
 export async function loadCredentials(projectId: string): Promise<WpCredentials> {
-  const [site, secret] = await Promise.all([
-    adminDb.collection('wpSites').doc(projectId).get(),
-    adminDb.collection('wpSiteSecrets').doc(projectId).get(),
-  ]);
-  if (!site.exists || !secret.exists) throw new WpError('This project is not connected to WordPress.', 404);
-  return { siteUrl: site.data()!.siteUrl, username: site.data()!.username, appPassword: decryptSecret(secret.data()!.appPassword) };
+  const [site, secret] = await Promise.all([getRow('wp_sites', projectId), getRow('wp_site_secrets', projectId)]);
+  if (!site || !secret) throw new WpError('This project is not connected to WordPress.', 404);
+  return { siteUrl: site.siteUrl, username: site.username, appPassword: decryptSecret(secret.appPassword) };
 }
 
 // Re-test a saved connection and record the result
 export async function checkSite(projectId: string) {
   const creds = await loadCredentials(projectId);
-  const ref = adminDb.collection('wpSites').doc(projectId);
   try {
     const status = await getSiteStatus(creds);
-    await ref.update({ ...siteDetails(status), status: 'connected', lastError: null, lastCheckedAt: FieldValue.serverTimestamp() });
+    await updateRow('wp_sites', projectId, { ...siteDetails(status), status: 'connected', lastError: null, lastCheckedAt: now() });
     return { ok: true, ...siteDetails(status) };
   } catch (err: any) {
-    await ref.update({ status: 'error', lastError: err.message, lastCheckedAt: FieldValue.serverTimestamp() });
+    await updateRow('wp_sites', projectId, { status: 'error', lastError: err.message, lastCheckedAt: now() });
     throw err;
   }
 }
@@ -265,10 +257,8 @@ export async function disconnectSite(projectId: string) {
   } catch {
     // Site offline or key already invalid: still forget it here
   }
-  const batch = adminDb.batch();
-  batch.delete(adminDb.collection('wpSites').doc(projectId));
-  batch.delete(adminDb.collection('wpSiteSecrets').doc(projectId));
-  await batch.commit();
+  await deleteRow('wp_sites', projectId);
+  await deleteRow('wp_site_secrets', projectId);
   return { revoked };
 }
 

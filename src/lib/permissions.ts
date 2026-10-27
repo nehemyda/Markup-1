@@ -1,8 +1,7 @@
-// Role permission matrix, shared by the whole workspace (Firestore settings/permissions). Admins edit it in
-// Team → Roles & Permissions; the server reads the same document for the permissions it enforces.
+// Role permission matrix, shared by the whole workspace (the "permissions" settings row). Admins edit it in
+// Team → Roles & Permissions; the server reads the same row for the permissions it enforces.
 import { useEffect, useState } from 'react';
-import { doc, onSnapshot, setDoc } from 'firebase/firestore';
-import { db } from './firebase';
+import { mergeSetting, subscribeSetting } from './supabaseSync';
 import { RolePermissions } from '../types';
 
 export const DEFAULT_ROLE_PERMISSIONS: RolePermissions = {
@@ -16,23 +15,16 @@ export const DEFAULT_ROLE_PERMISSIONS: RolePermissions = {
   membersCanApplyAiFix: false,
 };
 
-const permissionsRef = doc(db, 'settings', 'permissions');
-
 export function useRolePermissions(): RolePermissions {
   const [permissions, setPermissions] = useState<RolePermissions>(DEFAULT_ROLE_PERMISSIONS);
   useEffect(
-    () =>
-      onSnapshot(
-        permissionsRef,
-        (snap) => setPermissions({ ...DEFAULT_ROLE_PERMISSIONS, ...(snap.data() as Partial<RolePermissions> | undefined) }),
-        () => setPermissions(DEFAULT_ROLE_PERMISSIONS)
-      ),
+    () => subscribeSetting<RolePermissions>('permissions', (data) => setPermissions({ ...DEFAULT_ROLE_PERMISSIONS, ...(data || {}) })),
     []
   );
   return permissions;
 }
 
-// Admins only (enforced by the security rules)
+// Admins only (enforced by the database rules)
 export function saveRolePermission(key: keyof RolePermissions, value: boolean) {
-  return setDoc(permissionsRef, { [key]: value, updatedAt: new Date().toISOString() }, { merge: true });
+  return mergeSetting('permissions', { [key]: value });
 }

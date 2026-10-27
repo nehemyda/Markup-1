@@ -1,9 +1,9 @@
-import { auth } from './firebase';
+import { accessToken } from './supabase';
 
-// Calls the app's server with the signed-in user's Firebase ID token, so the server can check who is asking.
+// Calls the app's server with the signed-in account's Supabase access token, so the server can check who is asking.
 export async function apiFetch(input: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
-  const user = auth.currentUser;
-  if (user) headers.set('Authorization', `Bearer ${await user.getIdToken()}`);
+  const token = await accessToken();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
   return fetch(input, { ...init, headers });
 }

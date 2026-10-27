@@ -6,7 +6,7 @@
 //   chatWebhooks/team          the team space (alerts for every project, and the daily summary)
 //   chatWebhooks/{projectId}   a project's own space, or { off: true } to stop alerts for that project
 //   settings/chat              daily summary settings and the day it was last sent
-import { adminDb } from './firebaseAdmin';
+import { findRows, getRow, getSetting, supabaseAdmin } from './db';
 
 export const WEBHOOK_PATTERN = /^https:\/\/chat\.googleapis\.com\/v1\/spaces\/([A-Za-z0-9_-]+)\/messages\?[A-Za-z0-9_\-=&%.]+$/;
 
@@ -61,8 +61,7 @@ export async function postToChat(url: string, text: string) {
 }
 
 async function webhookOf(id: string): Promise<{ url?: string; off?: boolean } | null> {
-  const snap = await adminDb.collection('chatWebhooks').doc(id).get();
-  return snap.exists ? (snap.data() as any) : null;
+  return getRow('chat_webhooks', id);
 }
 
 // Where a project's alerts go: its own space, else the team space; none when switched off
@@ -85,8 +84,8 @@ export async function chatStatus(projectId?: string) {
 }
 
 export async function summarySettings(): Promise<SummarySettings & { lastSentDate?: string }> {
-  const snap = await adminDb.doc('settings/chat').get();
-  return { ...DEFAULT_SUMMARY, ...(snap.data()?.summary || {}), lastSentDate: snap.data()?.lastSentDate };
+  const chat = await getSetting('chat');
+  return { ...DEFAULT_SUMMARY, ...(chat.summary || {}), lastSentDate: chat.lastSentDate };
 }
 
 // ---------- Live alerts (grouped) ----------
@@ -121,7 +120,7 @@ async function flush(projectId: string) {
   try {
     const url = await projectWebhook(projectId);
     if (!url) return;
-    const project = (await adminDb.collection('projects').doc(projectId).get()).data() || {};
+    const project = (await getRow('projects', projectId)) || {};
     const team = await teamNames();
     const assigned = projectOwners(project).map((id) => team.get(id)).filter(Boolean);
     const count = group.lines.length;
@@ -139,8 +138,8 @@ async function flush(projectId: string) {
 // ---------- Daily summary ----------
 
 async function teamNames() {
-  const snap = await adminDb.collection('users').get();
-  return new Map(snap.docs.filter((d) => d.data().removed !== true).map((d) => [d.id, String(d.data().name || d.data().email || 'Someone')]));
+  const users = await findRows('users', { removed: false });
+  return new Map(users.map((u) => [u.id, String(u.name || u.email || 'Someone')]));
 }
 
 function projectOwners(project: any): string[] {
@@ -156,20 +155,19 @@ const createdMs = (pin: any) => {
 const isClient = (author: any) => author?.role === 'Guest' || String(author?.id || '').startsWith('guest_');
 
 export async function buildSummary(now = Date.now(), timeZone = DEFAULT_SUMMARY.timeZone) {
-  const [pinsSnap, projectsSnap, team] = await Promise.all([
-    adminDb.collection('pins').get(),
-    adminDb.collection('projects').get(),
+  const [pinRows, projectRows, team] = await Promise.all([
+    findRows('pins'),
+    findRows('projects'),
     teamNames(),
   ]);
-  const projects = new Map(projectsSnap.docs.map((d) => [d.id, d.data() as any]));
+  const projects = new Map(projectRows.map((p) => [p.id, p]));
   type Row = { open: number; newFromClients: number; old: number; perProject: Map<string, number> };
   const people = new Map<string, Row>();
   let open = 0;
   let waiting = 0;
   let newFromClients = 0;
 
-  for (const doc of pinsSnap.docs) {
-    const pin = doc.data() as any;
+  for (const pin of pinRows) {
     const project = projects.get(pin.projectId);
     if (!project || pin.deletedAt || DONE.includes(pin.status)) continue;
     if (pin.status === 'waiting_on_customer') {
@@ -248,13 +246,8 @@ async function summaryTick() {
   const team = await webhookOf('team');
   if (!team?.url) return;
   // Claim the day first, so two servers (or a restart) never send it twice
-  const claimed = await adminDb.runTransaction(async (tx) => {
-    const ref = adminDb.doc('settings/chat');
-    const current = (await tx.get(ref)).data();
-    if (current?.lastSentDate === clock.date) return false;
-    tx.set(ref, { lastSentDate: clock.date }, { merge: true });
-    return true;
-  });
+  const { data: claimed, error } = await supabaseAdmin.rpc('claim_summary_day', { p_date: clock.date });
+  if (error) throw new Error(error.message);
   if (!claimed) return;
   try {
     await postToChat(team.url, await buildSummary(Date.now(), settings.timeZone));

@@ -2,12 +2,12 @@
 // member's open pins). The extension never sees a password: the member approves it in the app and the extension
 // gets its own access key, which can be disconnected at any time.
 //
-//   extensionConnect/{hash of state}  a pending approval (2 minutes), holding the new key until the extension claims it
-//   extensionKeys/{hash of key}       a connected extension: whose it is, when it was last used
+//   extension_connect (id = hash of state)  a pending approval (2 minutes), holding the new key until the extension claims it
+//   extension_keys (id = hash of key)       a connected extension: whose it is, when it was last used
 import crypto from 'crypto';
 import { NextFunction, Request, Response } from 'express';
-import { FieldValue } from 'firebase-admin/firestore';
-import { adminDb } from './firebaseAdmin';
+import { deleteRow, findRows, getRow, insertRow, now, supabaseAdmin, updateRow, upsertRow } from './db';
+import { fromRow, millis } from '../src/lib/rows';
 
 const CONNECT_TTL_MS = 2 * 60 * 1000;
 const KEY_PREFIX = 'mkx_';
@@ -25,7 +25,8 @@ export interface ExtensionRequest extends Request {
 export async function approveConnection(state: unknown, member: { uid: string; name: string; email: string }, browser: string) {
   if (!validState(state)) throw new Error('This connect link is not valid. Click Connect in the extension again.');
   const key = KEY_PREFIX + crypto.randomBytes(32).toString('base64url');
-  await adminDb.collection('extensionConnect').doc(hash(String(state))).set({
+  await upsertRow('extension_connect', {
+    id: hash(String(state)),
     key,
     uid: member.uid,
     browser: browser.slice(0, 120),
@@ -36,21 +37,19 @@ export async function approveConnection(state: unknown, member: { uid: string; n
 // The extension picks up its key (once)
 export async function claimConnection(state: unknown) {
   if (!validState(state)) return null;
-  const ref = adminDb.collection('extensionConnect').doc(hash(String(state)));
-  const pending = await adminDb.runTransaction(async (tx) => {
-    const snap = await tx.get(ref);
-    if (!snap.exists) return null;
-    tx.delete(ref);
-    return snap.data() as any;
-  });
-  if (!pending || pending.expiresAt < Date.now()) return null;
-  const user = (await adminDb.collection('users').doc(pending.uid).get()).data();
+  // Taking the row out is the claim: only one request can get it
+  const { data, error } = await supabaseAdmin.from('extension_connect').delete().eq('id', hash(String(state))).select('*');
+  if (error) throw new Error(error.message);
+  const pending = data?.[0] ? fromRow(data[0]) : null;
+  if (!pending || Number(pending.expiresAt) < Date.now()) return null;
+  const user = await getRow('users', pending.uid);
   if (!user || user.removed === true) return null;
-  await adminDb.collection('extensionKeys').doc(hash(pending.key)).set({
+  await insertRow('extension_keys', {
+    id: hash(pending.key),
     uid: pending.uid,
     browser: pending.browser || '',
-    createdAt: FieldValue.serverTimestamp(),
-    lastUsedAt: FieldValue.serverTimestamp(),
+    createdAt: now(),
+    lastUsedAt: now(),
   });
   return { key: pending.key as string, name: String(user.name || ''), email: String(user.email || '') };
 }
@@ -60,59 +59,59 @@ export async function requireExtension(req: ExtensionRequest, res: Response, nex
   const key = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
   if (!key.startsWith(KEY_PREFIX)) return res.status(401).json({ error: 'Not connected.' });
   const id = hash(key);
-  const ref = adminDb.collection('extensionKeys').doc(id);
-  const snap = await ref.get();
-  if (!snap.exists) return res.status(401).json({ error: 'This extension was disconnected. Connect it again.' });
-  const uid = String(snap.data()!.uid);
-  const user = (await adminDb.collection('users').doc(uid).get()).data();
+  const saved = await getRow('extension_keys', id);
+  if (!saved) return res.status(401).json({ error: 'This extension was disconnected. Connect it again.' });
+  const uid = String(saved.uid);
+  const user = await getRow('users', uid);
   if (!user || user.removed === true) {
-    await ref.delete();
+    await deleteRow('extension_keys', id);
     return res.status(401).json({ error: 'This account no longer has access.' });
   }
   // Record use at most every 10 minutes
-  const last = snap.data()!.lastUsedAt?.toMillis?.() || 0;
-  if (Date.now() - last > 10 * 60 * 1000) ref.update({ lastUsedAt: FieldValue.serverTimestamp() }).catch(() => {});
+  if (Date.now() - millis(saved.lastUsedAt) > 10 * 60 * 1000) updateRow('extension_keys', id, { lastUsedAt: now() }).catch(() => {});
   req.extensionUser = { uid, name: String(user.name || ''), email: String(user.email || '') };
   req.extensionKeyId = id;
   next();
 }
 
 export async function disconnect(keyId: string) {
-  await adminDb.collection('extensionKeys').doc(keyId).delete();
+  await deleteRow('extension_keys', keyId);
 }
 
 const isClient = (author: any) => author?.role === 'Guest' || String(author?.id || '').startsWith('guest_');
 
 // What the extension shows: unread count, latest notifications and the member's open pins
 export async function extensionSummary(uid: string) {
-  const [notesSnap, pinsSnap, projectsSnap] = await Promise.all([
-    adminDb.collection('notifications').where('recipientUid', '==', uid).orderBy('createdAt', 'desc').limit(30).get(),
-    adminDb.collection('pins').get(),
-    adminDb.collection('projects').get(),
+  const [notes, pinRows, projectRows] = await Promise.all([
+    supabaseAdmin.from('notifications').select('*').eq('recipient_uid', uid).order('created_at', { ascending: false }).limit(30)
+      .then(({ data, error }) => {
+        if (error) throw new Error(error.message);
+        return (data || []).map((r) => fromRow(r));
+      }),
+    findRows('pins'),
+    findRows('projects'),
   ]);
-  const notifications = notesSnap.docs.map((d) => {
-    const n = d.data();
+  const notifications = notes.map((n) => {
     return {
-      id: d.id,
+      id: n.id,
       type: n.type,
       title: n.title,
       message: n.message,
       projectId: n.projectId || null,
       pinId: n.pinId || null,
       read: n.read === true,
-      createdAt: n.createdAt?.toMillis?.() || null,
+      createdAt: millis(n.createdAt) || null,
       actor: { name: n.actor?.name || '', isGuest: !!n.actor?.isGuest },
     };
   });
 
-  const projects = new Map(projectsSnap.docs.map((d) => [d.id, d.data() as any]));
+  const projects = new Map(projectRows.map((p) => [p.id, p]));
   const mine = (pin: any, project: any) => {
     if (pin.assignedTo?.id) return String(pin.assignedTo.id) === uid;
     const assigned: string[] = Array.isArray(project.assigneeIds) && project.assigneeIds.length ? project.assigneeIds.map(String) : [String(project.ownerId || '')];
     return assigned.includes(uid);
   };
-  const pins = pinsSnap.docs
-    .map((d) => ({ id: d.id, ...(d.data() as any) }))
+  const pins = pinRows
     .filter((pin) => {
       const project = projects.get(pin.projectId);
       return project && !pin.deletedAt && !DONE.includes(pin.status) && mine(pin, project);
@@ -142,16 +141,10 @@ export async function extensionSummary(uid: string) {
 
 export async function markRead(uid: string, ids: unknown) {
   const list = Array.isArray(ids) ? ids.map(String).slice(0, 100) : [];
-  const snap = list.length
-    ? await Promise.all(list.map((id) => adminDb.collection('notifications').doc(id).get()))
-    : (await adminDb.collection('notifications').where('recipientUid', '==', uid).where('read', '==', false).get()).docs;
-  const batch = adminDb.batch();
-  let count = 0;
-  for (const doc of snap) {
-    if (!doc.exists || doc.data()?.recipientUid !== uid || doc.data()?.read === true) continue;
-    batch.update(doc.ref, { read: true, readAt: new Date().toISOString() });
-    count++;
-  }
-  if (count) await batch.commit();
-  return count;
+  // Only this person's unread notifications (all of them when no ids are given)
+  let query = supabaseAdmin.from('notifications').update({ read: true, read_at: now() }).eq('recipient_uid', uid).eq('read', false);
+  if (list.length) query = query.in('id', list);
+  const { data, error } = await query.select('id');
+  if (error) throw new Error(error.message);
+  return (data || []).length;
 }
