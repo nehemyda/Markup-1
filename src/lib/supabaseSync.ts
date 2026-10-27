@@ -4,7 +4,7 @@
 import { supabase } from './supabase';
 import { apiFetch } from './api';
 import { fromRow, millis, SERVER_FIELDS, Table, toRow as mapRow } from './rows';
-import { Project, Pin, Teammate, AuthUser, Folder, WpSite, WpFix, NotificationItem, Revision } from '../types';
+import { Project, Pin, Teammate, AuthUser, Folder, WpSite, WpFix, NotificationItem, Revision, Team } from '../types';
 
 const PAGE = 1000;
 
@@ -281,7 +281,7 @@ export function subscribeTeam(onTeamUpdate: (team: Teammate[]) => void): () => v
   let invites: Teammate[] = [];
   const emit = () => onTeamUpdate([...members, ...invites]);
 
-  const stopUsers = liveRows<AuthUser & { department?: string; removed?: boolean; isMasterAdmin?: boolean }>({ table: 'users' }, (users) => {
+  const stopUsers = liveRows<AuthUser & { department?: string; removed?: boolean; isMasterAdmin?: boolean; outOfOffice?: boolean; outOfOfficeUntil?: string | null }>({ table: 'users' }, (users) => {
     members = users
       .filter((u) => !u.removed)
       .map((u) => ({
@@ -294,6 +294,8 @@ export function subscribeTeam(onTeamUpdate: (team: Teammate[]) => void): () => v
         cursorColor: u.cursorColor || '#6366f1',
         department: u.department,
         isMasterAdmin: u.isMasterAdmin === true,
+        outOfOffice: u.outOfOffice === true,
+        outOfOfficeUntil: u.outOfOfficeUntil || null,
       }));
     emit();
   });
@@ -429,3 +431,27 @@ export function subscribeRevisions(projectId: string, onUpdate: (revisions: Revi
 export const isClientPin = (pin: Pin) => pin.author?.role === 'Guest' || String(pin.author?.id || '').startsWith('guest_');
 export const unsentClientPins = (pins: Pin[], projectId: string) =>
   pins.filter((p) => p.projectId === projectId && !p.deletedAt && isClientPin(p) && (p.revision === null || p.revision === undefined));
+
+// ---------- Teams and out of office ----------
+
+// Out of office now: switched on, and not past the last day away
+export const isAwayNow = (t: Pick<Teammate, 'outOfOffice' | 'outOfOfficeUntil'> | undefined) =>
+  !!t?.outOfOffice && (!t.outOfOfficeUntil || t.outOfOfficeUntil >= new Date().toISOString().slice(0, 10));
+
+export function subscribeTeams(onUpdate: (teams: Team[]) => void): () => void {
+  return liveRows<Team>({ table: 'teams' }, (teams) => onUpdate([...teams].sort((a, b) => a.name.localeCompare(b.name))));
+}
+
+// Admins only (the database rules check it)
+export async function saveTeam(team: Team) {
+  await upsert('teams', { ...team, updatedAt: new Date().toISOString() });
+}
+
+export async function deleteTeam(teamId: string) {
+  await remove('teams', teamId);
+}
+
+// Admins switch someone's out of office; anyone their own (from their profile)
+export async function setOutOfOffice(userId: string, outOfOffice: boolean, until: string | null = null) {
+  await update('users', userId, { outOfOffice, outOfOfficeUntil: outOfOffice ? until : null });
+}

@@ -3,7 +3,7 @@
 // Used by the browser and the server. Columns must match supabase/migrations.
 
 export const TABLE_COLUMNS = {
-  users: ['id', 'authId', 'name', 'email', 'avatar', 'role', 'organizationId', 'organizationName', 'status', 'cursorColor', 'department', 'isMasterAdmin', 'removed', 'removedAt', 'createdAt'],
+  users: ['id', 'authId', 'name', 'email', 'avatar', 'role', 'organizationId', 'organizationName', 'status', 'cursorColor', 'department', 'isMasterAdmin', 'removed', 'removedAt', 'outOfOffice', 'outOfOfficeUntil', 'createdAt'],
   invites: ['id', 'name', 'email', 'role', 'invitedBy', 'invitedAt'],
   folders: ['id', 'name', 'createdAt', 'createdBy'],
   projects: ['id', 'name', 'client', 'description', 'color', 'avatar', 'memberCount', 'lastUpdated', 'ownerId', 'createdBy', 'assigneeIds', 'folderId', 'assets', 'reviewState', 'revisionCount', 'updatedAt'],
@@ -18,6 +18,7 @@ export const TABLE_COLUMNS = {
   extension_connect: ['id', 'key', 'uid', 'browser', 'expiresAt'],
   extension_keys: ['id', 'uid', 'browser', 'createdAt', 'lastUsedAt'],
   settings: ['id', 'value', 'updatedAt'],
+  teams: ['id', 'name', 'managerId', 'leadId', 'memberIds', 'createdAt', 'updatedAt'],
   revisions: ['id', 'projectId', 'number', 'status', 'pinIds', 'people', 'submittedBy', 'submittedAt', 'doneAt', 'reopenedAt', 'reopenedBy'],
   // Read-only view: monthly AI totals
   ai_usage_monthly: ['month', 'requests', 'inputTokens', 'outputTokens', 'costUsd', 'projects', 'features'],

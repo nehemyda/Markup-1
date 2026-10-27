@@ -16,6 +16,7 @@ import { toMillis } from '../src/lib/time';
 const NEW_PIN_MS = 10 * 60 * 1000;
 import { queueChatAlert } from './googleChat';
 import { checkRevisionDone, projectPeople } from './revisions';
+import { coverTitle, loadCoverage } from './teams';
 
 type Person = { id: string; name: string; avatar?: string; email?: string; isGuest: boolean };
 
@@ -82,15 +83,20 @@ async function send(
   data: { type: 'pin' | 'comment' | 'mention' | 'assignment'; title: string; message: string; pin: any; project: any },
   team: Map<string, { id: string; name: string }>
 ) {
+  const direct = [...new Set(recipients)].filter((uid) => uid && uid !== actor.id && team.has(uid));
+  if (!direct.length) return;
+  // People out of office: their Team Lead (or Manager) is told too
+  const coverage = await loadCoverage();
   const rows: Record<string, any>[] = [];
-  for (const uid of new Set(recipients)) {
-    if (!uid || uid === actor.id || !team.has(uid)) continue;
+  for (const r of coverage.expand(direct)) {
+    if (r.uid === actor.id) continue;
+    const uid = r.uid;
     // One per event and person (the id makes a repeat harmless)
     rows.push(toRow('notifications', {
       id: `${key}__${uid}`.replace(/\//g, '_'),
       recipientUid: uid,
       type: data.type,
-      title: data.title,
+      title: coverTitle(data.title, r),
       message: data.message,
       projectId: data.pin.projectId || data.project?.id || null,
       projectName: data.project?.name || null,

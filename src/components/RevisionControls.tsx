@@ -245,10 +245,10 @@ export const TeamRevisionBar: React.FC<{
   };
 
   return (
-    <div className="bg-white border-b border-slate-200 px-4 py-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+    <div className="shrink-0 bg-white border-b border-slate-200 px-4 py-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
       <span className="font-bold text-slate-900">Client review</span>
       <span className={`px-2 py-0.5 rounded-full font-bold ${overLimit ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-700'}`}>
-        Revision {count} of {INCLUDED_REVISIONS} included
+        {count ? `Revision ${count} of ${INCLUDED_REVISIONS} included` : `No revisions yet · ${INCLUDED_REVISIONS} included`}
       </span>
       {overLimit && <span className="text-rose-700 font-semibold">Revision limit is over: extra revisions are chargeable</span>}
       <span className="text-slate-500">

@@ -89,6 +89,18 @@ export interface Teammate {
   isMasterAdmin?: boolean;
   // Pending invitation (not signed up yet)
   pendingInvite?: boolean;
+  // Out of office (optionally until a date, YYYY-MM-DD): their notifications also go to their Team Lead
+  outOfOffice?: boolean;
+  outOfOfficeUntil?: string | null;
+}
+
+// A team (Settings → Teams): who covers for whom when someone is out, and who hears about overdue revisions
+export interface Team {
+  id: string;
+  name: string;
+  managerId?: string | null;
+  leadId?: string | null;
+  memberIds: string[];
 }
 
 export interface PinMetadata {

@@ -3,6 +3,7 @@ import { Project, Asset, Teammate, ViewMode, Pin, Folder, RolePermissions } from
 import { projectUrl } from '../lib/routes';
 import { useRolePermissions, saveRolePermission } from '../lib/permissions';
 import { AiCreditsView } from './AiCreditsView';
+import { TeamsSettings } from './TeamsSettings';
 import { GoogleChatSettings } from './GoogleChatSettings';
 import { ProjectChatDialog } from './ProjectChatDialog';
 import { AssignProjectDialog, projectAssignees } from './AssignProjectDialog';
@@ -102,8 +103,8 @@ interface ProjectsGridViewProps {
   onRestoreProject?: (item: typeof ARCHIVED_PROJECTS[0]) => void;
   initialTab?: 'dashboard' | 'archive' | 'team' | 'credits' | 'settings';
   onTabChange?: (tab: 'dashboard' | 'archive' | 'team' | 'credits' | 'settings') => void;
-  onSettingsSubTabChange?: (tab: 'details' | 'domains' | 'notifications') => void;
-  initialSettingsSubTab?: 'details' | 'domains' | 'notifications';
+  onSettingsSubTabChange?: (tab: 'details' | 'domains' | 'notifications' | 'teams') => void;
+  initialSettingsSubTab?: 'details' | 'domains' | 'notifications' | 'teams';
 }
 
 const WebsiteThumbnailPreview: React.FC<{
@@ -241,7 +242,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
   initialSettingsSubTab
 }) => {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'archive' | 'team' | 'credits' | 'settings'>(initialTab || 'dashboard');
-  const [settingsSubTab, setSettingsSubTab] = useState<'details' | 'domains' | 'notifications'>(initialSettingsSubTab || 'details');
+  const [settingsSubTab, setSettingsSubTab] = useState<'details' | 'domains' | 'notifications' | 'teams'>(initialSettingsSubTab || 'details');
 
   const handleTabClick = (tab: 'dashboard' | 'archive' | 'team' | 'credits' | 'settings') => {
     setActiveTab(tab);
@@ -2341,6 +2342,18 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                 <MessageSquare className="w-4 h-4 text-emerald-600" />
                 <span>Notifications</span>
               </button>
+
+              <button
+                onClick={() => setSettingsSubTab('teams')}
+                className={`pb-2.5 transition-colors relative cursor-pointer flex items-center gap-2 ${
+                  settingsSubTab === 'teams'
+                    ? 'text-amber-700 border-b-2 border-amber-600 font-black'
+                    : 'text-slate-400 hover:text-slate-700'
+                }`}
+              >
+                <Users className="w-4 h-4 text-amber-600" />
+                <span>Teams</span>
+              </button>
             </div>
 
             {/* SUB-TAB 1: WORKSPACE DETAILS & BRANDING */}
@@ -2467,6 +2480,9 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
 
             {/* SUB-TAB 3: GOOGLE CHAT ALERTS AND DAILY SUMMARY */}
             {settingsSubTab === 'notifications' && <GoogleChatSettings canEdit={canEditDomainAccess} />}
+
+            {/* SUB-TAB 4: TEAMS AND OUT OF OFFICE */}
+            {settingsSubTab === 'teams' && <TeamsSettings teammates={teammates} canEdit={canEditDomainAccess} />}
 
             {/* SUB-TAB 2: DOMAIN & SEAT ACCESS CONTROL */}
             {settingsSubTab === 'domains' && (

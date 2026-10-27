@@ -665,6 +665,8 @@ export default function App() {
     department: string;
     avatar: string;
     status: 'online' | 'offline' | 'busy';
+    outOfOffice: boolean;
+    outOfOfficeUntil: string | null;
   }) => {
     if (authUser) {
       const updatedAuth: AuthUser = {
@@ -679,7 +681,7 @@ export default function App() {
         status: updatedData.status,
       };
       setAuthUser(updatedAuth);
-      saveProfile({ ...updatedAuth, department: updatedData.department });
+      saveProfile({ ...updatedAuth, department: updatedData.department, outOfOffice: updatedData.outOfOffice, outOfOfficeUntil: updatedData.outOfOfficeUntil });
     }
   };
 
@@ -1545,7 +1547,8 @@ export default function App() {
         )}
 
         {viewMode === 'studio' && (
-          <>
+          // The revision bar sits above the canvas (the workspace lays views out side by side)
+          <div className="flex-1 min-h-0 min-w-0 flex flex-col">
             {accessKey === 'member' && !effectiveGuestMode && (
               <TeamRevisionBar
                 project={currentProject}
@@ -1646,7 +1649,7 @@ export default function App() {
                 )
               }
             />
-          </>
+          </div>
         )}
 
         {viewMode === 'qascore' && (
@@ -1786,7 +1789,7 @@ export default function App() {
       <ProfileSettingsModal
         isOpen={showProfileSettingsModal}
         onClose={() => setShowProfileSettingsModal(false)}
-        currentUser={currentUser}
+        currentUser={{ ...currentUser, ...(teammates.find((t) => t.id === currentUser.id) || {}) }}
         onSaveProfile={handleSaveProfile}
       />
     </div>

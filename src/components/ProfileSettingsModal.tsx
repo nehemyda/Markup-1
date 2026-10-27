@@ -29,6 +29,8 @@ interface ProfileSettingsModalProps {
     role: string;
     status?: 'online' | 'offline' | 'busy';
     department?: string;
+    outOfOffice?: boolean;
+    outOfOfficeUntil?: string | null;
   };
   onSaveProfile: (updated: {
     name: string;
@@ -37,6 +39,8 @@ interface ProfileSettingsModalProps {
     department: string;
     avatar: string;
     status: 'online' | 'offline' | 'busy';
+    outOfOffice: boolean;
+    outOfOfficeUntil: string | null;
   }) => void;
 }
 
@@ -65,6 +69,9 @@ export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({
   const [department, setDepartment] = useState(currentUser.department || 'Product & Design');
   const [avatar, setAvatar] = useState(currentUser.avatar || '');
   const [status, setStatus] = useState<'online' | 'offline' | 'busy'>(currentUser.status || 'online');
+  // Out of office: notifications also go to your Team Lead (Settings → Teams)
+  const [outOfOffice, setOutOfOffice] = useState(!!currentUser.outOfOffice);
+  const [outOfOfficeUntil, setOutOfOfficeUntil] = useState(currentUser.outOfOfficeUntil || '');
   const [customAvatarUrl, setCustomAvatarUrl] = useState('');
   const [showCustomAvatarInput, setShowCustomAvatarInput] = useState(false);
   const [notifyEmail, setNotifyEmail] = useState(true);
@@ -81,6 +88,8 @@ export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({
       setDepartment(currentUser.department || 'Product & Design');
       setAvatar(currentUser.avatar || PRESET_AVATARS[0]);
       setStatus(currentUser.status || 'online');
+      setOutOfOffice(!!currentUser.outOfOffice);
+      setOutOfOfficeUntil(currentUser.outOfOfficeUntil || '');
     }
   }, [currentUser, isOpen]);
 
@@ -117,7 +126,9 @@ export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({
       role: role.trim(),
       department: department.trim(),
       avatar: avatar,
-      status: status
+      status: status,
+      outOfOffice,
+      outOfOfficeUntil: outOfOffice && outOfOfficeUntil ? outOfOfficeUntil : null,
     });
 
     setIsSaved(true);
@@ -234,6 +245,35 @@ export const ProfileSettingsModal: React.FC<ProfileSettingsModalProps> = ({
                       <span>Upload Image</span>
                     </button>
                   </div>
+                </div>
+
+                {/* Out of office */}
+                <div className="p-3 rounded-xl border border-amber-200 bg-amber-50/60 space-y-2">
+                  <label className="flex items-center justify-between gap-3 cursor-pointer">
+                    <span>
+                      <span className="font-bold text-slate-900 block">Out of office</span>
+                      <span className="text-[11px] text-slate-500">While you're away, your notifications also go to your Team Lead (Settings → Teams).</span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={outOfOffice}
+                      onChange={(e) => setOutOfOffice(e.target.checked)}
+                      className="w-4 h-4 text-amber-600 rounded cursor-pointer shrink-0"
+                    />
+                  </label>
+                  {outOfOffice && (
+                    <label className="flex items-center gap-2 text-xs text-slate-700">
+                      <span className="font-semibold">Back after</span>
+                      <input
+                        type="date"
+                        value={outOfOfficeUntil}
+                        min={new Date().toISOString().slice(0, 10)}
+                        onChange={(e) => setOutOfOfficeUntil(e.target.value)}
+                        className="bg-white border border-slate-300 rounded-lg px-2 py-1 text-xs"
+                      />
+                      <span className="text-slate-400">(optional; ends by itself after this day)</span>
+                    </label>
+                  )}
                 </div>
 
                 {/* Preset Avatars */}

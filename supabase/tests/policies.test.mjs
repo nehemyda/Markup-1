@@ -146,6 +146,17 @@ check('a browser saving an old copy does not reopen the project', (await as(mem,
 await db.exec(`update projects set review_state = 'open' where id = 'P1'`);
 check('reopened: the guest adds pins again', !(await as(guest, `insert into pins (id, project_id, title) values ('g4','P1','x')`)).error);
 
+// Teams and out of office
+check('member sets their own out of office', (await as(mem, `update users set out_of_office = true, out_of_office_until = '2026-11-02' where id='mem1'`)).affected === 1);
+check('admin sets a member\'s out of office', (await as(owner, `update users set out_of_office = true where id='mem2'`)).affected === 1);
+check('member cannot set someone else\'s out of office', !!(await as(mem, `update users set out_of_office = true where id='mem2'`)).error);
+check('admin creates a team', !(await as(owner, `insert into teams (id, name, manager_id, lead_id, member_ids) values ('t1','Web','owner1','mem1','{mem2}')`)).error);
+check('member cannot create a team', !!(await as(mem, `insert into teams (id, name) values ('t2','x')`)).error);
+await db.exec(`insert into teams (id, name, manager_id, lead_id, member_ids) values ('t1','Web','owner1','mem1','{mem2}')`);
+check('members read teams', n(await as(mem, 'select id from teams')) === 1);
+check('member cannot change a team', (await as(mem, `update teams set name='x' where id='t1'`)).affected === 0);
+check('guests cannot read teams', n(await as(guest, 'select id from teams')) === 0);
+
 const failed = results.filter(([ok]) => !ok).length;
 console.log(`\n${results.length - failed}/${results.length} passed`);
 process.exit(failed ? 1 : 0);

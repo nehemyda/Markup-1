@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Bell, Check, Search, X } from 'lucide-react';
 import { Project, Teammate } from '../types';
 import { UserAvatar } from './UserAvatar';
+import { isAwayNow } from '../lib/supabaseSync';
 
 interface AssignProjectDialogProps {
   project: Project;
@@ -109,6 +110,7 @@ export const AssignProjectDialog: React.FC<AssignProjectDialogProps> = ({ projec
                   <span className="block text-xs font-bold text-slate-900 truncate">
                     {t.name}
                     {t.id === project.ownerId && <span className="ml-1.5 text-[10px] font-semibold text-slate-400">Creator</span>}
+                    {isAwayNow(t) && <span className="ml-1.5 text-[10px] font-bold text-amber-700">Out of office</span>}
                   </span>
                   <span className="block text-[11px] text-slate-500 truncate">{t.email}</span>
                 </span>

@@ -67,7 +67,7 @@ export async function startSession(): Promise<AuthUser> {
 }
 
 // Save your own profile. Only these fields are yours to change; role and email are managed by the server/admins.
-export async function saveProfile(profile: AuthUser & { department?: string }): Promise<void> {
+export async function saveProfile(profile: AuthUser & { department?: string; outOfOffice?: boolean; outOfOfficeUntil?: string | null }): Promise<void> {
   const editable: Record<string, unknown> = {
     name: profile.name,
     avatar: profile.avatar,
@@ -75,6 +75,10 @@ export async function saveProfile(profile: AuthUser & { department?: string }): 
     cursorColor: profile.cursorColor,
   };
   if (profile.department !== undefined) editable.department = profile.department;
+  if (profile.outOfOffice !== undefined) {
+    editable.outOfOffice = profile.outOfOffice;
+    editable.outOfOfficeUntil = profile.outOfOfficeUntil || null;
+  }
   const { error } = await supabase.from('users').update(toRow('users', editable)).eq('id', profile.id);
   if (error) console.warn('Failed saving user profile:', error.message);
 }

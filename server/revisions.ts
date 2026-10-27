@@ -7,6 +7,7 @@ import { APP_URL, postToChat, projectWebhook } from './googleChat';
 import { findRows, getRow, insertRow, now, supabaseAdmin } from './db';
 import { toRow } from '../src/lib/rows';
 import { INCLUDED_REVISIONS } from '../src/types';
+import { coverTitle, loadCoverage } from './teams';
 
 export class RevisionError extends Error {
   constructor(message: string, public status = 400) {
@@ -34,14 +35,16 @@ export function projectPeople(project: any): string[] {
 
 // One notification per person on the project (not the person who did it)
 async function notifyTeam(project: any, type: 'submission' | 'revision_done', key: string, title: string, message: string, actor: Submitter | null) {
-  const team = new Set((await findRows('users', { removed: false })).map((u) => u.id));
-  const rows = projectPeople(project)
-    .filter((uid) => team.has(uid) && uid !== actor?.id)
-    .map((uid) => toRow('notifications', {
-      id: `${key}__${uid}`,
-      recipientUid: uid,
+  // People out of office: their Team Lead (or Manager) is told too
+  const coverage = await loadCoverage();
+  const rows = coverage
+    .expand(projectPeople(project).filter((uid) => uid !== actor?.id))
+    .filter((r) => r.uid !== actor?.id)
+    .map((r) => toRow('notifications', {
+      id: `${key}__${r.uid}`,
+      recipientUid: r.uid,
       type,
-      title,
+      title: coverTitle(title, r),
       message,
       projectId: project.id,
       projectName: project.name || null,
