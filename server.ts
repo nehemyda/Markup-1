@@ -11,6 +11,7 @@ import { saveDataUrl, UPLOAD_DIR, SAFE_FILE, CONTENT_TYPES } from './server/uplo
 import { startNotifications } from './server/notifications';
 import { reopenProject, RevisionError, submitRevision } from './server/revisions';
 import { startDeadlineChecks } from './server/deadlines';
+import { requestPreview, startPreviews } from './server/previews';
 import { approveConnection, claimConnection, disconnect as disconnectExtension, extensionSummary, markRead, requireExtension, ExtensionRequest } from './server/extension';
 import { APP_URL, chatStatus, postToChat, sendSummaryNow, startDailySummary, summarySettings, spaceLabel, DEFAULT_SUMMARY, WEBHOOK_PATTERN } from './server/googleChat';
 import path from 'path';
@@ -487,6 +488,14 @@ async function startServer() {
     } catch (err) {
       revisionFail(res, err);
     }
+  });
+
+  // ---------- Project card previews ----------
+  // Take a new screenshot of the project's main page now (members; also refreshed daily by the server)
+  app.post('/api/projects/:projectId/preview', requireMember, async (req: AuthedRequest, res) => {
+    const result = await requestPreview(req.params.projectId);
+    if (result.error) return res.status(422).json({ error: result.error });
+    res.json({ previewUrl: result.url });
   });
 
   // ---------- Chrome extension ----------
@@ -1259,6 +1268,7 @@ html, body {
   startNotifications();
   startDailySummary();
   startDeadlineChecks();
+  startPreviews(getBrowser);
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 MarkFlow Server running on http://localhost:${PORT}`);

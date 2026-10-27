@@ -51,6 +51,20 @@ export function saveDataUrl(dataUrl: string): string {
   return `${UPLOAD_PREFIX}${name}`;
 }
 
+// Save bytes made by the server (e.g. a page preview); returns its link
+export function saveFile(data: Buffer | Uint8Array, ext: string): string {
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  const name = `${crypto.randomBytes(16).toString('hex')}.${ext}`;
+  fs.writeFileSync(path.join(UPLOAD_DIR, name), data);
+  return `${UPLOAD_PREFIX}${name}`;
+}
+
+// Remove a file saved here (ignored for anything else)
+export function removeFile(url: string | null | undefined) {
+  const name = String(url || '').startsWith(UPLOAD_PREFIX) ? String(url).slice(UPLOAD_PREFIX.length) : '';
+  if (SAFE_FILE.test(name)) fs.rmSync(path.join(UPLOAD_DIR, name), { force: true });
+}
+
 // Read an attached file for server use (e.g. images sent to the AI): data URL or uploaded link
 export function readAttachment(url: string): { mime: string; data: Buffer } | null {
   if (!url) return null;

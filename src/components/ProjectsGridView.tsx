@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Project, Asset, Teammate, ViewMode, Pin, Folder, RolePermissions } from '../types';
 import { projectUrl } from '../lib/routes';
+import { apiFetch } from '../lib/api';
 import { useRolePermissions, saveRolePermission } from '../lib/permissions';
 import { AiCreditsView } from './AiCreditsView';
 import { TeamsSettings } from './TeamsSettings';
@@ -107,11 +108,15 @@ interface ProjectsGridViewProps {
   initialSettingsSubTab?: 'details' | 'domains' | 'notifications' | 'teams';
 }
 
+// Card preview: the screenshot the server took of the project's main page (server/previews.ts); a drawn placeholder
+// until it exists or when the page could not be loaded
 const WebsiteThumbnailPreview: React.FC<{
   assetUrl?: string;
   projectName: string;
   customThumbnailUrl?: string;
-}> = ({ assetUrl, projectName, customThumbnailUrl }) => {
+  previewUrl?: string | null;
+  refreshing?: boolean;
+}> = ({ assetUrl, projectName, customThumbnailUrl, previewUrl, refreshing }) => {
   const [imgError, setImgError] = useState(false);
 
   let targetUrl = assetUrl || '';
@@ -133,13 +138,9 @@ const WebsiteThumbnailPreview: React.FC<{
   const faviconUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
   
   const isUnsplash = customThumbnailUrl?.includes('unsplash.com');
-  const screenshotEndpoint = targetUrl 
-    ? `https://api.microlink.io/?url=${encodeURIComponent(targetUrl)}&screenshot=true&embed=screenshot.url`
-    : null;
-
-  const displayImageSrc = (!isUnsplash && customThumbnailUrl) 
-    ? customThumbnailUrl 
-    : screenshotEndpoint;
+  const displayImageSrc = previewUrl || (!isUnsplash && customThumbnailUrl ? customThumbnailUrl : null);
+  // A new preview: try loading it again
+  useEffect(() => setImgError(false), [displayImageSrc]);
 
   if (displayImageSrc && !imgError) {
     return (
@@ -155,7 +156,7 @@ const WebsiteThumbnailPreview: React.FC<{
         <div className="absolute bottom-2 left-2 right-2 bg-slate-950/80 backdrop-blur-md px-2.5 py-1 rounded-lg border border-white/10 flex items-center gap-2 text-[10px] text-slate-300 shadow-sm">
           <img src={faviconUrl} alt="" className="w-3.5 h-3.5 rounded shrink-0" onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }} />
           <span className="truncate font-mono font-medium text-slate-200">{domain}</span>
-          <span className="ml-auto text-emerald-400 font-extrabold shrink-0">● LIVE</span>
+          <span className="ml-auto text-emerald-400 font-extrabold shrink-0">{refreshing ? 'Updating…' : '● LIVE'}</span>
         </div>
       </div>
     );
@@ -354,6 +355,18 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
   const [activeCardMenuId, setActiveCardMenuId] = useState<string | null>(null);
   const [assignProjectId, setAssignProjectId] = useState<string | null>(null);
   const [chatProjectId, setChatProjectId] = useState<string | null>(null);
+  // Card preview being taken again (the server opens the page in Chrome; it can take a few seconds)
+  const [refreshingPreview, setRefreshingPreview] = useState<string | null>(null);
+  const refreshPreview = async (projectId: string) => {
+    setRefreshingPreview(projectId);
+    try {
+      const res = await apiFetch(`/api/projects/${encodeURIComponent(projectId)}/preview`, { method: 'POST' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) alert(body.error || 'Could not refresh the preview.');
+    } finally {
+      setRefreshingPreview(null);
+    }
+  };
   const chatProject = chatProjectId ? projects.find((p) => p.id === chatProjectId) || null : null;
   const assignProject = assignProjectId ? projects.find((p) => p.id === assignProjectId) || null : null;
   // Admins and the project's creator choose who it is assigned to
@@ -987,6 +1000,20 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                               <MessageSquare className="w-3.5 h-3.5 text-emerald-600" />
                               <span>Google Chat alerts</span>
                             </button>
+                            {primaryAsset.type === 'url' && (
+                              <button
+                                disabled={refreshingPreview === project.id}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveCardMenuId(null);
+                                  refreshPreview(project.id);
+                                }}
+                                className="w-full text-left px-3 py-2 text-slate-700 hover:bg-slate-100 disabled:opacity-50 flex items-center gap-2 font-medium cursor-pointer"
+                              >
+                                <RefreshCw className={`w-3.5 h-3.5 text-sky-600 ${refreshingPreview === project.id ? 'animate-spin' : ''}`} />
+                                <span>Refresh preview</span>
+                              </button>
+                            )}
                             {onMoveProject && folders.length > 0 && (
                               <div className="border-t border-slate-100 mt-1 pt-1">
                                 <button
@@ -1075,6 +1102,8 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                           assetUrl={primaryAsset.url}
                           projectName={project.name}
                           customThumbnailUrl={primaryAsset.thumbnailUrl}
+                          previewUrl={project.previewUrl}
+                          refreshing={refreshingPreview === project.id}
                         />
 
                         {/* Hover: Open and Share, above everything in the preview (it has its own layers) */}

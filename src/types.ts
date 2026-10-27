@@ -196,6 +196,9 @@ export interface Project {
   reviewState?: 'open' | 'submitted';
   // Revisions the client has submitted
   revisionCount?: number;
+  // Card preview: screenshot of the main page taken by the server (server/previews.ts)
+  previewUrl?: string | null;
+  previewAt?: string | null;
 }
 
 // A client's submitted round of feedback (see server/revisions.ts)

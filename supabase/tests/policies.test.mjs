@@ -165,6 +165,8 @@ check('members read deadline settings', n(await as(mem, `select id from settings
 check('signed-out visitors cannot read deadline settings', n(await as('anon', `select id from settings where id='revisions'`)) === 0);
 check('a browser cannot change the reminder time', (await as(mem, `update projects set unsent_reminded_at = now(), name = 'One' where id='P1' returning unsent_reminded_at`)).rows?.[0]?.unsent_reminded_at === null);
 
+check('a browser cannot change a project preview', (await as(mem, `update projects set preview_url = 'x', name = 'One' where id='P1' returning preview_url`)).rows?.[0]?.preview_url === null);
+
 const failed = results.filter(([ok]) => !ok).length;
 console.log(`\n${results.length - failed}/${results.length} passed`);
 process.exit(failed ? 1 : 0);
