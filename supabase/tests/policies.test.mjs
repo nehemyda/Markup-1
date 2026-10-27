@@ -157,6 +157,14 @@ check('members read teams', n(await as(mem, 'select id from teams')) === 1);
 check('member cannot change a team', (await as(mem, `update teams set name='x' where id='t1'`)).affected === 0);
 check('guests cannot read teams', n(await as(guest, 'select id from teams')) === 0);
 
+// Deadline settings
+check('admin saves deadline settings', !(await as(owner, `select settings_merge('revisions', '{"dueDays":3}')`)).error);
+check('member cannot change deadline settings', !!(await as(mem, `select settings_merge('revisions', '{"dueDays":9}')`)).error);
+await db.exec(`select settings_merge('revisions', '{"dueDays":3}')`);
+check('members read deadline settings', n(await as(mem, `select id from settings where id='revisions'`)) === 1);
+check('signed-out visitors cannot read deadline settings', n(await as('anon', `select id from settings where id='revisions'`)) === 0);
+check('a browser cannot change the reminder time', (await as(mem, `update projects set unsent_reminded_at = now(), name = 'One' where id='P1' returning unsent_reminded_at`)).rows?.[0]?.unsent_reminded_at === null);
+
 const failed = results.filter(([ok]) => !ok).length;
 console.log(`\n${results.length - failed}/${results.length} passed`);
 process.exit(failed ? 1 : 0);

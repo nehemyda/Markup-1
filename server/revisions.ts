@@ -4,9 +4,9 @@
 // or ready for review, the revision is done and the team is told, so they can let the client know.
 // Two revisions are included per project; more are allowed and shown as chargeable.
 import { APP_URL, postToChat, projectWebhook } from './googleChat';
-import { findRows, getRow, insertRow, now, supabaseAdmin } from './db';
+import { findRows, getRow, getSetting, insertRow, now, supabaseAdmin } from './db';
 import { toRow } from '../src/lib/rows';
-import { INCLUDED_REVISIONS } from '../src/types';
+import { DEFAULT_REVISION_SETTINGS, INCLUDED_REVISIONS, RevisionSettings } from '../src/types';
 import { coverTitle, loadCoverage } from './teams';
 
 export class RevisionError extends Error {
@@ -23,7 +23,7 @@ export interface Submitter {
 }
 
 const DONE = ['resolved', 'ready_for_review'];
-const isClientPin = (pin: any) => pin.author?.role === 'Guest' || String(pin.author?.id || '').startsWith('guest_');
+export const isClientPin = (pin: any) => pin.author?.role === 'Guest' || String(pin.author?.id || '').startsWith('guest_');
 const plain = (text: string) => String(text || '').replace(/[*_~`<>|]/g, '').trim();
 
 // The project's assigned developers; the creator when nobody is assigned
@@ -33,12 +33,44 @@ export function projectPeople(project: any): string[] {
   return project?.ownerId ? [String(project.ownerId)] : [];
 }
 
-// One notification per person on the project (not the person who did it)
-async function notifyTeam(project: any, type: 'submission' | 'revision_done', key: string, title: string, message: string, actor: Submitter | null) {
-  // People out of office: their Team Lead (or Manager) is told too
+// Due days and reminder hours (Settings → Teams → Deadlines & reminders)
+export async function revisionSettings(): Promise<RevisionSettings> {
+  const saved = await getSetting<RevisionSettings>('revisions').catch(() => ({}) as Partial<RevisionSettings>);
+  const number = (value: unknown, fallback: number, max: number) => {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? Math.min(n, max) : fallback;
+  };
+  return {
+    dueDays: number(saved.dueDays, DEFAULT_REVISION_SETTINGS.dueDays, 60),
+    workingDaysOnly: saved.workingDaysOnly !== false,
+    unsentReminderHours: number(saved.unsentReminderHours, DEFAULT_REVISION_SETTINGS.unsentReminderHours, 24 * 14),
+  };
+}
+
+// `days` days after `from` (skipping Saturdays and Sundays when only working days count)
+export function addDays(from: Date, days: number, workingDaysOnly: boolean) {
+  const due = new Date(from);
+  for (let left = days; left > 0; ) {
+    due.setUTCDate(due.getUTCDate() + 1);
+    if (!workingDaysOnly || ![0, 6].includes(due.getUTCDay())) left--;
+  }
+  return due;
+}
+
+// One notification per person (not the person who did it); by default the project's developers.
+// People out of office: their Team Lead (or Manager) is told too.
+export async function notifyTeam(
+  project: any,
+  type: 'submission' | 'revision_done' | 'overdue' | 'reminder',
+  key: string,
+  title: string,
+  message: string,
+  actor: Submitter | null,
+  recipients: string[] = projectPeople(project)
+) {
   const coverage = await loadCoverage();
   const rows = coverage
-    .expand(projectPeople(project).filter((uid) => uid !== actor?.id))
+    .expand(recipients.filter((uid) => uid !== actor?.id))
     .filter((r) => r.uid !== actor?.id)
     .map((r) => toRow('notifications', {
       id: `${key}__${r.uid}`,
@@ -63,7 +95,7 @@ async function notifyTeam(project: any, type: 'submission' | 'revision_done', ke
   }
 }
 
-async function tellChat(projectId: string, text: string) {
+export async function tellChat(projectId: string, text: string) {
   try {
     const url = await projectWebhook(projectId);
     if (url) await postToChat(url, text);
@@ -72,7 +104,7 @@ async function tellChat(projectId: string, text: string) {
   }
 }
 
-const projectLink = (projectId: string) => `${APP_URL}/projects/${encodeURIComponent(projectId)}`;
+export const projectLink = (projectId: string) => `${APP_URL}/projects/${encodeURIComponent(projectId)}`;
 
 // The client's unsent pins become the next revision, and the link turns view-only for the client
 export async function submitRevision(projectId: string, by: Submitter) {
@@ -91,7 +123,7 @@ export async function submitRevision(projectId: string, by: Submitter) {
   const number = previous + 1;
   const { data: claimed, error } = await supabaseAdmin
     .from('projects')
-    .update({ review_state: 'submitted', revision_count: number })
+    .update({ review_state: 'submitted', revision_count: number, unsent_reminded_at: null })
     .eq('id', projectId)
     .eq('review_state', 'open')
     .eq('revision_count', previous)
@@ -115,7 +147,9 @@ export async function submitRevision(projectId: string, by: Submitter) {
   }
   const people = [...byPerson.values()].sort((a, b) => b.count - a.count);
 
+  const settings = await revisionSettings();
   const revision = await insertRow('revisions', {
+    dueAt: addDays(new Date(), settings.dueDays, settings.workingDaysOnly).toISOString(),
     id: `${projectId}_r${number}`,
     projectId,
     number,

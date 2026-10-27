@@ -251,6 +251,11 @@ export const TeamRevisionBar: React.FC<{
         {count ? `Revision ${count} of ${INCLUDED_REVISIONS} included` : `No revisions yet · ${INCLUDED_REVISIONS} included`}
       </span>
       {overLimit && <span className="text-rose-700 font-semibold">Revision limit is over: extra revisions are chargeable</span>}
+      {locked && latest?.status === 'submitted' && latest.dueAt && (
+        new Date(latest.dueAt).getTime() < Date.now()
+          ? <span className="px-2 py-0.5 rounded-full bg-rose-600 text-white font-bold">Overdue since {day(latest.dueAt)}</span>
+          : <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-bold">Due {day(latest.dueAt)}</span>
+      )}
       <span className="text-slate-500">
         {locked && latest
           ? `Revision ${latest.number} ${latest.status === 'done' ? 'done' : 'submitted'} by ${latest.submittedBy?.name || 'the client'} on ${day(latest.submittedAt)} · ${plural(latest.pinIds.length, 'pin')} · view-only for the client`

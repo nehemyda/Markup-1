@@ -10,6 +10,7 @@ import { aiContext, trackUsage, forgetPricingCache, DEFAULT_PRICING } from './se
 import { saveDataUrl, UPLOAD_DIR, SAFE_FILE, CONTENT_TYPES } from './server/uploads';
 import { startNotifications } from './server/notifications';
 import { reopenProject, RevisionError, submitRevision } from './server/revisions';
+import { startDeadlineChecks } from './server/deadlines';
 import { approveConnection, claimConnection, disconnect as disconnectExtension, extensionSummary, markRead, requireExtension, ExtensionRequest } from './server/extension';
 import { APP_URL, chatStatus, postToChat, sendSummaryNow, startDailySummary, summarySettings, spaceLabel, DEFAULT_SUMMARY, WEBHOOK_PATTERN } from './server/googleChat';
 import path from 'path';
@@ -1257,6 +1258,7 @@ html, body {
 
   startNotifications();
   startDailySummary();
+  startDeadlineChecks();
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 MarkFlow Server running on http://localhost:${PORT}`);

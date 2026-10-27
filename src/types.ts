@@ -210,7 +210,20 @@ export interface Revision {
   submittedAt: string;
   doneAt?: string | null;
   reopenedAt?: string | null;
+  // When the developers should be done (from Settings → Teams → Deadlines)
+  dueAt?: string | null;
 }
+
+// Settings → Teams → Deadlines & reminders (settings row "revisions")
+export interface RevisionSettings {
+  // A submitted revision is due this many days later
+  dueDays: number;
+  // Count only Monday to Friday
+  workingDaysOnly: boolean;
+  // Remind the team when client pins stay unsubmitted this long
+  unsentReminderHours: number;
+}
+export const DEFAULT_REVISION_SETTINGS: RevisionSettings = { dueDays: 2, workingDaysOnly: true, unsentReminderHours: 24 };
 
 // Revisions included per project; more are allowed but shown as chargeable
 export const INCLUDED_REVISIONS = 2;
@@ -247,7 +260,7 @@ export interface FilterState {
 // One notification for the signed-in person (created by the server, see server/notifications.ts)
 export interface NotificationItem {
   id: string;
-  type: 'pin' | 'comment' | 'mention' | 'assignment' | 'submission' | 'revision_done';
+  type: 'pin' | 'comment' | 'mention' | 'assignment' | 'submission' | 'revision_done' | 'overdue' | 'reminder';
   title: string;
   message: string;
   // Milliseconds

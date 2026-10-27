@@ -2,9 +2,9 @@
 // office their notifications also go to their Team Lead, and to the Manager when the lead is out (server/teams.ts).
 // Also lists who is out of office now; admins can switch it for someone who forgot.
 import React, { useEffect, useMemo, useState } from 'react';
-import { Check, Pencil, Plane, Plus, Search, Trash2, Users, X } from 'lucide-react';
-import { Team, Teammate } from '../types';
-import { deleteTeam, isAwayNow, saveTeam, setOutOfOffice, subscribeTeams } from '../lib/supabaseSync';
+import { Check, Clock, Pencil, Plane, Plus, Search, Trash2, Users, X } from 'lucide-react';
+import { DEFAULT_REVISION_SETTINGS, RevisionSettings, Team, Teammate } from '../types';
+import { deleteTeam, isAwayNow, mergeSetting, saveTeam, setOutOfOffice, subscribeSetting, subscribeTeams } from '../lib/supabaseSync';
 import { assignableTeammates } from './AssignProjectDialog';
 import { SearchableMemberSelect } from './SearchableMemberSelect';
 import { UserAvatar } from './UserAvatar';
@@ -136,6 +136,76 @@ const TeamForm: React.FC<{ team: Team; people: Teammate[]; onSave: (team: Team) 
   );
 };
 
+// Due date for client revisions and the reminder for unsubmitted client pins (server/deadlines.ts)
+const DeadlineSettings: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
+  const [saved, setSaved] = useState<RevisionSettings>(DEFAULT_REVISION_SETTINGS);
+  const [draft, setDraft] = useState<RevisionSettings>(DEFAULT_REVISION_SETTINGS);
+  const [note, setNote] = useState('');
+  useEffect(
+    () =>
+      subscribeSetting<RevisionSettings>('revisions', (value) => {
+        const next = { ...DEFAULT_REVISION_SETTINGS, ...(value || {}) };
+        setSaved(next);
+        setDraft(next);
+      }),
+    []
+  );
+  const changed = JSON.stringify(draft) !== JSON.stringify(saved);
+  const save = async () => {
+    const dueDays = Math.round(Number(draft.dueDays));
+    const hours = Math.round(Number(draft.unsentReminderHours));
+    if (!(dueDays >= 1 && dueDays <= 60) || !(hours >= 1 && hours <= 336)) {
+      setNote('Use 1 to 60 days and 1 to 336 hours.');
+      return;
+    }
+    try {
+      await mergeSetting('revisions', { dueDays, workingDaysOnly: draft.workingDaysOnly, unsentReminderHours: hours });
+      setNote('Saved');
+    } catch (err: any) {
+      setNote(err?.message || 'Could not save.');
+    }
+    setTimeout(() => setNote(''), 3000);
+  };
+  const input = 'w-16 border border-slate-300 rounded-lg px-2 py-1 text-xs text-center disabled:bg-slate-50';
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs space-y-3">
+      <div>
+        <h2 className="font-extrabold text-slate-900 flex items-center gap-2"><Clock className="w-4 h-4 text-rose-600" /> Deadlines & reminders</h2>
+        <p className="text-xs text-slate-500 mt-0.5">
+          When a revision isn't done by its due date, its developers, their Team Leads and Managers are alerted (then once a day until it's done).
+        </p>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-700">
+        <span>Client revisions are due within</span>
+        <input type="number" min={1} max={60} disabled={!canEdit} value={draft.dueDays} onChange={(e) => setDraft({ ...draft, dueDays: Number(e.target.value) })} className={input} />
+        <select
+          disabled={!canEdit}
+          value={draft.workingDaysOnly ? 'working' : 'calendar'}
+          onChange={(e) => setDraft({ ...draft, workingDaysOnly: e.target.value === 'working' })}
+          className="border border-slate-300 rounded-lg px-2 py-1 text-xs disabled:bg-slate-50"
+        >
+          <option value="working">working days (Mon–Fri)</option>
+          <option value="calendar">calendar days</option>
+        </select>
+        <span>of being submitted.</span>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-700">
+        <span>Remind the project's developers when client pins are not submitted after</span>
+        <input type="number" min={1} max={336} disabled={!canEdit} value={draft.unsentReminderHours} onChange={(e) => setDraft({ ...draft, unsentReminderHours: Number(e.target.value) })} className={input} />
+        <span>hours.</span>
+      </div>
+      {canEdit && (
+        <div className="flex items-center gap-3">
+          <button onClick={save} disabled={!changed} className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-xs font-bold cursor-pointer">Save</button>
+          {note && <span className="text-xs text-slate-600">{note}</span>}
+        </div>
+      )}
+      <p className="text-[11px] text-slate-400">A new due date applies to revisions submitted after the change.</p>
+    </div>
+  );
+};
+
 export const TeamsSettings: React.FC<{ teammates: Teammate[]; canEdit: boolean }> = ({ teammates, canEdit }) => {
   const [teams, setTeams] = useState<Team[]>([]);
   const [editing, setEditing] = useState<Team | null>(null);
@@ -179,6 +249,7 @@ export const TeamsSettings: React.FC<{ teammates: Teammate[]; canEdit: boolean }
 
   return (
     <div className="space-y-6">
+      <DeadlineSettings canEdit={canEdit} />
       <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs space-y-4">
         <div className="flex items-start justify-between gap-3">
           <div>

@@ -1077,8 +1077,8 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                           customThumbnailUrl={primaryAsset.thumbnailUrl}
                         />
 
-                        {/* HOVER OVERLAY MATCHING SCREENSHOT (OPEN & SHARE) */}
-                        <div className="absolute inset-0 bg-slate-900/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3 p-4 backdrop-blur-[2px]">
+                        {/* Hover: Open and Share, above everything in the preview (it has its own layers) */}
+                        <div className="absolute inset-0 z-20 bg-slate-950/80 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3 p-4 backdrop-blur-sm">
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -1100,7 +1100,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                               copyGuestLinkForProject(project.id, e);
                               onOpenShareModal(project);
                             }}
-                            className="bg-slate-900/80 hover:bg-slate-950 text-white font-bold text-xs px-4 py-2 rounded-xl shadow-md flex items-center gap-2 border border-white/30 transition-all transform hover:scale-105 cursor-pointer"
+                            className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs px-4 py-2 rounded-xl shadow-md flex items-center gap-2 transition-all transform hover:scale-105 cursor-pointer"
                           >
                             {copiedCardId === project.id ? (
                               <>
@@ -1552,7 +1552,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                     />
 
                     {/* Hover Overlay with Open Studio and Restore */}
-                    <div className="absolute inset-0 bg-slate-900/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 p-3">
+                    <div className="absolute inset-0 z-20 bg-slate-950/80 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 p-3">
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
