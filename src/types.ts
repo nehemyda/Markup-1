@@ -164,6 +164,8 @@ export interface Pin {
   deletedBy?: { id: string; name: string } | null;
   // Client pins: the revision they were submitted in (null = not submitted yet, 0 = before revisions were counted)
   revision?: number | null;
+  // Added by the team (QA, AI review): never shown to guests. Set by the database when the pin is added.
+  internal?: boolean;
 }
 
 export interface Asset {

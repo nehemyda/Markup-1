@@ -429,6 +429,8 @@ export function subscribeRevisions(projectId: string, onUpdate: (revisions: Revi
 
 // Client pins not submitted yet (a team member's pins are not part of client revisions)
 export const isClientPin = (pin: Pin) => pin.author?.role === 'Guest' || String(pin.author?.id || '').startsWith('guest_');
+// The team's own pins (QA, AI review), hidden from guests. Until the database's answer arrives, judged by the author.
+export const isInternalPin = (pin: Pin) => pin.internal ?? !isClientPin(pin);
 export const unsentClientPins = (pins: Pin[], projectId: string) =>
   pins.filter((p) => p.projectId === projectId && !p.deletedAt && isClientPin(p) && (p.revision === null || p.revision === undefined));
 

@@ -1,6 +1,7 @@
 import { apiFetch } from '../lib/api';
 import { WpFixPanel } from './WpFixPanel';
 import { pinDevice, pinColor } from '../lib/pins';
+import { isInternalPin } from '../lib/supabaseSync';
 import { toMillis, timeAgo, fullTime } from '../lib/time';
 import { Tablet, Smartphone, RotateCcw } from 'lucide-react';
 import { filesToAttachments, rejectedFilesMessage } from '../lib/attachments';
@@ -12,6 +13,8 @@ import {
   MessageSquare, 
   Send, 
   Sparkles, 
+  Eye,
+  EyeOff,
   CheckCircle2, 
   AlertCircle, 
   Clock, 
@@ -170,6 +173,20 @@ const DeviceLabel: React.FC<{ pin: Pin }> = ({ pin }) => {
   );
 };
 
+// Team view: whether the client sees the pin (client pin) or only the team does (internal)
+const SourceBadge: React.FC<{ pin: Pin }> = ({ pin }) =>
+  isInternalPin(pin) ? (
+    <span className="inline-flex items-center gap-0.5 text-[10px] font-bold text-slate-600 bg-slate-100 border border-dashed border-slate-300 rounded px-1.5 py-0.5 shrink-0" title="Internal: only the team sees this pin">
+      <EyeOff className="w-3 h-3" />
+      Internal
+    </span>
+  ) : (
+    <span className="inline-flex items-center gap-0.5 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5 shrink-0" title="Client pin: the client sees this">
+      <Eye className="w-3 h-3" />
+      Client
+    </span>
+  );
+
 export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
   pins,
   selectedPin,
@@ -207,6 +224,8 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
   const [showMoreDetails, setShowMoreDetails] = useState(false);
   const [showDeleted, setShowDeleted] = useState(false);
   const listTab: 'active' | 'resolved' | 'deleted' = showDeleted ? 'deleted' : filterState?.showResolved ? 'resolved' : 'active';
+  // Team only: client pins, the team's internal pins, or both
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'client' | 'internal'>('all');
   const setListTab = (tab: 'active' | 'resolved' | 'deleted') => {
     setShowDeleted(tab === 'deleted');
     if (tab !== 'deleted') onUpdateFilter?.({ showResolved: tab === 'resolved' });
@@ -456,12 +475,15 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
   if (!selectedPin) {
     const q = (filterState?.search || '').trim().toLowerCase();
     const livePins = pins.filter((p) => !p.deletedAt);
+    const matchesSource = (p: Pin) => sourceFilter === 'all' || (sourceFilter === 'internal') === isInternalPin(p);
     const matchesFilter = (p: Pin) =>
+      matchesSource(p) &&
       (!filterState || filterState.category === 'all' || p.category === filterState.category) &&
       (!q || p.title.toLowerCase().includes(q) || p.comments.some((c) => c.text.toLowerCase().includes(q)));
     const deletedPins = isGuest ? [] : pins.filter((p) => p.deletedAt && matchesFilter(p));
     const matching = livePins.filter(
       (p) =>
+        matchesSource(p) &&
         (!filterState || filterState.category === 'all' || p.category === filterState.category) &&
         (!q || p.title.toLowerCase().includes(q) || p.comments.some((c) => c.text.toLowerCase().includes(q)))
     );
@@ -519,6 +541,23 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
           ))}
           {filterState && onUpdateFilter && (
             <div className="ml-auto flex items-center gap-1">
+              {!isGuest && (
+                <label className="relative flex items-center" title="Client or internal pins">
+                  <span className="sr-only">Client or internal pins</span>
+                  <select
+                    value={sourceFilter}
+                    onChange={(e) => setSourceFilter(e.target.value as typeof sourceFilter)}
+                    className={`appearance-none bg-transparent pl-1.5 pr-5 py-1 rounded-md text-[11px] font-semibold cursor-pointer hover:bg-slate-100 focus:outline-none ${
+                      sourceFilter === 'all' ? 'text-slate-500' : 'text-indigo-600'
+                    }`}
+                  >
+                    <option value="all">Client + internal</option>
+                    <option value="client">Client</option>
+                    <option value="internal">Internal</option>
+                  </select>
+                  <ChevronDown className="w-3 h-3 text-slate-400 absolute right-1 pointer-events-none" />
+                </label>
+              )}
               <label className="relative flex items-center" title="Filter by type">
                 <span className="sr-only">Filter by type</span>
                 <select
@@ -631,7 +670,10 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
                               <div className="text-xs text-slate-600 line-clamp-2 pl-7">{pin.comments[0]?.text || ''}</div>
                             )}
                             <div className="mt-1.5 pl-7 flex items-center justify-between text-[10px] text-slate-500">
-                              <span className="truncate">{pin.author.name}</span>
+                              <span className="flex items-center gap-1.5 min-w-0">
+                                {!isGuest && <SourceBadge pin={pin} />}
+                                <span className="truncate">{pin.author.name}</span>
+                              </span>
                               <span className="flex items-center gap-2 shrink-0">
                                 <DeviceLabel pin={pin} />
                                 <span className="flex items-center gap-1">
@@ -775,10 +817,13 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
                 {selectedPin.category}
               </span>
               <DeviceLabel pin={selectedPin} />
+              {!isGuest && <SourceBadge pin={selectedPin} />}
             </span>
-            <span className={`text-xs capitalize ${getPriorityColor(selectedPin.priority)}`}>
-              ⚡ {selectedPin.priority} Priority
-            </span>
+            {!isGuest && (
+              <span className={`text-xs capitalize ${getPriorityColor(selectedPin.priority)}`}>
+                ⚡ {selectedPin.priority} Priority
+              </span>
+            )}
           </div>
           <h2 className="text-sm font-extrabold text-slate-900 leading-snug mt-1">
             {selectedPin.title}

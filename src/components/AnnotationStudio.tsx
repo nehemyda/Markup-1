@@ -1076,7 +1076,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
                     <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center font-mono text-[10px]">
                       #{nextPinNumber(pins, projectPageIds)}
                     </span>
-                    <span>New Annotation Pin</span>
+                    <span>Add comment here</span>
                   </div>
                   <button
                     onClick={() => setNewPinCoord(null)}
@@ -1099,8 +1099,8 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
                     />
                   </div>
 
-                  {/* Category & Priority selector row */}
-                  <div className="grid grid-cols-2 gap-2">
+                  {/* Category & Priority selector row (priority is for the team only) */}
+                  <div className={`grid gap-2 ${isGuest ? 'grid-cols-1' : 'grid-cols-2'}`}>
                     <div>
                       <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Category</label>
                       <select
@@ -1115,6 +1115,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
                       </select>
                     </div>
 
+                    {!isGuest && (
                     <div>
                       <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Priority</label>
                       <select
@@ -1127,6 +1128,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
                         <option value="low">🟢 Low</option>
                       </select>
                     </div>
+                    )}
                   </div>
 
                   {/* Assignee (team members only; guests never see the team list) */}
@@ -1146,8 +1148,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
                   {/* Screenshot & Attachments Row */}
                   <div>
                     <div className="flex items-center justify-between text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
-                      <span>Screenshot & Attachments</span>
-                      <span className="text-indigo-600 font-semibold text-[9px]">Client & Member Uploads</span>
+                      <span>Attach (optional)</span>
                     </div>
 
                     <div className="flex flex-col gap-1.5">

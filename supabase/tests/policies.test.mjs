@@ -167,6 +167,16 @@ check('a browser cannot change the reminder time', (await as(mem, `update projec
 
 check('a browser cannot change a project preview', (await as(mem, `update projects set preview_url = 'x', name = 'One' where id='P1' returning preview_url`)).rows?.[0]?.preview_url === null);
 
+// Internal pins: the team's pins never reach guests
+check('a member\'s new pin is internal', (await as(mem, `insert into pins (id, project_id, title, number, internal) values ('qa1','P1','QA note', 50, false) returning internal`)).rows?.[0]?.internal === true);
+check('a guest\'s new pin is not internal', (await as(guest, `insert into pins (id, project_id, title, internal) values ('g5','P1','x', true) returning internal`)).rows?.[0]?.internal === false);
+await db.exec(`insert into pins (id, project_id, title, number, internal) values ('qa1','P1','QA note', 50, true)`);
+check('guests do not read internal pins', !(await as(guest, 'select id from pins')).rows.some((r) => ['qa1', 'm3', 'm9'].includes(r.id)));
+check('members read internal pins', n(await as(mem, `select id from pins where id='qa1'`)) === 1);
+check('guests cannot comment on internal pins', (await as(guest, `update pins set comments = '[{"id":"c7"}]' where id='qa1'`)).affected === 0);
+check('a browser cannot make an internal pin visible', (await as(mem, `update pins set internal = false where id='qa1' returning internal`)).rows?.[0]?.internal === true);
+check('a guest\'s pin number counts internal pins', (await as(guest, `insert into pins (id, project_id, title, number) values ('g6','P1','x', 1) returning number`)).rows?.[0]?.number === 51);
+
 const failed = results.filter(([ok]) => !ok).length;
 console.log(`\n${results.length - failed}/${results.length} passed`);
 process.exit(failed ? 1 : 0);

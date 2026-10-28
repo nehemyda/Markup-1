@@ -46,6 +46,7 @@ import {
   markNotificationsRead,
   subscribeRevisions,
   unsentClientPins,
+  isInternalPin,
 } from './lib/supabaseSync';
 import { GuestReviewBanner, UnsentPinsBar, SubmitRevisionDialog, TeamRevisionBar } from './components/RevisionControls';
 import { Header } from './components/Header';
@@ -1180,7 +1181,12 @@ export default function App() {
     if (selectedPin?.id === pinId) setSelectedPin(null);
   };
   // Pins that aren't deleted: the page, Kanban, Table, counts and QA scores use these
-  const livePins = React.useMemo(() => pins.filter((p) => !p.deletedAt), [pins]);
+  const isGuestShareLink = typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('guest_mode') === 'true';
+  // The guest view (a client, or a member previewing the guest link) never shows the team's internal pins
+  const guestView = isGuestMode || (!authUser && isGuestShareLink);
+  const visiblePins = React.useMemo(() => (guestView ? pins.filter((p) => !isInternalPin(p)) : pins), [pins, guestView]);
+  const livePins = React.useMemo(() => visiblePins.filter((p) => !p.deletedAt), [visiblePins]);
   // The open pin as last saved (someone else may have changed its status or replied since it was opened)
   const openPin = selectedPin ? pins.find((p) => p.id === selectedPin.id) || selectedPin : null;
 
@@ -1226,8 +1232,6 @@ export default function App() {
     supabase.auth.signOut();
   };
 
-  const isGuestShareLink = typeof window !== 'undefined' &&
-    new URLSearchParams(window.location.search).get('guest_mode') === 'true';
 
   // Guests must give their name (email optional) before their first pin or comment; the action then runs with it
   const needsGuestName = !authUser && !guestProfile?.name;
@@ -1303,7 +1307,7 @@ export default function App() {
     return <LoadingScreen />;
   }
 
-  const effectiveGuestMode = isGuestMode || (!authUser && isGuestShareLink);
+  const effectiveGuestMode = guestView;
 
   const headerUser: AuthUser | undefined = authUser ? authUser : effectiveGuestMode ? {
     id: 'usr_guest',
@@ -1547,7 +1551,7 @@ export default function App() {
                     }
                   >
                     <SidebarDiscussion
-                      pins={pins.filter(
+                      pins={visiblePins.filter(
                         (p) => (currentProject.assets.some((a) => a.id === p.assetId) || p.assetId === currentAsset.id) && pinDevice(p) === device
                       )}
                       pages={[

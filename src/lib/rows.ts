@@ -7,7 +7,7 @@ export const TABLE_COLUMNS = {
   invites: ['id', 'name', 'email', 'role', 'invitedBy', 'invitedAt'],
   folders: ['id', 'name', 'createdAt', 'createdBy'],
   projects: ['id', 'name', 'client', 'description', 'color', 'avatar', 'memberCount', 'lastUpdated', 'ownerId', 'createdBy', 'assigneeIds', 'folderId', 'assets', 'reviewState', 'revisionCount', 'unsentRemindedAt', 'previewUrl', 'previewAt', 'previewError', 'updatedAt'],
-  pins: ['id', 'projectId', 'assetId', 'number', 'x', 'y', 'category', 'status', 'priority', 'title', 'createdAt', 'author', 'assignedTo', 'assignedBy', 'metadata', 'comments', 'isUnread', 'qaError', 'screenshotUrl', 'attachments', 'deletedAt', 'deletedBy', 'revision', 'updatedAt'],
+  pins: ['id', 'projectId', 'assetId', 'number', 'x', 'y', 'category', 'status', 'priority', 'title', 'createdAt', 'author', 'assignedTo', 'assignedBy', 'metadata', 'comments', 'isUnread', 'qaError', 'screenshotUrl', 'attachments', 'deletedAt', 'deletedBy', 'revision', 'internal', 'updatedAt'],
   notifications: ['id', 'recipientUid', 'type', 'title', 'message', 'projectId', 'projectName', 'pinId', 'pinNumber', 'assetId', 'actor', 'read', 'readAt', 'createdAt'],
   ai_usage: ['id', 'at', 'month', 'feature', 'projectId', 'actor', 'model', 'inputTokens', 'outputTokens', 'costUsd', 'pricing'],
   audit_log: ['id', 'action', 'actorUid', 'actorEmail', 'actorRole', 'details', 'at'],
@@ -29,7 +29,7 @@ export type Table = keyof typeof TABLE_COLUMNS;
 // Set by the server only (submitting and reopening); browsers leave them out when saving
 export const SERVER_FIELDS: Partial<Record<Table, string[]>> = {
   projects: ['reviewState', 'revisionCount', 'unsentRemindedAt', 'previewUrl', 'previewAt', 'previewError', 'updatedAt'],
-  pins: ['revision', 'updatedAt'],
+  pins: ['revision', 'internal', 'updatedAt'],
 };
 
 const snake = (key: string) => key.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
