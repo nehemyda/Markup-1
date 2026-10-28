@@ -38,7 +38,7 @@ function getAIClient(): GoogleGenAI | null {
       apiKey,
       httpOptions: {
         headers: {
-          'User-Agent': 'aistudio-build',
+          'User-Agent': 'webreview-server',
         },
       },
     }));
@@ -1304,10 +1304,21 @@ html, body {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    // Any other page address opens the app (Express 4 wildcard)
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+    app.use(express.static(distPath, { index: false }));
+    // Any other page address opens the app (Express 4 wildcard). The tab shows the workspace's own name
+    // (Settings → Branding) from the start, not a placeholder until the app has loaded.
+    const indexHtml = fs.readFileSync(path.join(distPath, 'index.html'), 'utf8');
+    let titleCache = { name: '', at: 0 };
+    const workspaceName = async () => {
+      if (Date.now() - titleCache.at > 60_000) {
+        const name = String((await getSetting('branding').catch(() => ({} as any))).appName || '').trim().slice(0, 40);
+        titleCache = { name: name || titleCache.name, at: Date.now() };
+      }
+      return titleCache.name;
+    };
+    app.get('*', async (req, res) => {
+      const name = await workspaceName();
+      res.type('html').send(name ? indexHtml.replace(/<title>[^<]*<\/title>/, `<title>${escapeHtml(name)}</title>`) : indexHtml);
     });
   }
 

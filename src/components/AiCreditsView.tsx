@@ -278,7 +278,7 @@ export const AiCreditsView: React.FC<{ projects: Project[]; canEdit: boolean }> 
         <div className="xl:col-span-2 bg-white border border-slate-200 rounded-2xl shadow-2xs p-5 space-y-3 text-xs">
           <div className="font-bold text-sm text-slate-900">Prices used for the estimate</div>
           <p className="text-slate-500 leading-relaxed">
-            USD per 1 million tokens. Set these to match your Google AI billing for the model in use (gemini-3.6-flash). Each request keeps the price it was charged at, so changes only affect new requests.
+            USD per 1 million tokens. Set these to match your Gemini API billing for the model in use (gemini-3.6-flash). Each request keeps the price it was charged at, so changes only affect new requests.
           </p>
           {pricing ? (
             <>
