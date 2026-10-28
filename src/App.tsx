@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   Project, 
   Asset, 
@@ -7,7 +7,6 @@ import {
   PinCategory, 
   PinPriority, 
   Teammate, 
-  ActivityItem, 
   ViewMode, 
   FilterState, 
   Comment, 
@@ -62,6 +61,7 @@ import { QAScoreManager } from './components/QAScoreManager';
 import { NewProjectModal, NewAssetModal, ShareModal, GuestNameModal } from './components/Modals';
 import { WordPressModal } from './components/WordPressModal';
 import { useRolePermissions } from './lib/permissions';
+import { buildActivity } from './lib/activity';
 import { useBranding, brandEmblem } from './lib/workspaceSettings';
 import { DomainSecurityModal } from './components/DomainSecurityModal';
 import { ProfileSettingsModal } from './components/ProfileSettingsModal';
@@ -233,7 +233,6 @@ export default function App() {
       }
     }
   }, [selectedPin?.id]);
-  const [activityLogs, setActivityLogs] = useState<ActivityItem[]>([]);
   // Teammates are the real signed-up users (users table), see subscribeTeam below
   const [teammates, setTeammates] = useState<Teammate[]>([]);
   // Folders group projects (e.g. per partner); currentFolderId is the folder open on the dashboard
@@ -861,17 +860,6 @@ export default function App() {
     );
 
     // Log activity
-    const newLog: ActivityItem = {
-      id: `act_${Date.now()}`,
-      projectId: currentProject.id,
-      assetId: currentAsset.id,
-      author: currentUser,
-      action: `placed Pin #${nextNum}:`,
-      targetName: pinData.title,
-      timestamp: 'Just now',
-      type: 'pin',
-    };
-    setActivityLogs((prev) => [newLog, ...prev]);
   };
 
   // Add Comment to existing pin
@@ -902,21 +890,6 @@ export default function App() {
         return pin;
       })
     );
-
-    const pinObj = pins.find((p) => p.id === pinId);
-    if (pinObj) {
-      const log: ActivityItem = {
-        id: `act_${Date.now()}`,
-        projectId: currentProject.id,
-        assetId: currentAsset.id,
-        author: currentUser,
-        action: `commented on Pin #${pinObj.number}:`,
-        targetName: `"${text.slice(0, 45)}..."`,
-        timestamp: 'Just now',
-        type: 'comment',
-      };
-      setActivityLogs((prev) => [log, ...prev]);
-    }
   };
 
   // Update pin status
@@ -924,7 +897,8 @@ export default function App() {
     setPins((prev) =>
       prev.map((pin) => {
         if (pin.id === pinId) {
-          const updated = { ...pin, status: newStatus };
+          const change = { status: newStatus, by: { id: currentUser.id, name: currentUser.name, avatar: currentUser.avatar, role: currentUser.role }, at: new Date().toISOString() };
+          const updated = { ...pin, status: newStatus, metadata: { ...pin.metadata, statusHistory: [...(pin.metadata?.statusHistory || []), change] } };
           if (selectedPin?.id === pinId) setSelectedPin(updated);
           savePin(updated);
           return updated;
@@ -932,21 +906,6 @@ export default function App() {
         return pin;
       })
     );
-
-    const pinObj = pins.find((p) => p.id === pinId);
-    if (pinObj) {
-      const log: ActivityItem = {
-        id: `act_${Date.now()}`,
-        projectId: currentProject.id,
-        assetId: currentAsset.id,
-        author: currentUser,
-        action: `updated Pin #${pinObj.number} status to`,
-        targetName: newStatus.replace('_', ' '),
-        timestamp: 'Just now',
-        type: 'status',
-      };
-      setActivityLogs((prev) => [log, ...prev]);
-    }
   };
 
   // Update pin assignee
@@ -1046,17 +1005,6 @@ export default function App() {
       newPins.forEach((pin) => savePin(pin));
       setSelectedPin(newPins[0]);
 
-      const log: ActivityItem = {
-        id: `act_${stamp}`,
-        projectId: currentProject.id,
-        assetId: currentAsset.id,
-        author: aiReviewer,
-        action: 'completed an AI review and placed',
-        targetName: `${newPins.length} ${newPins.length === 1 ? 'pin' : 'pins'}`,
-        timestamp: 'Just now',
-        type: 'pin',
-      };
-      setActivityLogs((prev) => [log, ...prev]);
     } catch (err: any) {
       console.error(err);
       alert(err?.message || 'AI review failed.');
@@ -1272,16 +1220,6 @@ export default function App() {
       throw new Error(`${email} is already a member or has a pending invitation.`);
     }
     await inviteMember(name, email, role, currentUser.email);
-    const log: ActivityItem = {
-      id: `act_${Date.now()}`,
-      projectId: currentProject.id,
-      author: currentUser,
-      action: 'invited teammate to workspace:',
-      targetName: `${name || email} (${role})`,
-      timestamp: new Date().toISOString(),
-      type: 'approval',
-    };
-    setActivityLogs((prev) => [log, ...prev]);
   };
 
   const handleSignOut = () => {
@@ -1337,6 +1275,12 @@ export default function App() {
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error || 'Could not open the link.');
   };
+
+  // Activity feed from saved pins, comments, status changes and revisions (same for everyone)
+  const activityLogs = useMemo(
+    () => (viewMode === 'activity' && currentProject ? buildActivity(currentProject.id, pins, revisions) : []),
+    [viewMode, currentProject?.id, pins, revisions]
+  );
 
   if (passwordRecovery) {
     return <AuthPage recovery onRecovered={() => { recovering.current = false; setPasswordRecovery(false); }} />;

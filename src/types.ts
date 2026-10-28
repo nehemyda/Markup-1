@@ -106,6 +106,8 @@ export interface Team {
 }
 
 export interface PinMetadata {
+  // Status changes, oldest first (shown in the Activity feed)
+  statusHistory?: { status: string; by: { id: string; name: string; avatar?: string; role?: string }; at: string }[];
   browser: string;
   os: string;
   viewport: string;
