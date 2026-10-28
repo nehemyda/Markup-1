@@ -45,6 +45,12 @@ function SettingValue({ value }: { value: any }) {
     );
   }
   if (value && typeof value === 'object' && 'size' in value) return <span className="font-mono">{value.size}{value.unit || ''}</span>;
+  // The attached image (its address is filled in when it is uploaded on approval)
+  if (typeof value === 'string' && /\{\{image_(url|id)\}\}/.test(value)) return <span className="italic">attached image</span>;
+  // An image address: just the file name (full address on hover)
+  if (typeof value === 'string' && /^https?:\/\/\S+\.(png|jpe?g|gif|webp|svg|avif)(\?\S*)?$/i.test(value)) {
+    return <span className="font-mono break-all" title={value}>{value.split('?')[0].split('/').pop()}</span>;
+  }
   const text = typeof value === 'string' ? value.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : JSON.stringify(value);
   return <span className="font-mono break-words">{text.length > 120 ? `${text.slice(0, 120)}…` : text}</span>;
 }
@@ -56,14 +62,20 @@ const diviAttrs = (text = '') => Object.fromEntries(Array.from(text.matchAll(/\b
 
 function SettingsTable({ before, after, keys }: { before: Record<string, any>; after: Record<string, any>; keys: string[] }) {
   return (
-    <table className="w-full text-[10px]">
+    <table className="w-full table-fixed text-[10px]">
+      <colgroup>
+        <col className="w-[30%]" />
+        <col />
+        <col className="w-4" />
+        <col />
+      </colgroup>
       <tbody>
         {keys.map((k) => (
           <tr key={k} className="align-top">
-            <td className="pr-2 py-0.5 text-slate-500 capitalize whitespace-nowrap">{settingLabel(k)}</td>
-            <td className="py-0.5 text-slate-500"><SettingValue value={before[k]} /></td>
-            <td className="px-1 py-0.5 text-slate-400">→</td>
-            <td className="py-0.5 text-slate-900 font-semibold"><SettingValue value={after[k]} /></td>
+            <td className="pr-2 py-0.5 text-slate-500 capitalize break-words">{settingLabel(k)}</td>
+            <td className="py-0.5 text-slate-500 break-words min-w-0"><SettingValue value={before[k]} /></td>
+            <td className="py-0.5 text-slate-400 text-center">→</td>
+            <td className="py-0.5 text-slate-900 font-semibold break-words min-w-0"><SettingValue value={after[k]} /></td>
           </tr>
         ))}
       </tbody>
