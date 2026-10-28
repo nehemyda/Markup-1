@@ -1015,7 +1015,10 @@ export default function App() {
   };
 
   // ---------- Folders ----------
+  // Folder names are PIDs: a name already in use (any case) returns that folder instead of a second one
   const handleCreateFolder = (name: string) => {
+    const existing = folders.find((f) => f.name.trim().toLowerCase() === name.trim().toLowerCase());
+    if (existing && name.trim()) return existing;
     const folder: Folder = {
       id: `folder_${Date.now()}`,
       name: name.trim() || 'Untitled folder',
@@ -1030,6 +1033,10 @@ export default function App() {
   const handleRenameFolder = (folderId: string, name: string) => {
     const folder = folders.find((f) => f.id === folderId);
     if (!folder || !name.trim()) return;
+    if (folders.some((f) => f.id !== folderId && f.name.trim().toLowerCase() === name.trim().toLowerCase())) {
+      alert(`The PID "${name.trim()}" is already used by another folder.`);
+      return;
+    }
     const updated = { ...folder, name: name.trim() };
     setFolders((prev) => prev.map((f) => (f.id === folderId ? updated : f)));
     saveFolder(updated);
@@ -1061,8 +1068,8 @@ export default function App() {
   };
 
   // Create a project for a website (one project = one website). Used by the New project window and by
-  // creating from an address elsewhere. Name defaults to the domain; the folder defaults to the open folder.
-  const handleCreateProject = (rawUrl: string, name = '', folderId: string | null = currentFolderId) => {
+  // creating from an address elsewhere. Name defaults to the domain; the folder is the PID (made if new), else the open folder.
+  const handleCreateProject = (rawUrl: string, name = '', pid = '', agid = '') => {
     let url = rawUrl.trim();
     if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
     let parsed: URL;
@@ -1073,6 +1080,7 @@ export default function App() {
       return;
     }
     const domain = parsed.hostname;
+    const folderId = pid.trim() ? handleCreateFolder(pid).id : currentFolderId;
     const projId = `proj_${Date.now()}`;
     const newAsset: Asset = {
       id: `asset_${Date.now()}`,
@@ -1095,6 +1103,7 @@ export default function App() {
       lastUpdated: 'Just now',
       ownerId: currentUser.id,
       folderId,
+      agid: agid.trim() || null,
       assets: [newAsset],
     };
 

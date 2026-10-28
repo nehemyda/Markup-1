@@ -197,6 +197,8 @@ export interface Project {
   assigneeIds?: string[];
   // Folder the project is in (null/undefined = not in a folder)
   folderId?: string | null;
+  // The project's AGID (e.g. AG-V44J288MWV); its folder is its PID (e.g. PRBS)
+  agid?: string | null;
   assets: Asset[];
   // Client review round: 'open' (the client can add pins) or 'submitted' (view-only for the client). Set by the server.
   reviewState?: 'open' | 'submitted';

@@ -565,6 +565,10 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
     ? []
     : [...folders].sort((a, b) => a.name.localeCompare(b.name));
   const [folderDialog, setFolderDialog] = useState<{ mode: 'create' | 'rename'; folderId?: string; value: string } | null>(null);
+  // Folder names are PIDs and never repeat (any case)
+  const folderNameTaken =
+    !!folderDialog?.value.trim() &&
+    folders.some((f) => f.id !== folderDialog.folderId && f.name.trim().toLowerCase() === folderDialog.value.trim().toLowerCase());
   const [activeFolderMenuId, setActiveFolderMenuId] = useState<string | null>(null);
   const [moveMenuProjectId, setMoveMenuProjectId] = useState<string | null>(null);
 
@@ -579,6 +583,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
         const matchesSearch = !isSearching ||
           project.name.toLowerCase().includes(query) ||
           project.client?.toLowerCase().includes(query) ||
+          (project.agid?.toLowerCase().includes(query) ?? false) ||
           (folderOf(project)?.name.toLowerCase().includes(query) ?? false) ||
           project.assets.some(a => a.title.toLowerCase().includes(query) || a.url.toLowerCase().includes(query));
 
@@ -1157,6 +1162,9 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                             <Clock className="w-3.5 h-3.5 text-slate-400" />
                             <span>Updated {timeAgo(activityMs(project))}</span>
                           </div>
+                          {project.agid && (
+                            <div className="text-[11px] font-mono font-semibold text-slate-500 mt-1 truncate" title="AGID">{project.agid}</div>
+                          )}
                           {isSearching && folderOf(project) && (
                             <div className="flex items-center gap-1 text-[11px] text-blue-600 mt-1 truncate">
                               <FolderIcon className="w-3 h-3 shrink-0" />
@@ -1230,7 +1238,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
               onSubmit={(e) => {
                 e.preventDefault();
                 const name = folderDialog.value.trim();
-                if (!name) return;
+                if (!name || folderNameTaken) return;
                 if (folderDialog.mode === 'create') {
                   onCreateFolder?.(name);
                 } else if (folderDialog.folderId) {
@@ -1250,6 +1258,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                   placeholder="e.g. PRBS - Prestige Roofing"
                   className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500"
                 />
+                {folderNameTaken && <span className="block text-xs text-rose-600 mt-1">This PID is already used by another folder.</span>}
               </label>
               <p className="text-[11px] text-slate-500">Tip: start with the partner ID (like PRBS) so it is easy to find with search.</p>
               <div className="flex justify-end gap-2">

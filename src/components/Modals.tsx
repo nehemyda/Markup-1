@@ -24,41 +24,72 @@ import {
 interface NewProjectModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onCreateProject: (url: string, name: string, folderId: string | null) => void;
+  // pid: the folder's name; an existing folder is used, otherwise a new one is made
+  onCreateProject: (url: string, name: string, pid: string, agid: string) => void;
   folders?: Folder[];
   defaultFolderId?: string | null;
 }
 
-// A project is one website: only the address is needed. Name defaults to the address; folder defaults to the open one.
+const samePid = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+// A project is one website. It needs the address, a PID (its folder: pick one or type a new one) and an AGID.
+// The name defaults to the address; the PID defaults to the open folder.
 export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClose, onCreateProject, folders = [], defaultFolderId = null }) => {
   const [url, setUrl] = useState('');
   const [name, setName] = useState('');
-  const [folderId, setFolderId] = useState<string | null>(defaultFolderId);
-  const [error, setError] = useState('');
+  const [pid, setPid] = useState('');
+  const [agid, setAgid] = useState('');
+  const [pidOpen, setPidOpen] = useState(false);
+  const [pidActive, setPidActive] = useState(0);
+  const [errors, setErrors] = useState<{ url?: string; pid?: string; agid?: string }>({});
 
   React.useEffect(() => {
     if (isOpen) {
       setUrl('');
       setName('');
-      setError('');
-      setFolderId(defaultFolderId);
+      setAgid('');
+      setErrors({});
+      setPidOpen(false);
+      setPid(folders.find((f) => f.id === defaultFolderId)?.name || '');
     }
   }, [isOpen, defaultFolderId]);
 
   if (!isOpen) return null;
 
+  const query = pid.trim().toLowerCase();
+  const pidMatches = [...folders]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .filter((f) => !query || f.name.toLowerCase().includes(query));
+  const pidExists = folders.some((f) => samePid(f.name, pid));
+  // The list: matching PIDs, then "Create" when the typed PID is new
+  const pidOptions: { label: string; value: string; isNew?: boolean }[] = [
+    ...pidMatches.map((f) => ({ label: f.name, value: f.name })),
+    ...(query && !pidExists ? [{ label: `Create new PID "${pid.trim()}"`, value: pid.trim(), isNew: true }] : []),
+  ];
+  const choosePid = (value: string) => {
+    setPid(value);
+    setPidOpen(false);
+    setErrors((e) => ({ ...e, pid: undefined }));
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const raw = url.trim();
     const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    const found: typeof errors = {};
     try {
       const parsed = new URL(withScheme);
       if (!parsed.hostname.includes('.')) throw new Error('no domain');
     } catch {
-      setError('Enter a website address, e.g. example.com');
-      return;
+      found.url = 'Enter a website address, e.g. example.com';
     }
-    onCreateProject(withScheme, name.trim(), folderId);
+    if (!pid.trim()) found.pid = 'Select a PID or type a new one';
+    if (!agid.trim()) found.agid = 'Enter the AGID';
+    setErrors(found);
+    if (Object.keys(found).length) return;
+    // Use the existing folder's exact name, so a PID is never made twice
+    const existing = folders.find((f) => samePid(f.name, pid));
+    onCreateProject(withScheme, name.trim(), existing?.name || pid.trim(), agid.trim().toUpperCase());
     onClose();
   };
 
@@ -79,13 +110,87 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClos
             value={url}
             onChange={(e) => {
               setUrl(e.target.value);
-              setError('');
+              setErrors((er) => ({ ...er, url: undefined }));
             }}
             placeholder="e.g. example.com or staging.example.com"
             className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500"
           />
-          {error && <span className="block text-xs text-rose-600 mt-1">{error}</span>}
+          {errors.url && <span className="block text-xs text-rose-600 mt-1">{errors.url}</span>}
         </label>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div className="relative">
+            <label className="block">
+              <span className="text-xs font-bold text-slate-600">PID</span>
+              <input
+                value={pid}
+                role="combobox"
+                aria-expanded={pidOpen}
+                autoComplete="off"
+                onFocus={() => setPidOpen(true)}
+                onBlur={() => setTimeout(() => setPidOpen(false), 120)}
+                onChange={(e) => {
+                  setPid(e.target.value);
+                  setPidOpen(true);
+                  setPidActive(0);
+                  setErrors((er) => ({ ...er, pid: undefined }));
+                }}
+                onKeyDown={(e) => {
+                  if (!pidOpen || !pidOptions.length) return;
+                  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    const step = e.key === 'ArrowDown' ? 1 : -1;
+                    setPidActive((i) => (i + step + pidOptions.length) % pidOptions.length);
+                  } else if (e.key === 'Enter') {
+                    e.preventDefault();
+                    choosePid(pidOptions[Math.min(pidActive, pidOptions.length - 1)].value);
+                  } else if (e.key === 'Escape') {
+                    setPidOpen(false);
+                  }
+                }}
+                placeholder="Search or add, e.g. PRBS"
+                className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500"
+              />
+            </label>
+            {pidOpen && pidOptions.length > 0 && (
+              <ul className="absolute z-10 left-0 right-0 mt-1 max-h-48 overflow-auto bg-white border border-slate-200 rounded-lg shadow-lg py-1">
+                {pidOptions.map((o, i) => (
+                  <li key={o.label}>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => choosePid(o.value)}
+                      onMouseEnter={() => setPidActive(i)}
+                      className={`w-full text-left px-3 py-1.5 truncate ${i === pidActive ? 'bg-indigo-50' : ''} ${o.isNew ? 'text-indigo-700 font-semibold' : 'text-slate-800'}`}
+                    >
+                      {o.label}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {errors.pid ? (
+              <span className="block text-xs text-rose-600 mt-1">{errors.pid}</span>
+            ) : (
+              pid.trim() && !pidExists && <span className="block text-[11px] text-slate-500 mt-1">New PID: a folder will be created</span>
+            )}
+          </div>
+
+          <label className="block">
+            <span className="text-xs font-bold text-slate-600">AGID</span>
+            <input
+              value={agid}
+              autoComplete="off"
+              onChange={(e) => {
+                setAgid(e.target.value.toUpperCase());
+                setErrors((er) => ({ ...er, agid: undefined }));
+              }}
+              placeholder="e.g. AG-V44J288MWV"
+              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500"
+            />
+            {errors.agid && <span className="block text-xs text-rose-600 mt-1">{errors.agid}</span>}
+          </label>
+        </div>
 
         <label className="block">
           <span className="text-xs font-bold text-slate-600">Project name <span className="font-normal text-slate-400">(optional)</span></span>
@@ -96,22 +201,6 @@ export const NewProjectModal: React.FC<NewProjectModalProps> = ({ isOpen, onClos
             className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500"
           />
         </label>
-
-        {folders.length > 0 && (
-          <label className="block">
-            <span className="text-xs font-bold text-slate-600">Folder</span>
-            <select
-              value={folderId || ''}
-              onChange={(e) => setFolderId(e.target.value || null)}
-              className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:border-indigo-500"
-            >
-              <option value="">No folder</option>
-              {[...folders].sort((a, b) => a.name.localeCompare(b.name)).map((f) => (
-                <option key={f.id} value={f.id}>{f.name}</option>
-              ))}
-            </select>
-          </label>
-        )}
 
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="px-3 py-2 rounded-lg text-slate-600 hover:bg-slate-100 font-semibold">
