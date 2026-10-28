@@ -1092,6 +1092,21 @@ For each finding, set elementId to the id of the element the problem is on (it m
 html, body {
   overflow-y: visible !important;
 }
+/* Scroll-in animations wait for the page to scroll the block into view, but here the app scrolls, not the page,
+   so those blocks would stay invisible. Show them in their finished state (Divi, Elementor, AOS, WOW.js). */
+.et_animated, .et-waypoint:not(.et_pb_circle_counter):not(.et_pb_number_counter) {
+  opacity: 1 !important;
+  animation: none !important;
+}
+.elementor-invisible, .wow {
+  visibility: visible !important;
+  animation-name: none !important;
+}
+[data-aos] {
+  opacity: 1 !important;
+  transform: none !important;
+  transition: none !important;
+}
 </style>
 <script>
 (function() {
