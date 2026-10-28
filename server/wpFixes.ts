@@ -287,6 +287,28 @@ export function imageBlockAtPin(content: string, target: PinTarget | null) {
   return blocks.length === 1 && countOf(content, blocks[0]) === 1 ? blocks[0] : '';
 }
 
+// Divi image swap in any module that shows an image (et_pb_image src, et_pb_blurb image, ...): the AI writes the
+// module with {{image_url}} in one image setting, often without saying which module it replaces. The module is the
+// one on the page showing the image under the pin; only that setting changes, every other setting stays as it is.
+// A blurb keeps the old icon's shown width. Returns the exact find/replace, or null when this isn't such a swap.
+export function diviImageSwap(content: string, proposed: string, target: PinTarget | null) {
+  const wanted = new RegExp(`\\[(et_pb_\\w+)\\b[^\\]]*?\\b(\\w+)="${IMAGE_URL.replace(/[{}]/g, '\\$&')}"`).exec(proposed);
+  const file = target?.image ? imageFile(target.image.src) : '';
+  if (!wanted || !file) return null;
+  const [, module, attr] = wanted;
+  const tags = Array.from(content.matchAll(new RegExp(`\\[${module}\\b[^\\]]*\\]`, 'g')), (m) => m[0]).filter((tag) => {
+    const value = new RegExp(`\\b${attr}="([^"]*)"`).exec(tag)?.[1];
+    return !!value && imageFile(value) === file;
+  });
+  if (tags.length !== 1 || countOf(content, tags[0]) !== 1) return null;
+  const find = tags[0];
+  let replace = find.replace(new RegExp(`(\\b${attr}=")[^"]*"`), (_m, start) => `${start}${IMAGE_URL}"`);
+  if (module === 'et_pb_blurb' && !/\bimage_max_width="/.test(find) && target?.image?.width) {
+    replace = replace.replace(/\]$/, ` image_max_width="${Math.round(target.image.width)}px"]`);
+  }
+  return { find, replace };
+}
+
 // The replacement is a single image block or module (an image swap, not an addition)
 export const isOnlyImage = (text: string) => {
   const t = text.trim();
@@ -669,8 +691,11 @@ export async function prepareFix(opts: {
     if (swapsImage) find = imageBlockAtPin(String(page.content || ''), target);
     if (swapsImage && !find) reject('Could not tell which image to replace. Put the pin right on the image, then try again.');
     const content = String(page.content || '');
+    // Divi: swap just the image setting of the module under the pin (the AI often leaves out which module it is)
+    const diviSwap = builder === 'divi' && (!find || countOf(content, find) !== 1) ? diviImageSwap(content, String(proposal.replace || ''), target) : null;
+    if (diviSwap) find = diviSwap.find;
     // A replaced image keeps the old one's size on the page
-    const replace = keepImageSize(find, String(proposal.replace ?? ''), target);
+    const replace = diviSwap ? diviSwap.replace : keepImageSize(find, String(proposal.replace ?? ''), target);
     if (!find || find === replace) reject('The AI did not suggest a change. Try again.');
     const matches = countOf(content, find);
     if (matches !== 1) throw new WpError(matches ? 'The AI picked text that appears more than once. Try again.' : 'The AI picked text that is not on the page. Try again.', 422);
