@@ -309,6 +309,41 @@ export function diviImageSwap(content: string, proposed: string, target: PinTarg
   return { find, replace };
 }
 
+// Divi setting change on the module under the pin (e.g. text_text_color): the AI must copy the module's long opening
+// tag character for character and often gets a detail wrong, so its "find" isn't on the page. The module is known
+// (e.g. et_pb_text_1 = the page's 2nd text module), so the settings the AI changed are applied to the real tag.
+// Only for setting changes: when the AI also changed the module's text, it returns null.
+const shortcodeAttrs = (tag: string) => Object.fromEntries(Array.from(tag.matchAll(/\b([a-z0-9_]+)="([^"]*)"/gi), (m) => [m[1], m[2]]));
+export function diviSettingsEdit(content: string, proposedFind: string, proposedReplace: string, diviModule?: string | null) {
+  const id = /^(et_pb_[a-z0-9_]+?)_(\d+)$/.exec(diviModule || '');
+  if (!id || diviModule!.includes('_tb_')) return null;
+  const [, module, index] = id;
+  const openTag = new RegExp(`\\[${module}\\b[^\\]]*\\]`, 'g');
+  const tags = Array.from(content.matchAll(openTag), (m) => m[0]);
+  const actual = tags[Number(index)];
+  const newTag = new RegExp(`\\[${module}\\b[^\\]]*\\]`).exec(proposedReplace)?.[0];
+  if (!actual || !newTag || countOf(content, actual) !== 1) return null;
+  // The module's text must stay the same (this only changes settings)
+  const after = content.slice(content.indexOf(actual) + actual.length);
+  const inner = after.slice(0, Math.max(0, after.indexOf(`[/${module}]`)));
+  const proposedInner = proposedReplace.slice(proposedReplace.indexOf(newTag) + newTag.length).split(`[/${module}]`)[0];
+  const text = (t: string) => t.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (proposedInner.trim() && text(proposedInner) !== text(inner)) return null;
+  // What the AI changed: against its own copy of the tag when it gave one, else against the real tag
+  const oldTag = new RegExp(`\\[${module}\\b[^\\]]*\\]`).exec(proposedFind)?.[0];
+  const base = shortcodeAttrs(oldTag || actual);
+  const changes = Object.entries(shortcodeAttrs(newTag)).filter(([k, v]) => base[k] !== v && !k.startsWith('_'));
+  if (!changes.length) return null;
+  let replace = actual;
+  for (const [k, v] of changes) {
+    const value = v.replace(/[\]"]/g, '');
+    replace = new RegExp(`\\b${k}="[^"]*"`).test(replace)
+      ? replace.replace(new RegExp(`(\\b${k}=")[^"]*"`), (_m, start) => `${start}${value}"`)
+      : replace.replace(/\]$/, ` ${k}="${value}"]`);
+  }
+  return replace === actual ? null : { find: actual, replace };
+}
+
 // The replacement is a single image block or module (an image swap, not an addition)
 export const isOnlyImage = (text: string) => {
   const t = text.trim();
@@ -459,7 +494,8 @@ ${input.siteCss.trim() || '(none)'}
 ## Rules
 - Change as little as possible and only what the feedback asks for. Keep the site's existing style, fonts and colors unless the feedback is about them.
 - elementor_settings: use real Elementor control names for that widget type and only the keys that change. Examples: heading → title, title_color, align, header_size; text-editor → editor, text_color; button → text, background_color, button_text_color, border_radius, link. Typography needs "typography_typography": "custom" plus e.g. "typography_font_size": {"unit": "px", "size": 32}, "typography_font_weight": "600". Sizes and spacing use {"unit": "px", "size": N} or {"unit":"px","top":"0","right":"0","bottom":"0","left":"0","isLinked":false}. For a fix only on ${device === 'desktop' ? 'desktop, use the plain keys' : `${device}, add the _${device} suffix (e.g. typography_font_size_${device})`}.
-${builder === 'divi' ? `- Divi: the element at the pin belongs to module ${target?.diviModule || '(unknown)'}${target?.diviModule?.includes('_tb_') ? ', which is in a Theme Builder layout (header/footer/template), not this page: use css instead' : ''}. Edit that module's own shortcode or block. Divi 4 attribute examples: et_pb_text → text_text_color, text_font_size, header_text_color, header_font_size, text_orientation; et_pb_button → button_text, button_url, custom_button="on" with button_text_color, button_bg_color, button_text_size; et_pb_blurb → title, header_text_color. Sizes are strings like "48px". For tablet/phone only, use the _tablet / _phone suffix and set <attr>_last_edited="on|desktop". Keep every [et_pb_...] / [/et_pb_...] tag (or <!-- wp:divi/... --> comment) balanced.
+${builder === 'divi' && target && !target.diviModule ? `- IMPORTANT: the element at the pin is NOT inside any Divi module of this page. It is part of the theme around the page (top bar, header, menu or footer, set in Divi's Theme Options or Customizer), so it is not in the page content below and content_replace can't reach it. Use kind css (selector from the element's classes and its parents), and say in the explanation that it comes from the theme, so the CSS changes it on this page only unless the selector is site-wide.
+` : ''}${builder === 'divi' ? `- Divi: the element at the pin belongs to module ${target?.diviModule || '(unknown)'}${target?.diviModule?.includes('_tb_') ? ', which is in a Theme Builder layout (header/footer/template), not this page: use css instead' : ''}. Edit that module's own shortcode or block. Divi 4 attribute examples: et_pb_text → text_text_color, text_font_size, header_text_color, header_font_size, text_orientation; et_pb_button → button_text, button_url, custom_button="on" with button_text_color, button_bg_color, button_text_size; et_pb_blurb → title, header_text_color. Sizes are strings like "48px". For tablet/phone only, use the _tablet / _phone suffix and set <attr>_last_edited="on|desktop". Keep every [et_pb_...] / [/et_pb_...] tag (or <!-- wp:divi/... --> comment) balanced.
 ` : ''}- content_replace: "find" is REQUIRED and never empty: the existing text the change replaces. To ADD something (e.g. an image below a button), find = the existing block it goes after, copied exactly, and replace = that same block followed by the new one.
 - content_replace: "find" must be copied character for character from the page content and be unique; keep Gutenberg block comments (<!-- wp:... -->) valid and balanced.
 - Size and spacing requests (wider, narrower, bigger, more space): use "layout" above to find what actually limits the element, the first box with a max width or a narrow width, and change THAT setting (e.g. a Divi module's max_width, a row's width/max_width, or the column structure; an Elementor widget's or container's width). A change that is already the effective value (e.g. max_width 100% on an element that fills its column) does nothing: don't propose it.
@@ -694,11 +730,16 @@ export async function prepareFix(opts: {
     // Divi: swap just the image setting of the module under the pin (the AI often leaves out which module it is)
     const diviSwap = builder === 'divi' && (!find || countOf(content, find) !== 1) ? diviImageSwap(content, String(proposal.replace || ''), target) : null;
     if (diviSwap) find = diviSwap.find;
+    // Divi: a settings change whose copy of the module tag doesn't match the page, applied to the real tag
+    const diviEdit = !diviSwap && builder === 'divi' && countOf(content, find) !== 1
+      ? diviSettingsEdit(content, find, String(proposal.replace || ''), target?.diviModule)
+      : null;
+    if (diviEdit) find = diviEdit.find;
     // A replaced image keeps the old one's size on the page
-    const replace = diviSwap ? diviSwap.replace : keepImageSize(find, String(proposal.replace ?? ''), target);
+    const replace = diviSwap ? diviSwap.replace : diviEdit ? diviEdit.replace : keepImageSize(find, String(proposal.replace ?? ''), target);
     if (!find || find === replace) reject('The AI did not suggest a change. Try again.');
     const matches = countOf(content, find);
-    if (matches !== 1) throw new WpError(matches ? 'The AI picked text that appears more than once. Try again.' : 'The AI picked text that is not on the page. Try again.', 422);
+    if (matches !== 1) reject(matches ? 'The AI picked text that appears more than once. Try again.' : 'The AI picked text that is not on the page. Try again.');
     if (replace.length > 20000) reject('The suggested change is too long.');
     checkMarkup(replace, 'content');
     checkImageUse(replace);
