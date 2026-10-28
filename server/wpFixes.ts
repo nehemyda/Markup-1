@@ -167,6 +167,61 @@ function diviModules(content: string) {
   return modules;
 }
 
+// Where a Divi 4 module sits in the content: from its opening tag to its closing tag (nested same-type tags counted)
+function diviSpan(content: string, moduleId: string) {
+  const id = /^(et_pb_[a-z0-9_]+?)_(\d+)$/.exec(moduleId || '');
+  if (!id || moduleId.includes('_tb_')) return null;
+  const [, type, index] = id;
+  const opens = Array.from(content.matchAll(new RegExp(`\\[${type}\\b[^\\]]*\\]`, 'g')));
+  const open = opens[Number(index)];
+  if (!open || open.index === undefined) return null;
+  const tags = new RegExp(`\\[(\\/?)${type}\\b[^\\]]*\\]`, 'g');
+  tags.lastIndex = open.index + open[0].length;
+  let depth = 1;
+  let m: RegExpExecArray | null;
+  while ((m = tags.exec(content))) {
+    depth += m[1] ? -1 : 1;
+    if (!depth) return { start: open.index, openEnd: open.index + open[0].length, closeStart: m.index, end: tags.lastIndex };
+  }
+  return null;
+}
+
+// Move a Divi module before/after another, swap two, or put it at the start/end inside a column or row. The server
+// cuts and pastes the exact module text, so nothing has to be copied by the AI. Returns a content_replace find/replace
+// covering both places, or a reason it can't.
+export function diviMove(content: string, moveModule: string, toModule: string, position: string): { find: string; replace: string } | { error: string } {
+  const a = diviSpan(content, moveModule);
+  const b = diviSpan(content, toModule);
+  if (!a || !b) return { error: `Could not find ${!a ? moveModule : toModule} on the page.` };
+  if (moveModule === toModule) return { error: 'The module would move onto itself.' };
+  const inside = (x: typeof a, y: typeof a) => x.start >= y.start && x.end <= y.end;
+  const into = position === 'start_of' || position === 'end_of';
+  if (inside(b, a)) return { error: 'A module can\'t move inside itself.' };
+  if (!into && inside(a, b)) return { error: 'Pick a module next to it, or a column to move it into.' };
+  if (position === 'swap' && (inside(a, b) || inside(b, a))) return { error: 'These two modules can\'t be swapped.' };
+  const moved = content.slice(a.start, a.end);
+  let next: string;
+  if (position === 'swap') {
+    const [first, second] = a.start < b.start ? [a, b] : [b, a];
+    next = content.slice(0, first.start) + content.slice(second.start, second.end) + content.slice(first.end, second.start)
+      + content.slice(first.start, first.end) + content.slice(second.end);
+  } else {
+    const at = position === 'before' ? b.start : position === 'after' ? b.end : position === 'start_of' ? b.openEnd : position === 'end_of' ? b.closeStart : -1;
+    if (at < 0) return { error: 'Unknown move.' };
+    if (at >= a.start && at <= a.end) return { error: 'The module is already there.' };
+    const without = content.slice(0, a.start) + content.slice(a.end);
+    const shifted = at > a.start ? at - (a.end - a.start) : at;
+    next = without.slice(0, shifted) + moved + without.slice(shifted);
+  }
+  // The smallest stretch of content that differs, widened to whole modules so the change reads clearly
+  const from = Math.min(a.start, b.start);
+  const to = Math.max(a.end, b.end);
+  const find = content.slice(from, to);
+  const replace = next.slice(from, next.length - (content.length - to));
+  if (find === replace) return { error: 'The module is already there.' };
+  return { find, replace };
+}
+
 // Page structure stays valid if the change keeps the same blocks/modules (e.g. edits one opening tag's settings),
 // or if both the removed and the new text are complete blocks/modules (e.g. removes a whole paragraph block)
 function structureKept(find: string, replace: string, open: RegExp, close: RegExp) {
@@ -414,7 +469,7 @@ function keepElementorImageSize(element: any, settings: Record<string, any>, tar
 const FIX_SCHEMA = {
   type: Type.OBJECT,
   properties: {
-    kind: { type: Type.STRING, enum: ['elementor_settings', 'elementor_insert', 'content_replace', 'css', 'site_replace', 'none'] },
+    kind: { type: Type.STRING, enum: ['elementor_settings', 'elementor_insert', 'content_replace', 'divi_move', 'css', 'site_replace', 'none'] },
     summary: { type: Type.STRING, description: 'Short imperative title, max 80 characters, e.g. "Make the heading dark blue".' },
     explanation: { type: Type.STRING, description: 'One or two sentences for the reviewer: what changes and why it addresses the feedback.' },
     elementId: { type: Type.STRING, description: 'elementor_settings: id of the Elementor element to change.' },
@@ -425,6 +480,9 @@ const FIX_SCHEMA = {
     afterElementId: { type: Type.STRING, description: 'elementor_insert: id of the Elementor element the new widget goes right after.' },
     widgetJson: { type: Type.STRING, description: 'elementor_insert: JSON {"widgetType": "...", "settings": {...}} of the new widget.' },
     wholeWord: { type: Type.BOOLEAN, description: 'site_replace: true to match whole words only (usual); false to also change it inside longer words.' },
+    moveModule: { type: Type.STRING, description: 'divi_move: the module to move, as named in the Divi module list (e.g. "et_pb_blurb_5").' },
+    toModule: { type: Type.STRING, description: 'divi_move: the module, column or row it moves relative to (e.g. "et_pb_blurb_3" or "et_pb_column_4").' },
+    position: { type: Type.STRING, enum: ['before', 'after', 'swap', 'start_of', 'end_of'], description: 'divi_move: before / after toModule, swap places with it, or start_of / end_of inside it (a column or row).' },
     imageAttachment: { type: Type.STRING, description: 'Label of the attached image the change places on the page (e.g. "A1"); empty if none.' },
     remainingRequests: {
       type: Type.ARRAY,
@@ -495,6 +553,7 @@ ${input.siteCss.trim() || '(none)'}
 - Change as little as possible and only what the feedback asks for. Keep the site's existing style, fonts and colors unless the feedback is about them.
 - elementor_settings: use real Elementor control names for that widget type and only the keys that change. Examples: heading → title, title_color, align, header_size; text-editor → editor, text_color; button → text, background_color, button_text_color, border_radius, link. Typography needs "typography_typography": "custom" plus e.g. "typography_font_size": {"unit": "px", "size": 32}, "typography_font_weight": "600". Sizes and spacing use {"unit": "px", "size": N} or {"unit":"px","top":"0","right":"0","bottom":"0","left":"0","isLinked":false}. For a fix only on ${device === 'desktop' ? 'desktop, use the plain keys' : `${device}, add the _${device} suffix (e.g. typography_font_size_${device})`}.
 ${builder === 'divi' && target && !target.diviModule ? `- IMPORTANT: the element at the pin is NOT inside any Divi module of this page. It is part of the theme around the page (top bar, header, menu or footer, set in Divi's Theme Options or Customizer), so it is not in the page content below and content_replace can't reach it. Use kind css (selector from the element's classes and its parents), and say in the explanation that it comes from the theme, so the CSS changes it on this page only unless the selector is site-wide.
+` : ''}${builder === 'divi' ? `- Divi: to MOVE, REORDER or SWAP modules, columns or rows, use kind divi_move (moveModule, toModule, position) with names from the module list; the server moves the exact module text. Never rewrite a whole row or section with content_replace to rearrange it. "Move this box to the first column" in a row of single-box columns usually means swapping it with the box in that column (position swap).
 ` : ''}${builder === 'divi' ? `- Divi: the element at the pin belongs to module ${target?.diviModule || '(unknown)'}${target?.diviModule?.includes('_tb_') ? ', which is in a Theme Builder layout (header/footer/template), not this page: use css instead' : ''}. Edit that module's own shortcode or block. Divi 4 attribute examples: et_pb_text → text_text_color, text_font_size, header_text_color, header_font_size, text_orientation; et_pb_button → button_text, button_url, custom_button="on" with button_text_color, button_bg_color, button_text_size; et_pb_blurb → title, header_text_color. Sizes are strings like "48px". For tablet/phone only, use the _tablet / _phone suffix and set <attr>_last_edited="on|desktop". Keep every [et_pb_...] / [/et_pb_...] tag (or <!-- wp:divi/... --> comment) balanced.
 ` : ''}- content_replace: "find" is REQUIRED and never empty: the existing text the change replaces. To ADD something (e.g. an image below a button), find = the existing block it goes after, copied exactly, and replace = that same block followed by the new one.
 - content_replace: "find" must be copied character for character from the page content and be unique; keep Gutenberg block comments (<!-- wp:... -->) valid and balanced.
@@ -585,7 +644,7 @@ export async function prepareFix(opts: {
   }
 
   // When a proposal fails the checks below, the server log shows what the AI answered
-  const describe = () => JSON.stringify({ kind: proposal.kind, find: String(proposal.find || '').slice(0, 300), replace: String(proposal.replace || '').slice(0, 300), image: proposal.imageAttachment, elementId: proposal.elementId, afterElementId: proposal.afterElementId, widget: String(proposal.widgetJson || '').slice(0, 200) });
+  const describe = () => JSON.stringify({ kind: proposal.kind, find: String(proposal.find || '').slice(0, 300), replace: String(proposal.replace || '').slice(0, 300), image: proposal.imageAttachment, elementId: proposal.elementId, afterElementId: proposal.afterElementId, widget: String(proposal.widgetJson || '').slice(0, 200), move: [proposal.moveModule, proposal.position, proposal.toModule] });
   const reject = (message: string): never => {
     console.warn(`Fix with AI: rejected proposal (${message}) ${describe()}`);
     throw new WpError(message, 422);
@@ -628,6 +687,19 @@ export async function prepareFix(opts: {
   };
 
   let fix: Record<string, any> & { kind: string; status: string };
+  if (proposal.kind === 'divi_move') {
+    if (builder !== 'divi') reject('The AI suggested a kind of change this page does not support. Try again.');
+    // The AI sometimes puts the move type in another field (e.g. widgetJson: "swap")
+    const MOVES = ['before', 'after', 'swap', 'start_of', 'end_of'];
+    const position = [proposal.position, proposal.widgetJson, proposal.replace, proposal.find]
+      .map((v) => String(v || '').trim().toLowerCase().replace(/^"|"$/g, ''))
+      .find((v) => MOVES.includes(v));
+    if (!position) reject('The AI did not say how to move the module. Try again.');
+    const move = diviMove(String(page.content || ''), String(proposal.moveModule || ''), String(proposal.toModule || ''), position!);
+    if ('error' in move) reject(move.error);
+    const { find, replace } = move as { find: string; replace: string };
+    Object.assign(proposal, { kind: 'content_replace', find, replace });
+  }
   if (proposal.kind === 'none') {
     fix = { ...base, kind: 'none', status: 'not_possible', reason: String(proposal.cannotFixReason || explanation).slice(0, 1000) };
   } else if (proposal.kind === 'elementor_settings' && builder === 'elementor') {
