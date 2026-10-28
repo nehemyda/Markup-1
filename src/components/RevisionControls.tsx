@@ -187,7 +187,7 @@ export const SubmitRevisionDialog: React.FC<{
 
             <div className="flex gap-2 p-3 rounded-xl bg-slate-50 border border-slate-200 text-slate-600 text-xs">
               <Lock className="w-4 h-4 shrink-0 mt-0.5 text-slate-400" />
-              <span>After sending, the review link is view-only until the team opens it for the next revision.</span>
+              <span><strong className="font-bold text-slate-800">Are you sure?</strong> Once the feedback is submitted, the review link will remain view-only until the team reopens it for the next revision round.</span>
             </div>
 
             {error && <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium">{error}</div>}
