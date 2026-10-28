@@ -399,10 +399,20 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
     const percentX = Math.round((clickX / rect.width) * 100);
     const percentY = Math.round((clickY / rect.height) * 100);
 
-    setNewPinCoord({ x: percentX, y: percentY });
-    setNewPinComment('');
-    setNewPinScreenshot(null);
-    setNewPinAttachments([]);
+    const coord = { x: percentX, y: percentY };
+    // Clicking elsewhere while writing a pin moves it (the text and files stay); otherwise a new pin starts
+    const moving = !!newPinCoord;
+    setNewPinCoord(coord);
+    if (!moving) {
+      setNewPinComment('');
+      setNewPinAttachments([]);
+    }
+    // A screenshot taken by hand stays; an automatic one is retaken at the new spot
+    if (!moving || autoShot || !newPinScreenshot) {
+      setNewPinScreenshot(null);
+      setAutoShot(false);
+      autoCaptureAt(coord);
+    }
     onSelectPin(null);
   };
 
@@ -520,106 +530,112 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
   };
 
   // Pin position in unscaled canvas pixels
-  const pinCanvasPoint = () => {
+  const pinCanvasPoint = (coord: { x: number; y: number }) => {
     const canvas = canvasRef.current!;
     return {
-      x: ((newPinCoord?.x ?? 50) / 100) * canvas.offsetWidth,
-      y: ((newPinCoord?.y ?? 50) / 100) * canvas.offsetHeight,
+      x: (coord.x / 100) * canvas.offsetWidth,
+      y: (coord.y / 100) * canvas.offsetHeight,
     };
   };
 
-  // Area Snippet: render the real page (or image) around the pin
+  // Area Snippet: render the real page (or image) around the pin, as a JPEG data URL. Asks the person nothing,
+  // so it is also the automatic screenshot when a pin is placed or moved.
+  const snippetAt = async (coord: { x: number; y: number }): Promise<string> => {
+    const canvas = canvasRef.current;
+    if (!canvas) throw new Error('The page has not finished loading yet.');
+    const canvasRect = canvas.getBoundingClientRect();
+    const pin = pinCanvasPoint(coord);
+
+    if (currentAsset.type === 'image' || currentAsset.type === 'mockup') {
+      const img = imageRef.current;
+      if (!img || !img.naturalWidth) throw new Error('The image has not loaded yet.');
+      const imgRect = img.getBoundingClientRect();
+      // Pin inside the displayed image, then in the image's own pixels
+      const ratio = img.naturalWidth / (imgRect.width / scale);
+      const ix = (pin.x - (imgRect.left - canvasRect.left) / scale) * ratio;
+      const iy = (pin.y - (imgRect.top - canvasRect.top) / scale) * ratio;
+      return cropAroundPoint(img, img.naturalWidth, img.naturalHeight, ix, iy, SNIPPET_WIDTH * ratio, SNIPPET_HEIGHT * ratio, ratio);
+    }
+
+    const iframe = iframeRef.current;
+    const doc = iframe?.contentDocument;
+    if (!iframe || !doc?.body) throw new Error('The page has not finished loading yet.');
+    const iframeRect = iframe.getBoundingClientRect();
+    // Pin in the page's own coordinates (the iframe is as tall as the page, so it does not scroll)
+    const px = pin.x - (iframeRect.left - canvasRect.left) / scale + (iframe.contentWindow?.scrollX || 0);
+    const py = pin.y - (iframeRect.top - canvasRect.top) / scale + (iframe.contentWindow?.scrollY || 0);
+    const pageW = doc.documentElement.scrollWidth;
+    const pageH = doc.documentElement.scrollHeight;
+    const w = Math.min(SNIPPET_WIDTH, pageW);
+    const h = Math.min(SNIPPET_HEIGHT, pageH);
+    const rx = Math.min(Math.max(0, px - w / 2), pageW - w);
+    const ry = Math.min(Math.max(0, py - h / 2), pageH - h);
+    // Preferred: a real screenshot from the server's headless Chrome at the same page width
+    try {
+      const res = await apiFetch('/api/screenshot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: currentAsset.url,
+          viewportWidth: doc.documentElement.clientWidth,
+          x: rx,
+          y: ry,
+          width: w,
+          height: h,
+        }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+      const blobUrl = URL.createObjectURL(await res.blob());
+      try {
+        const img = new Image();
+        img.src = blobUrl;
+        await img.decode();
+        const k = img.naturalWidth / w; // device pixels per page pixel
+        const out = document.createElement('canvas');
+        out.width = img.naturalWidth;
+        out.height = img.naturalHeight;
+        const octx = out.getContext('2d')!;
+        octx.drawImage(img, 0, 0);
+        drawPinMarker(octx, (px - rx) * k, (py - ry) * k, k);
+        return out.toDataURL('image/jpeg', 0.82);
+      } finally {
+        URL.revokeObjectURL(blobUrl);
+      }
+    } catch (err) {
+      console.warn('Real screenshot unavailable, falling back to an in-browser render:', err);
+    }
+
+    // Fallback: re-render in the browser (fonts and images from other sites may be missing)
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const shot = await html2canvas(doc.body, {
+      useCORS: true,
+      logging: false,
+      backgroundColor: '#ffffff',
+      scale: dpr,
+      x: rx,
+      y: ry,
+      width: w,
+      height: h,
+      windowWidth: pageW,
+      windowHeight: pageH,
+      scrollX: 0,
+      scrollY: 0,
+    });
+    const ctx = shot.getContext('2d');
+    if (!ctx) throw new Error('Canvas is not available in this browser.');
+    drawPinMarker(ctx, (px - rx) * dpr, (py - ry) * dpr, dpr);
+    return shot.toDataURL('image/jpeg', 0.82);
+  };
+
   const handleCaptureScreenshot = async () => {
     if (!canvasRef.current || !newPinCoord) return;
+    const seq = ++shotSeq.current;
     setIsCapturingScreenshot(true);
     try {
-      const canvas = canvasRef.current;
-      const canvasRect = canvas.getBoundingClientRect();
-      const pin = pinCanvasPoint();
-
-      if (currentAsset.type === 'image' || currentAsset.type === 'mockup') {
-        const img = imageRef.current;
-        if (!img || !img.naturalWidth) throw new Error('The image has not loaded yet.');
-        const imgRect = img.getBoundingClientRect();
-        // Pin inside the displayed image, then in the image's own pixels
-        const ratio = img.naturalWidth / (imgRect.width / scale);
-        const ix = (pin.x - (imgRect.left - canvasRect.left) / scale) * ratio;
-        const iy = (pin.y - (imgRect.top - canvasRect.top) / scale) * ratio;
-        setNewPinScreenshot(
-          cropAroundPoint(img, img.naturalWidth, img.naturalHeight, ix, iy, SNIPPET_WIDTH * ratio, SNIPPET_HEIGHT * ratio, ratio)
-        );
-        return;
-      }
-
-      const iframe = iframeRef.current;
-      const doc = iframe?.contentDocument;
-      if (!iframe || !doc?.body) throw new Error('The page has not finished loading yet.');
-      const iframeRect = iframe.getBoundingClientRect();
-      // Pin in the page's own coordinates (the iframe is as tall as the page, so it does not scroll)
-      const px = pin.x - (iframeRect.left - canvasRect.left) / scale + (iframe.contentWindow?.scrollX || 0);
-      const py = pin.y - (iframeRect.top - canvasRect.top) / scale + (iframe.contentWindow?.scrollY || 0);
-      const pageW = doc.documentElement.scrollWidth;
-      const pageH = doc.documentElement.scrollHeight;
-      const w = Math.min(SNIPPET_WIDTH, pageW);
-      const h = Math.min(SNIPPET_HEIGHT, pageH);
-      const rx = Math.min(Math.max(0, px - w / 2), pageW - w);
-      const ry = Math.min(Math.max(0, py - h / 2), pageH - h);
-      // Preferred: a real screenshot from the server's headless Chrome at the same page width
-      try {
-        const res = await apiFetch('/api/screenshot', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            url: currentAsset.url,
-            viewportWidth: doc.documentElement.clientWidth,
-            x: rx,
-            y: ry,
-            width: w,
-            height: h,
-          }),
-        });
-        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
-        const blobUrl = URL.createObjectURL(await res.blob());
-        try {
-          const img = new Image();
-          img.src = blobUrl;
-          await img.decode();
-          const k = img.naturalWidth / w; // device pixels per page pixel
-          const out = document.createElement('canvas');
-          out.width = img.naturalWidth;
-          out.height = img.naturalHeight;
-          const octx = out.getContext('2d')!;
-          octx.drawImage(img, 0, 0);
-          drawPinMarker(octx, (px - rx) * k, (py - ry) * k, k);
-          setNewPinScreenshot(out.toDataURL('image/jpeg', 0.82));
-          return;
-        } finally {
-          URL.revokeObjectURL(blobUrl);
-        }
-      } catch (err) {
-        console.warn('Real screenshot unavailable, falling back to an in-browser render:', err);
-      }
-
-      // Fallback: re-render in the browser (fonts and images from other sites may be missing)
-      const dpr = Math.min(2, window.devicePixelRatio || 1);
-      const shot = await html2canvas(doc.body, {
-        useCORS: true,
-        logging: false,
-        backgroundColor: '#ffffff',
-        scale: dpr,
-        x: rx,
-        y: ry,
-        width: w,
-        height: h,
-        windowWidth: pageW,
-        windowHeight: pageH,
-        scrollX: 0,
-        scrollY: 0,
-      });
-      const ctx = shot.getContext('2d');
-      if (!ctx) throw new Error('Canvas is not available in this browser.');
-      drawPinMarker(ctx, (px - rx) * dpr, (py - ry) * dpr, dpr);
-      setNewPinScreenshot(shot.toDataURL('image/jpeg', 0.82));
+      const shot = await snippetAt(newPinCoord);
+      if (seq !== shotSeq.current) return;
+      setNewPinScreenshot(shot);
+      setAutoShot(false);
     } catch (err: any) {
       console.warn('Area snippet failed:', err);
       alert(
@@ -628,40 +644,54 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
           : err?.message || 'Could not capture this area. Try Real Tab Screen instead.'
       );
     } finally {
-      setIsCapturingScreenshot(false);
+      if (seq === shotSeq.current) setIsCapturingScreenshot(false);
     }
   };
 
-  // Real Tab Screen: capture this browser tab's pixels and crop around the pin
+  // Real Tab Screen: capture this browser tab's pixels and crop around the pin. The browser asks to share the tab;
+  // the share is kept open, so it only asks again after a reload or "Stop sharing".
   const [hidePinFormForCapture, setHidePinFormForCapture] = useState(false);
-  const handleCaptureRealTabScreen = async () => {
-    if (!canvasRef.current || !newPinCoord) return;
-    if (!navigator.mediaDevices?.getDisplayMedia) {
-      alert('Screen capture is not supported in this browser. Use Area Snippet instead.');
-      return;
+  const liveTab = useRef<{ stream: MediaStream; video: HTMLVideoElement } | null>(null);
+  // The current screenshot was taken automatically, so moving the pin replaces it
+  const [autoShot, setAutoShot] = useState(false);
+  const shotSeq = useRef(0);
+
+  useEffect(() => () => liveTab.current?.stream.getTracks().forEach((t) => t.stop()), []);
+
+  // Must start inside the click (browsers only ask to share during one)
+  const openLiveTab = async () => {
+    if (liveTab.current?.stream.active) return liveTab.current;
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { cursor: 'never', displaySurface: 'browser' } as any,
+      audio: false,
+      preferCurrentTab: true,
+      selfBrowserSurface: 'include',
+    } as any);
+    const track = stream.getVideoTracks()[0];
+    if ((track.getSettings() as any).displaySurface !== 'browser') {
+      stream.getTracks().forEach((t) => t.stop());
+      throw new Error('Please choose "This tab" when asked, so the area around the pin can be found.');
     }
-    setIsCapturingScreenshot(true);
-    let stream: MediaStream | null = null;
+    // "Stop sharing" in the browser: ask again next time
+    track.addEventListener('ended', () => {
+      liveTab.current = null;
+    });
+    const video = document.createElement('video');
+    video.srcObject = stream;
+    video.muted = true;
+    await video.play();
+    liveTab.current = { stream, video };
+    return liveTab.current;
+  };
+
+  // Grab the shared tab around a pin, with the pin form hidden so it does not cover the area
+  const grabLiveTab = async (coord: { x: number; y: number }) => {
+    const tab = liveTab.current;
+    if (!tab || !canvasRef.current) throw new Error('This tab is not being shared.');
+    setHidePinFormForCapture(true);
     try {
-      stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { cursor: 'never', displaySurface: 'browser' } as any,
-        audio: false,
-        preferCurrentTab: true,
-        selfBrowserSurface: 'include',
-      } as any);
-      const track = stream.getVideoTracks()[0];
-      if ((track.getSettings() as any).displaySurface !== 'browser') {
-        throw new Error('Please choose "This tab" when asked, so the area around the pin can be found.');
-      }
-
-      // Hide the pin form so it does not cover the area, then grab a frame
-      setHidePinFormForCapture(true);
-      const video = document.createElement('video');
-      video.srcObject = stream;
-      video.muted = true;
-      await video.play();
       await new Promise((resolve) => setTimeout(resolve, 350));
-
+      const { video } = tab;
       const frame = document.createElement('canvas');
       frame.width = video.videoWidth;
       frame.height = video.videoHeight;
@@ -670,20 +700,51 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
       // Map the pin from page coordinates to the captured frame
       const rect = canvasRef.current.getBoundingClientRect();
       const ratio = video.videoWidth / window.innerWidth;
-      const cx = (rect.left + (newPinCoord.x / 100) * rect.width) * ratio;
-      const cy = (rect.top + (newPinCoord.y / 100) * rect.height) * ratio;
-      setNewPinScreenshot(
-        cropAroundPoint(frame, frame.width, frame.height, cx, cy, SNIPPET_WIDTH * ratio, SNIPPET_HEIGHT * ratio, ratio)
-      );
+      const cx = (rect.left + (coord.x / 100) * rect.width) * ratio;
+      const cy = (rect.top + (coord.y / 100) * rect.height) * ratio;
+      return cropAroundPoint(frame, frame.width, frame.height, cx, cy, SNIPPET_WIDTH * ratio, SNIPPET_HEIGHT * ratio, ratio);
+    } finally {
+      setHidePinFormForCapture(false);
+    }
+  };
+
+  const handleCaptureRealTabScreen = async () => {
+    if (!canvasRef.current || !newPinCoord) return;
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      alert('Screen capture is not supported in this browser. Use Area Snippet instead.');
+      return;
+    }
+    const seq = ++shotSeq.current;
+    setIsCapturingScreenshot(true);
+    try {
+      await openLiveTab();
+      const shot = await grabLiveTab(newPinCoord);
+      if (seq !== shotSeq.current) return;
+      setNewPinScreenshot(shot);
+      setAutoShot(false);
     } catch (err: any) {
       if (err?.name !== 'NotAllowedError') {
         console.warn('Real tab capture failed:', err);
         alert(err?.message || 'Could not capture this tab.');
       }
     } finally {
-      stream?.getTracks().forEach((t) => t.stop());
-      setHidePinFormForCapture(false);
-      setIsCapturingScreenshot(false);
+      if (seq === shotSeq.current) setIsCapturingScreenshot(false);
+    }
+  };
+
+  // Automatic Area Snippet when a pin is placed or moved (no prompt); the buttons still work by hand
+  const autoCaptureAt = async (coord: { x: number; y: number }) => {
+    const seq = ++shotSeq.current;
+    setIsCapturingScreenshot(true);
+    try {
+      const shot = await snippetAt(coord);
+      if (seq !== shotSeq.current) return;
+      setNewPinScreenshot(shot);
+      setAutoShot(true);
+    } catch (err: any) {
+      console.warn('Automatic screenshot failed:', err);
+    } finally {
+      if (seq === shotSeq.current) setIsCapturingScreenshot(false);
     }
   };
 
@@ -721,6 +782,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
 
     setNewPinCoord(null);
     setNewPinScreenshot(null);
+    setAutoShot(false);
     setNewPinAttachments([]);
   };
 
@@ -1208,11 +1270,15 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
                           className="w-full h-24 object-cover rounded"
                         />
                         <div className="absolute top-2 left-2 bg-slate-900/80 text-white text-[9px] font-bold px-1.5 py-0.5 rounded backdrop-blur">
-                          📸 Captured Screenshot
+                          📸 {autoShot ? 'Auto screenshot' : 'Captured Screenshot'}
                         </div>
                         <button
                           type="button"
-                          onClick={() => setNewPinScreenshot(null)}
+                          onClick={() => {
+                            ++shotSeq.current;
+                            setNewPinScreenshot(null);
+                            setAutoShot(false);
+                          }}
                           className="absolute top-2 right-2 bg-red-600 hover:bg-red-700 text-white p-1 rounded-full shadow-md transition-colors"
                           title="Remove screenshot"
                         >
