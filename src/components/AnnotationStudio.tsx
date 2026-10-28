@@ -84,6 +84,8 @@ interface AnnotationStudioProps {
   viewport: PinDevice;
   onViewportChange: (device: PinDevice) => void;
   isGuest?: boolean;
+  // AI features for the workspace (Team → Roles & Permissions)
+  aiEnabled?: boolean;
   // Bumped after a fix is applied or undone on the live site, to reload the page
   siteVersion?: number;
   // CSS of an AI fix being previewed (shown on the page only, nothing is saved)
@@ -124,6 +126,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
   viewport,
   onViewportChange,
   isGuest = false,
+  aiEnabled = true,
   siteVersion = 0,
   previewCss = null,
   readOnly = false,
@@ -855,7 +858,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
             <MessageSquarePlus className="w-3.5 h-3.5" />
             <span>Comments ({pins.filter((p) => projectPageIds.includes(p.assetId) && pinDevice(p) === viewport).length})</span>
           </button>
-          {!isGuest && (
+          {!isGuest && aiEnabled && (
           <button
             onClick={handleRunAiReview}
             disabled={isAuditing || isCapturingPage}

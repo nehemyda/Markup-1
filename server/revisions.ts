@@ -8,6 +8,7 @@ import { findRows, getRow, getSetting, insertRow, now, supabaseAdmin } from './d
 import { toRow } from '../src/lib/rows';
 import { DEFAULT_REVISION_SETTINGS, INCLUDED_REVISIONS, RevisionSettings } from '../src/types';
 import { coverTitle, loadCoverage } from './teams';
+import { sendEmail } from './email';
 
 export class RevisionError extends Error {
   constructor(message: string, public status = 400) {
@@ -69,10 +70,8 @@ export async function notifyTeam(
   recipients: string[] = projectPeople(project)
 ) {
   const coverage = await loadCoverage();
-  const rows = coverage
-    .expand(recipients.filter((uid) => uid !== actor?.id))
-    .filter((r) => r.uid !== actor?.id)
-    .map((r) => toRow('notifications', {
+  const told = coverage.expand(recipients.filter((uid) => uid !== actor?.id)).filter((r) => r.uid !== actor?.id);
+  const rows = told.map((r) => toRow('notifications', {
       id: `${key}__${r.uid}`,
       recipientUid: r.uid,
       type,
@@ -93,6 +92,8 @@ export async function notifyTeam(
     const { error } = await supabaseAdmin.from('notifications').upsert(rows, { onConflict: 'id', ignoreDuplicates: true });
     if (error) throw new Error(error.message);
   }
+  // Who was told, with their email (for sending the same news by email)
+  return told.map((r) => ({ ...r, email: String(coverage.byId.get(r.uid)?.email || '') }));
 }
 
 export async function tellChat(projectId: string, text: string) {
@@ -164,7 +165,18 @@ export async function submitRevision(projectId: string, by: Submitter) {
   const who = by.isGuest ? `Client ${by.name}` : `${by.name} (for the client)`;
   const overLimit = number > INCLUDED_REVISIONS;
   const limitNote = overLimit ? ` · over the ${INCLUDED_REVISIONS} included revisions (chargeable)` : '';
-  await notifyTeam(project, 'submission', `rev_${projectId}_${number}_submitted`, `${who} submitted Revision ${number} on ${project.name || 'a project'}`, `${count}${limitNote}`, by);
+  const title = `${who} submitted Revision ${number} on ${project.name || 'a project'}`;
+  const told = await notifyTeam(project, 'submission', `rev_${projectId}_${number}_submitted`, title, `${count}${limitNote}`, by);
+  // The same by email to the developers (and whoever covers for them while they're out)
+  const emailLines = [
+    `${who} sent their feedback on ${project.name || 'a project'}: ${count}.`,
+    ...(people.length > 1 ? [people.map((p) => `${p.name}: ${p.count}`).join(' · ')] : []),
+    ...(overLimit ? [`This is revision ${number}; ${INCLUDED_REVISIONS} revisions are included, so this one is chargeable.`] : []),
+    ...(by.isGuest && by.email ? [`Client email: ${by.email}`] : []),
+  ];
+  for (const r of told) {
+    await sendEmail([r.email], r.forName ? `${title} (for ${r.forName}, out of office)` : title, emailLines, { label: 'Open in Markup', url: projectLink(projectId) });
+  }
   await tellChat(projectId, [
     `*${plain(who)} submitted Revision ${number} on ${plain(project.name || 'a project')}* (${count})`,
     people.length > 1 ? people.map((p) => `• ${plain(p.name)}: ${p.count}`).join('\n') : '',

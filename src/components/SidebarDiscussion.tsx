@@ -87,6 +87,8 @@ interface SidebarDiscussionProps {
   };
   // Guest link after the client submitted: they can read the discussion but not reply
   readOnly?: boolean;
+  // AI features for the workspace (Team → Roles & Permissions)
+  aiEnabled?: boolean;
 }
 
 const PIN_STATUSES: Array<{ value: PinStatus; label: string; dot: string }> = [
@@ -192,6 +194,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
   onTogglePinned,
   wpFix,
   readOnly = false,
+  aiEnabled = true,
 }) => {
   // Re-render every minute so "5 minutes ago" stays current
   const [now, setNow] = useState(Date.now());
@@ -1029,7 +1032,8 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
           )}
         </div>
 
-        {/* ✨ AI MAGIC ACTIONS TOOLBAR */}
+        {/* ✨ AI MAGIC ACTIONS TOOLBAR (hidden while AI is turned off for the workspace) */}
+        {aiEnabled && (
         <div className="bg-gradient-to-br from-indigo-50 via-purple-50/50 to-indigo-50/80 border border-indigo-200 rounded-lg p-3 shadow-xs space-y-2">
           <div className="flex items-center justify-between text-xs font-bold text-indigo-950">
             <span className="flex items-center gap-1.5">
@@ -1140,6 +1144,7 @@ export const SidebarDiscussion: React.FC<SidebarDiscussionProps> = ({
             </div>
           )}
         </div>
+        )}
 
             </div>
           )}

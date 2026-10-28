@@ -23,6 +23,9 @@ import puppeteer, { Browser, Page } from 'puppeteer-core';
 
 dotenv.config();
 
+// Last safety net: an unexpected error (e.g. the database briefly unreachable) is logged; the server keeps running
+process.on('unhandledRejection', (err: any) => console.error('Unexpected error (server kept running):', err?.message || err));
+
 let aiClient: GoogleGenAI | null = null;
 function getAIClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -229,6 +232,30 @@ async function getPage(url: string, width: number): Promise<Page> {
 
 async function startServer() {
   const app = express();
+
+  // Express 4 doesn't catch errors thrown by async handlers (a failed database call would end the whole server).
+  // Every route and middleware below passes them on to the error handler at the end instead.
+  for (const method of ['get', 'post', 'put', 'patch', 'delete', 'use'] as const) {
+    const original = (app as any)[method].bind(app);
+    (app as any)[method] = (...args: any[]) => {
+      // app.get('setting') reads a setting
+      if (method === 'get' && args.length === 1 && typeof args[0] === 'string') return original(...args);
+      return original(
+        ...args.map((handler) =>
+          typeof handler === 'function' && handler.length < 4
+            ? (req: any, res: any, next: any) => {
+                try {
+                  const result = handler(req, res, next);
+                  if (result && typeof result.catch === 'function') result.catch(next);
+                } catch (err) {
+                  next(err);
+                }
+              }
+            : handler
+        )
+      );
+    };
+  }
   const PORT = Number(process.env.PORT) || 3000;
 
   // Large enough for a 15 MB file sent as a data URL (base64 is about 4/3 of the size)
@@ -308,6 +335,10 @@ async function startServer() {
 
   // AI features and screenshots need a signed-in caller (they use the Gemini key / server Chrome)
   app.use('/api/ai', requireMember);
+  // AI turned off for the workspace (Team → Roles & Permissions): no AI for anyone
+  const aiOff = async () => (await getSetting('permissions')).aiEnabled === false;
+  const aiOffMessage = 'AI is turned off for this workspace. An admin can turn it on in Team → Roles & Permissions.';
+  app.use('/api/ai', async (req, res, next) => ((await aiOff()) ? res.status(403).json({ error: aiOffMessage }) : next()));
   // AI usage is recorded per feature, project and person
   app.use('/api/ai', (req: AuthedRequest, res, next) => {
     aiContext.run({
@@ -371,6 +402,7 @@ async function startServer() {
   };
   const requirePermission = (permission: 'membersCanUseAiFix' | 'membersCanApplyAiFix', message: string) =>
     async (req: AuthedRequest, res: express.Response, next: express.NextFunction) => {
+      if (await aiOff()) return res.status(403).json({ error: aiOffMessage });
       if (await memberMay(req, permission)) return next();
       res.status(403).json({ error: message });
     };
@@ -464,9 +496,8 @@ async function startServer() {
     if (guest && req.token?.guestProject !== projectId) return res.status(403).json({ error: 'This link is for another project.' });
     const name = String(req.body?.name || '').trim().slice(0, 80);
     const email = String(req.body?.email || '').trim().toLowerCase().slice(0, 120);
-    if (guest && (!name || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
-      return res.status(400).json({ error: 'Please add your name and email first.' });
-    }
+    if (guest && !name) return res.status(400).json({ error: 'Please add your name first.' });
+    if (guest && email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'That email address does not look right.' });
     const by = guest
       ? { id: String(req.body?.guestId || req.token!.uid).slice(0, 60), name, email, isGuest: true }
       : { id: req.member!.id, name: req.member!.name, email: req.member!.email, isGuest: false };
@@ -1264,6 +1295,17 @@ html, body {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  // Errors from any route: a clear answer instead of a crash
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const message = String(err?.message || err);
+    const offline = /fetch failed|ECONN|ETIMEDOUT|ENOTFOUND|network/i.test(message);
+    console.error(`${req.method} ${req.path} failed:`, message);
+    if (res.headersSent) return next(err);
+    res.status(offline ? 503 : 500).json({
+      error: offline ? "Can't reach the database right now. Please try again in a moment." : 'Something went wrong. Please try again.',
+    });
+  });
 
   startNotifications();
   startDailySummary();

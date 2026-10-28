@@ -409,13 +409,13 @@ export const GuestNameModal: React.FC<{
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          if (name.trim() && email.trim()) onSave({ name: name.trim(), email: email.trim().toLowerCase() });
+          if (name.trim()) onSave({ name: name.trim(), email: email.trim().toLowerCase() });
         }}
         className="bg-white border border-slate-200 rounded-2xl max-w-sm w-full p-6 shadow-2xl space-y-4 text-sm"
       >
         <div>
           <h2 className="font-extrabold text-base text-slate-900">Before you leave feedback</h2>
-          <p className="text-xs text-slate-500 mt-1">Your name is shown on the pins and comments you add. We'll use your email to tell you when your changes are done.</p>
+          <p className="text-xs text-slate-500 mt-1">Your name is shown on the pins and comments you add.</p>
         </div>
         <label className="block">
           <span className="text-xs font-bold text-slate-600">Your name</span>
@@ -429,10 +429,9 @@ export const GuestNameModal: React.FC<{
           />
         </label>
         <label className="block">
-          <span className="text-xs font-bold text-slate-600">Your email</span>
+          <span className="text-xs font-bold text-slate-600">Your email <span className="font-normal text-slate-400">(optional)</span></span>
           <input
             type="email"
-            required
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="you@company.com"

@@ -11,6 +11,7 @@ export const DEFAULT_ROLE_PERMISSIONS: RolePermissions = {
   membersCanManageRoles: false,
   membersCanDeleteProjects: false,
   membersCanArchiveProjects: true,
+  aiEnabled: true,
   membersCanUseAiFix: false,
   membersCanApplyAiFix: false,
 };

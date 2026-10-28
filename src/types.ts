@@ -69,7 +69,9 @@ export interface RolePermissions {
   membersCanManageRoles: boolean;
   membersCanDeleteProjects: boolean;
   membersCanArchiveProjects: boolean;
-  // Fix with AI on connected WordPress sites (Owners and Admins can always)
+  // AI features for the whole workspace, Owners and Admins included (off: no AI review, AI actions or Fix with AI)
+  aiEnabled: boolean;
+  // Fix with AI on connected WordPress sites (Owners and Admins can always, while it is on)
   membersCanUseAiFix: boolean;
   membersCanApplyAiFix: boolean;
 }

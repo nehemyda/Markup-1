@@ -63,18 +63,25 @@ export const GuestReviewBanner: React.FC<{
             onClick={onSubmit}
             disabled={!unsentCount}
             title={unsentCount ? undefined : 'Add a pin first'}
-            className="bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-slate-950/20 disabled:text-slate-950/50 disabled:cursor-not-allowed px-3 py-1 rounded-lg text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer"
+            className={`relative bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-slate-950/20 disabled:text-slate-950/50 disabled:cursor-not-allowed px-3 py-1 rounded-lg text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer ${
+              unsentCount ? 'submit-attention' : ''
+            }`}
           >
+            {/* While there are pins to send, a ring pulses around the button so the client notices it */}
+            {unsentCount > 0 && <span className="absolute inset-0 rounded-lg ring-2 ring-indigo-400 animate-ping pointer-events-none" />}
             <Send className="w-3.5 h-3.5" />
             Submit to developer{unsentCount ? ` (${unsentCount})` : ''}
           </button>
         )}
-        <button
-          onClick={onSignIn}
-          className={`${locked ? 'bg-white/15 hover:bg-white/25' : 'bg-slate-950 hover:bg-slate-900'} text-white px-3 py-1 rounded-lg text-xs font-extrabold transition-all cursor-pointer`}
-        >
-          {isMemberPreview ? 'Exit guest preview' : 'Sign in'}
-        </button>
+        {/* Team members previewing the guest view can leave it; clients don't need to sign in */}
+        {isMemberPreview && (
+          <button
+            onClick={onSignIn}
+            className={`${locked ? 'bg-white/15 hover:bg-white/25' : 'bg-slate-950 hover:bg-slate-900'} text-white px-3 py-1 rounded-lg text-xs font-extrabold transition-all cursor-pointer`}
+          >
+            Exit guest preview
+          </button>
+        )}
       </div>
     </div>
   );
@@ -85,7 +92,7 @@ export const UnsentPinsBar: React.FC<{ count: number; onSubmit: () => void }> = 
   count ? (
     <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 bg-slate-900 text-white rounded-full shadow-2xl pl-4 pr-1.5 py-1.5 flex items-center gap-3 text-xs font-semibold">
       <span>{plural(count, 'pin')} not sent to the developer yet</span>
-      <button onClick={onSubmit} className="bg-indigo-500 hover:bg-indigo-400 rounded-full px-3 py-1 font-bold flex items-center gap-1 cursor-pointer">
+      <button onClick={onSubmit} className="submit-attention bg-indigo-500 hover:bg-indigo-400 rounded-full px-3 py-1 font-bold flex items-center gap-1 cursor-pointer">
         <Send className="w-3 h-3" /> Submit
       </button>
     </div>
@@ -141,7 +148,7 @@ export const SubmitRevisionDialog: React.FC<{
                 <p className="text-xs text-slate-600 mt-1">
                   {forClient
                     ? `${plural(sent.count, 'pin')} went to the developers. The client's link is now view-only.`
-                    : `Your ${plural(sent.count, 'pin')} went to the developer as Revision ${sent.number}. You can still view this page; the team will let you know at ${me.email} when the changes are done.`}
+                    : `Your ${plural(sent.count, 'pin')} went to the developer as Revision ${sent.number}. You can still view this page.`}
                 </p>
               </div>
             </div>

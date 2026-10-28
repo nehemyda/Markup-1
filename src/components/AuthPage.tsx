@@ -15,6 +15,7 @@ import {
 
 // Turn Supabase Auth error codes into readable messages
 function describeAuthError(err: any): string {
+  if (err?.name === 'AuthSessionMissingError') return describeAuthError({ code: 'session_not_found' });
   switch (err?.code) {
     case 'invalid_credentials':
       return 'Incorrect email or password.';
@@ -27,6 +28,9 @@ function describeAuthError(err: any): string {
       return 'Password must be at least 6 characters.';
     case 'email_address_invalid':
       return 'Please enter a valid email address.';
+    case 'session_not_found':
+    case 'session_expired':
+      return 'This reset link has expired or was already used. Go back to sign in and choose "Forgot password?" for a new link.';
     case 'over_request_rate_limit':
     case 'over_email_send_rate_limit':
       return 'Too many attempts. Please wait a moment and try again.';
@@ -145,7 +149,7 @@ export const AuthPage: React.FC<{ notice?: string | null; recovery?: boolean; on
         const { data, error } = await supabase.auth.signUp({
           email: email.trim(),
           password,
-          options: { data: name.trim() ? { full_name: name.trim() } : {}, emailRedirectTo: window.location.origin },
+          options: { data: name.trim() ? { full_name: name.trim() } : {}, emailRedirectTo: `${window.location.origin}/` },
         });
         if (error) throw error;
         // Email confirmation is on: there is no session until the link in the email is opened
@@ -187,7 +191,7 @@ export const AuthPage: React.FC<{ notice?: string | null; recovery?: boolean; on
       return;
     }
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin });
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: `${window.location.origin}/` });
       if (error) throw error;
       setInfoMsg(`If an account exists for ${email.trim()}, a password reset link has been sent.`);
     } catch (err: any) {

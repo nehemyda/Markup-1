@@ -268,6 +268,7 @@ export default function App() {
 
   // Opened from a password reset link: choose a new password before continuing
   const [passwordRecovery, setPasswordRecovery] = useState(false);
+  const recovering = useRef(false);
   // The account whose member session is set up (token refreshes don't start it again)
   const sessionFor = useRef<string | null>(null);
   // Guest pass already asked for this project (avoids asking again in a loop)
@@ -336,12 +337,16 @@ export default function App() {
       } catch (err: any) {
         sessionFor.current = null;
         setAuthNotice(err?.message || 'Could not sign in.');
-        await supabase.auth.signOut();
+        // This tab only: other tabs (e.g. one choosing a new password) keep their sign-in
+        if (!recovering.current) await supabase.auth.signOut({ scope: 'local' });
       }
     };
 
     const { data } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true);
+      if (event === 'PASSWORD_RECOVERY') {
+        recovering.current = true;
+        setPasswordRecovery(true);
+      }
       // Supabase asks not to call it again from inside this callback, so the work runs right after
       setTimeout(() => handle(session), 0);
     });
@@ -425,8 +430,8 @@ export default function App() {
   const isWorkspaceAdmin = !!authUser && ['Owner', 'Admin'].includes(normalizeRole(authUser.role));
   // Fix with AI for members depends on Team → Roles & Permissions (the server checks the same settings)
   const rolePermissions = useRolePermissions();
-  const canAskAi = isWorkspaceAdmin || rolePermissions.membersCanUseAiFix;
-  const canApplyAi = isWorkspaceAdmin || rolePermissions.membersCanApplyAiFix;
+  const canAskAi = rolePermissions.aiEnabled && (isWorkspaceAdmin || rolePermissions.membersCanUseAiFix);
+  const canApplyAi = rolePermissions.aiEnabled && (isWorkspaceAdmin || rolePermissions.membersCanApplyAiFix);
   useEffect(() => {
     setWpSite(null);
     if (accessKey !== 'member' || !currentProject?.id) return;
@@ -454,7 +459,7 @@ export default function App() {
   const [isDrafting, setIsDrafting] = useState(false);
   const [othersDrafting, setOthersDrafting] = useState<string[]>([]);
   const presenceChannel = useRef<ReturnType<typeof supabase.channel> | null>(null);
-  const guestKey = !authUser && guestProfile?.email ? guestProfile.id : '';
+  const guestKey = !authUser && guestProfile?.name ? guestProfile.id : '';
   useEffect(() => {
     setOthersDrafting([]);
     if (!accessKey.startsWith('guest:') || !guestKey) return;
@@ -1286,8 +1291,8 @@ export default function App() {
   const isGuestShareLink = typeof window !== 'undefined' &&
     new URLSearchParams(window.location.search).get('guest_mode') === 'true';
 
-  // Guests must give their name and email before their first pin or comment; the action then runs with them
-  const needsGuestName = !authUser && !(guestProfile?.name && guestProfile?.email);
+  // Guests must give their name (email optional) before their first pin or comment; the action then runs with it
+  const needsGuestName = !authUser && !guestProfile?.name;
   // After the client submits, their link is view-only until the team opens the next revision
   const reviewLocked = !authUser && currentProject.reviewState === 'submitted';
   const unsentPins = unsentClientPins(pins, currentProject.id);
@@ -1334,7 +1339,7 @@ export default function App() {
   };
 
   if (passwordRecovery) {
-    return <AuthPage recovery onRecovered={() => setPasswordRecovery(false)} />;
+    return <AuthPage recovery onRecovered={() => { recovering.current = false; setPasswordRecovery(false); }} />;
   }
 
   if (!authUser && ((!isGuestMode && !isGuestShareLink) || guestWantsSignIn)) {
@@ -1427,7 +1432,7 @@ export default function App() {
         }}
         onOpenNewAssetModal={() => setShowNewAssetModal(true)}
         wpStatus={accessKey === 'member' && projects.some((p) => p.id === currentProject.id) ? (wpSite?.status || 'none') : undefined}
-        onOpenWordPress={() => setShowWordPressModal(true)}
+        onOpenWordPress={rolePermissions.aiEnabled ? () => setShowWordPressModal(true) : undefined}
         currentUser={headerUser}
         currentOrganization={currentOrganization || undefined}
         onSignOut={handleSignOut}
@@ -1560,6 +1565,7 @@ export default function App() {
             )}
             <AnnotationStudio
               readOnly={reviewLocked}
+              aiEnabled={rolePermissions.aiEnabled}
               onDraftingChange={setIsDrafting}
               siteVersion={siteVersion}
               previewCss={previewCss}
@@ -1613,6 +1619,7 @@ export default function App() {
                       onUpdatePinAssignee={handleUpdatePinAssignee}
                       onAddComment={addCommentAsUser}
                       readOnly={reviewLocked}
+                      aiEnabled={rolePermissions.aiEnabled}
                       teammates={teammates}
                       currentUser={currentUser}
                       rubricRules={rubricRules}
@@ -1622,7 +1629,7 @@ export default function App() {
                       onPurgePin={handlePurgePin}
                       onDeleteComment={handleDeleteComment}
                       wpFix={
-                        accessKey === 'member' && selectedPin && currentAsset.type === 'url'
+                        accessKey === 'member' && rolePermissions.aiEnabled && selectedPin && currentAsset.type === 'url'
                           ? {
                               projectId: currentProject.id,
                               connected: wpSite?.status === 'connected',

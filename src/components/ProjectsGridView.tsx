@@ -2005,6 +2005,33 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                   </p>
                 </div>
 
+                {/* AI for the whole workspace: off hides and blocks every AI feature for everyone, admins included */}
+                <div className={`rounded-2xl border p-5 flex items-center justify-between gap-6 ${rolePermissions.aiEnabled ? 'bg-white border-slate-200' : 'bg-rose-50/60 border-rose-200'}`}>
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 font-extrabold text-slate-900 text-sm">
+                      <Sparkles className="w-4 h-4 text-indigo-600" />
+                      <span>AI features</span>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${rolePermissions.aiEnabled ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-rose-100 text-rose-700 border-rose-200'}`}>
+                        {rolePermissions.aiEnabled ? 'On' : 'Off for everyone'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 leading-relaxed">
+                      Master switch for the whole workspace, Owners and Admins included. When off, nobody sees Run AI Website Review, the Gemini actions on pins, the WordPress connection or Fix with AI.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={rolePermissions.aiEnabled}
+                    aria-label="AI features for the whole workspace"
+                    disabled={!canEditPermissions}
+                    onClick={() => handleTogglePermission('aiEnabled')}
+                    className={`relative shrink-0 w-11 h-6 rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${rolePermissions.aiEnabled ? 'bg-indigo-600' : 'bg-slate-300'}`}
+                  >
+                    <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${rolePermissions.aiEnabled ? 'translate-x-5' : ''}`} />
+                  </button>
+                </div>
+
                 {/* Permissions Matrix Table */}
                 <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-2xs">
                   <table className="w-full text-left text-xs">

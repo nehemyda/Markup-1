@@ -64,7 +64,18 @@ export async function getMember(authId: string): Promise<MemberProfile | null> {
  * A profile without a sign-in account yet (e.g. moved from Firebase) is linked by its verified email.
  * Returns null when this account may not use the workspace (not allowed, or removed without a new invite).
  */
-export async function startSession(token: CallerToken): Promise<MemberProfile | null> {
+// Several tabs signing in together share one check, so the profile isn't created twice
+const starting = new Map<string, Promise<MemberProfile | null>>();
+export function startSession(token: CallerToken): Promise<MemberProfile | null> {
+  let pending = starting.get(token.authId);
+  if (!pending) {
+    pending = loadOrCreateProfile(token).finally(() => starting.delete(token.authId));
+    starting.set(token.authId, pending);
+  }
+  return pending;
+}
+
+async function loadOrCreateProfile(token: CallerToken, retried = false): Promise<MemberProfile | null> {
   const email = token.email;
   if (!email || token.guestProject) return null;
   const invite = await getRow('invites', email);
@@ -111,7 +122,13 @@ export async function startSession(token: CallerToken): Promise<MemberProfile | 
     cursorColor: '#6366f1',
     isMasterAdmin: master,
   };
-  await insertRow('users', { ...created, authId: token.authId, createdAt: now() });
+  try {
+    await insertRow('users', { ...created, authId: token.authId, createdAt: now() });
+  } catch (err: any) {
+    // Created by another sign-in at the same moment: use that one
+    if (!retried && /duplicate key/i.test(err?.message || '')) return loadOrCreateProfile(token, true);
+    throw err;
+  }
   if (invite) await deleteRow('invites', email);
   return created;
 }
