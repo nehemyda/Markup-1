@@ -1,9 +1,9 @@
 # Applies new database changes (supabase/migrations/*.sql) to the live Supabase project when they reach main.
 # The security-rule tests run first; if they fail, nothing is applied.
 #
-# Needs these repository secrets (GitHub → Settings → Secrets and variables → Actions):
-#   SUPABASE_ACCESS_TOKEN  a personal access token from supabase.com/dashboard/account/tokens
-#   SUPABASE_DB_PASSWORD   the database password of the "Markup" project
+# Needs the repository secret SUPABASE_ACCESS_TOKEN (GitHub → Settings → Secrets and variables → Actions), an access
+# token from supabase.com/dashboard/account/tokens. Until it is set, the deploy is skipped. SUPABASE_DB_PASSWORD (the
+# "Markup" project's database password) is optional; without it the CLI signs in to the database with the token.
 name: Supabase migrations
 
 on:
@@ -37,11 +37,19 @@ jobs:
       # The "Markup" project (VITE_SUPABASE_URL in .env)
       SUPABASE_PROJECT_REF: bngziuiofcnwgkseknrf
     steps:
+      - name: Check the Supabase token is set
+        if: env.SUPABASE_ACCESS_TOKEN == ''
+        run: echo "::warning::SUPABASE_ACCESS_TOKEN is not set, so no database changes were applied."
       - uses: actions/checkout@v4
+        if: env.SUPABASE_ACCESS_TOKEN != ''
       - uses: supabase/setup-cli@v1
+        if: env.SUPABASE_ACCESS_TOKEN != ''
         with:
           version: 2.122.0
-      - run: supabase link --project-ref "$SUPABASE_PROJECT_REF"
+      - if: env.SUPABASE_ACCESS_TOKEN != ''
+        run: supabase link --project-ref "$SUPABASE_PROJECT_REF"
       - name: Show what will be applied
+        if: env.SUPABASE_ACCESS_TOKEN != ''
         run: supabase migration list --linked
-      - run: supabase db push --linked
+      - if: env.SUPABASE_ACCESS_TOKEN != ''
+        run: supabase db push --linked

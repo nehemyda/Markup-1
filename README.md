@@ -56,7 +56,7 @@ Database changes live in [supabase/migrations/](supabase/migrations/), one SQL f
 2. Run `npm run test:db` locally.
 3. Commit and push to `main`.
 
-The [Supabase migrations](.github/workflows/supabase-migrations.yml) workflow runs the tests. If they pass, it applies the new migrations to the live Supabase project. The workflow needs two repository secrets: `SUPABASE_ACCESS_TOKEN` and `SUPABASE_DB_PASSWORD`.
+The [Supabase migrations](.github/workflows/supabase-migrations.yml) workflow runs the tests. If they pass, it applies the new migrations to the live Supabase project. The workflow needs the repository secret `SUPABASE_ACCESS_TOKEN`; until it is set, the deploy step is skipped.
 
 ## Project structure
 
