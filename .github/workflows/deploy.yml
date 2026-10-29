@@ -1,0 +1,47 @@
+# Deploys Vpin to Cloudflare on every push to main: builds the pages and the server, then `wrangler deploy` uploads
+# the Worker with the pages and builds and rolls out the server container (wrangler.jsonc).
+#
+# Needs (GitHub → Settings → Secrets and variables → Actions):
+#   secret   CLOUDFLARE_API_TOKEN     Cloudflare API token that can edit Workers, Containers and R2 on the account
+#   variable VITE_SUPABASE_URL        built into the pages (public values, the same as in .env)
+#   variable VITE_SUPABASE_ANON_KEY
+#   variable VITE_ADMIN_EMAILS
+name: Deploy to Cloudflare
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-cloudflare
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Check the build settings are there
+        env:
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$VITE_SUPABASE_URL" ] || [ -z "$VITE_SUPABASE_ANON_KEY" ]; then
+            echo "::error::Set the VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY repository variables first."
+            exit 1
+          fi
+      - run: npm run lint
+      - run: npm run build
+        env:
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
+          VITE_ADMIN_EMAILS: ${{ vars.VITE_ADMIN_EMAILS }}
+      - run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

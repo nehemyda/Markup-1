@@ -237,7 +237,7 @@ const DIVI_OPEN = /\[et_pb_[a-z0-9_]+/g;
 const DIVI_CLOSE = /\[\/et_pb_[a-z0-9_]+\]/g;
 
 // Images attached to the pin's comments (data URLs), labelled A1, A2, ... in thread order
-function pinImages(pin: any) {
+async function pinImages(pin: any) {
   const out: Array<{ label: string; commentId: string | null; attachmentId: string; name: string; author: string; mime: string; base64: string }> = [];
   const seen = new Set<string>();
   // Images attached to the pin itself (new pin form), then to its comments
@@ -247,7 +247,7 @@ function pinImages(pin: any) {
   ];
   for (const { comment, attachments } of sources) {
     for (const att of attachments) {
-      const file = readAttachment(String(att.url || ''));
+      const file = await readAttachment(String(att.url || ''));
       if (!file || !/^image\/(jpeg|png|webp|gif)$/.test(file.mime) || seen.has(att.id)) continue;
       seen.add(att.id);
       out.push({
@@ -618,7 +618,7 @@ export async function prepareFix(opts: {
     .map((f) => `- ${STATUS_TEXT[f.status]}: ${f.summary}`);
 
   // Images attached to comments (labelled A1, A2, ... for the AI)
-  const images = pinImages(pin).slice(0, 4);
+  const images = (await pinImages(pin)).slice(0, 4);
 
   const parts: any[] = [{
     text: buildPrompt({
@@ -627,7 +627,7 @@ export async function prepareFix(opts: {
       attachments: images.map((img) => ({ label: img.label, name: img.name, author: img.author })),
     }),
   }];
-  const shot = readAttachment(String(pin.screenshotUrl || ''));
+  const shot = await readAttachment(String(pin.screenshotUrl || ''));
   if (shot && /^image\/(png|jpeg|webp)$/.test(shot.mime)) parts.push({ inlineData: { mimeType: shot.mime, data: shot.data.toString('base64') } });
   for (const img of images) parts.push({ inlineData: { mimeType: img.mime, data: img.base64 } });
 
@@ -863,7 +863,7 @@ export async function applyFix(projectId: string, fixId: string, actor: Actor, i
       const pin = await getRow('pins', fix.pinId);
       const holder = fix.image.commentId ? pin?.comments?.find((c: any) => c.id === fix.image.commentId) : pin;
       const att = holder?.attachments?.find((a: any) => a.id === fix.image.attachmentId);
-      const file = readAttachment(String(att?.url || ''));
+      const file = await readAttachment(String(att?.url || ''));
       if (!file || !file.mime.startsWith('image/')) throw new WpError('The attached image is no longer on the pin.', 409);
       const ext = file.mime.split('/')[1].replace('jpeg', 'jpg');
       const name = /\.[a-z0-9]+$/i.test(fix.image.name) ? fix.image.name : `${fix.image.name}.${ext}`;

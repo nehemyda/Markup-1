@@ -7,7 +7,7 @@ import { spawn } from 'child_process';
 import { applyFix, prepareFix, rejectFix, undoFix, PinTarget } from './server/wpFixes';
 import { logAudit } from './server/audit';
 import { aiContext, trackUsage, forgetPricingCache, DEFAULT_PRICING } from './server/aiUsage';
-import { saveDataUrl, UPLOAD_DIR, SAFE_FILE, CONTENT_TYPES } from './server/uploads';
+import { readUpload, saveDataUrl } from './server/uploads';
 import { startNotifications } from './server/notifications';
 import { reopenProject, RevisionError, submitRevision } from './server/revisions';
 import { startDeadlineChecks } from './server/deadlines';
@@ -84,7 +84,8 @@ function getBrowser(): Promise<Browser> {
     browserPromise = puppeteer.launch({
       executablePath: CHROME_PATH,
       headless: true,
-      args: ['--hide-scrollbars'],
+      // In a container (CHROME_NO_SANDBOX=1) Chrome can't use its own sandbox, and /dev/shm is small
+      args: ['--hide-scrollbars', ...(process.env.CHROME_NO_SANDBOX === '1' ? ['--no-sandbox', '--disable-dev-shm-usage'] : [])],
       // We close Chrome ourselves on shutdown (see closeBrowser), so the server exits cleanly
       handleSIGINT: false,
       handleSIGTERM: false,
@@ -319,24 +320,22 @@ async function startServer() {
   });
 
   // ---------- Pin and comment files (members and guests upload; links are unguessable) ----------
-  app.post('/api/uploads', requireSignedIn, (req: AuthedRequest, res) => {
+  app.post('/api/uploads', requireSignedIn, async (req: AuthedRequest, res) => {
     try {
-      res.json({ url: saveDataUrl(String(req.body?.dataUrl || '')) });
+      res.json({ url: await saveDataUrl(String(req.body?.dataUrl || '')) });
     } catch (err: any) {
       res.status(400).json({ error: err.message || 'Could not save the file.' });
     }
   });
-  app.get('/api/uploads/:file', (req, res) => {
-    const name = String(req.params.file);
-    if (!SAFE_FILE.test(name)) return res.status(404).end();
+  app.get('/api/uploads/:file', async (req, res) => {
+    const file = await readUpload(String(req.params.file)).catch(() => null);
+    if (!file) return res.status(404).end();
     // Files are shown as-is, never run: no scripts even for SVG/HTML-like content
-    res.setHeader('Content-Type', CONTENT_TYPES[name.split('.').pop()!] || 'application/octet-stream');
+    res.setHeader('Content-Type', file.mime);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Security-Policy', "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; media-src 'self'; sandbox");
     res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
-    res.sendFile(path.join(UPLOAD_DIR, name), (err) => {
-      if (err && !res.headersSent) res.status(404).end();
-    });
+    res.send(file.data);
   });
 
   // AI features and screenshots need a signed-in caller (they use the Gemini key / server Chrome)

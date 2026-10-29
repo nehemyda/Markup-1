@@ -58,6 +58,22 @@ Database changes live in [supabase/migrations/](supabase/migrations/), one SQL f
 
 The [Supabase migrations](.github/workflows/supabase-migrations.yml) workflow runs the tests. If they pass, it applies the new migrations to the live Supabase project. The workflow needs the repository secret `SUPABASE_ACCESS_TOKEN`; until it is set, the deploy step is skipped.
 
+## Hosting on Cloudflare
+
+Vpin runs at https://v-pin.pid-brdl-technical.workers.dev. Every push to `main` deploys it ([deploy workflow](.github/workflows/deploy.yml)).
+
+- **Worker** ([worker/index.ts](worker/index.ts)) serves the web pages and passes every `/api/...` request to the server.
+- **Server container** ([Dockerfile](Dockerfile)) runs the Node server with Chrome. A schedule wakes it every 5 minutes, so reminders and the daily summary keep running.
+- **R2 bucket** `vpin-uploads` stores uploaded files.
+- **Settings:** public ones are in [wrangler.jsonc](wrangler.jsonc). Private ones are Worker secrets, copied from `.env` with:
+
+  ```bash
+  npx wrangler login
+  node scripts/cloudflare-secrets.mjs | npx wrangler secret bulk
+  ```
+
+The deploy workflow needs the repository secret `CLOUDFLARE_API_TOKEN` and the repository variables `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` and `VITE_ADMIN_EMAILS`.
+
 ## Project structure
 
 ```
@@ -66,6 +82,7 @@ src/                 Web app (React)
   lib/               Supabase client, sync, permissions, API helpers
 server.ts            Express server entry point
 server/              Server modules: auth, AI usage, WordPress, previews, email, trash
+worker/              Cloudflare Worker in front of the server
 supabase/            Database migrations, security-rule tests, setup guide
 chrome-extension/    Markup for Chrome (see its README)
 wordpress-plugin/    WebReview Connector plugin and a local test setup

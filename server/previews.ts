@@ -100,9 +100,9 @@ async function takePreview(projectId: string): Promise<string> {
   const url = mainPage(project);
   if (!url) throw new Error('This project has no web page to preview.');
   try {
-    const link = saveFile(await capture(url), 'jpg');
+    const link = await saveFile(await capture(url), 'jpg');
     await supabaseAdmin.from('projects').update({ preview_url: link, preview_at: now(), preview_error: null }).eq('id', projectId);
-    if (project.previewUrl && project.previewUrl !== link) removeFile(project.previewUrl);
+    if (project.previewUrl && project.previewUrl !== link) await removeFile(project.previewUrl).catch(() => {});
     return link;
   } catch (err: any) {
     const message = String(err?.message || err).slice(0, 300);

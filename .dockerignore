@@ -1,0 +1,6 @@
+*
+!package.json
+!package-lock.json
+!dist
+!wordpress-plugin
+wordpress-plugin/dev
