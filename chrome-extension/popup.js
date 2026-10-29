@@ -171,7 +171,7 @@ $('mark-all').addEventListener('click', async () => {
   }
 });
 $('disconnect').addEventListener('click', async () => {
-  if (!confirm('Disconnect this extension from Markup?')) return;
+  if (!confirm('Disconnect this extension from Vpin?')) return;
   await disconnect();
   showConnect();
 });

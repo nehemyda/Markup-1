@@ -1,4 +1,4 @@
-// WordPress connections. A project can be linked to one WordPress site that runs the WebReview Connector plugin.
+// WordPress connections. A project can be linked to one WordPress site that runs the Vpin Connector plugin.
 // The site's Application Password is encrypted and kept server-only (wpSiteSecrets); members only see the
 // site details (wpSites). Every request to WordPress goes through here.
 import fs from 'fs';
@@ -146,9 +146,9 @@ export async function wpRequest<T = any>(creds: WpCredentials, route: string, in
     if (res.status === 401 || code === 'incorrect_password' || code === 'invalid_username' || code === 'invalid_email') {
       throw new WpError('WordPress did not accept the username or Application Password.', 401);
     }
-    if (code === 'rest_no_route') throw new WpError('The WebReview Connector plugin is not installed or not active on this site.', 404);
+    if (code === 'rest_no_route') throw new WpError('The Vpin Connector plugin is not installed or not active on this site.', 404);
     if (code === 'webreview_forbidden' && /not allowed to use/.test(data?.message || '')) {
-      throw new WpError('This WordPress user is not allowed yet. A WordPress admin can allow it under Settings → WebReview Connector.', 403);
+      throw new WpError('This WordPress user is not allowed yet. A WordPress admin can allow it under Settings → Vpin Connector.', 403);
     }
     throw new WpError(data?.message || `WordPress returned an error (${res.status}).`, res.status >= 500 ? 502 : res.status);
   }
@@ -165,7 +165,7 @@ function notWordPressMessage(html: string) {
   if (/squarespace\.com|static1\.squarespace/.test(html)) return 'This site is built with Squarespace, not WordPress, so it can\'t be connected.';
   if (/cdn\.shopify\.com|Shopify\.theme/.test(html)) return 'This site is built with Shopify, not WordPress, so it can\'t be connected.';
   if (!/wp-content|wp-includes|wp-json/.test(html)) return 'This doesn\'t look like a WordPress site. Fix with AI works with WordPress sites only.';
-  return 'The site did not answer like a WordPress site. Check the address and that the WebReview Connector plugin is active.';
+  return 'The site did not answer like a WordPress site. Check the address and that the Vpin Connector plugin is active.';
 }
 
 export async function getSiteStatus(creds: WpCredentials) {
@@ -174,7 +174,7 @@ export async function getSiteStatus(creds: WpCredentials) {
     // Some site builders answer unknown addresses with their own data (e.g. Duda sends its page CSS as JSON)
     const answer = JSON.stringify(status || '').slice(0, 5000);
     if (/dmNewParagraph|additionalWidgetCss|#dm \*\.dmBody/.test(answer)) throw new WpError(notWordPressMessage('dmAPI'), 502);
-    throw new WpError('The site answered, but not like the WebReview Connector plugin. Check that the plugin is installed and active.', 502);
+    throw new WpError('The site answered, but not like the Vpin Connector plugin. Check that the plugin is installed and active.', 502);
   }
   return status;
 }

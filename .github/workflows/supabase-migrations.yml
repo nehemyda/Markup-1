@@ -1,0 +1,47 @@
+# Applies new database changes (supabase/migrations/*.sql) to the live Supabase project when they reach main.
+# The security-rule tests run first; if they fail, nothing is applied.
+#
+# Needs these repository secrets (GitHub → Settings → Secrets and variables → Actions):
+#   SUPABASE_ACCESS_TOKEN  a personal access token from supabase.com/dashboard/account/tokens
+#   SUPABASE_DB_PASSWORD   the database password of the "Markup" project
+name: Supabase migrations
+
+on:
+  push:
+    branches: [main]
+    paths: ['supabase/migrations/**']
+  workflow_dispatch:
+
+concurrency:
+  group: supabase-migrations
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run test:db
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      # The "Markup" project (VITE_SUPABASE_URL in .env)
+      SUPABASE_PROJECT_REF: bngziuiofcnwgkseknrf
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.122.0
+      - run: supabase link --project-ref "$SUPABASE_PROJECT_REF"
+      - name: Show what will be applied
+        run: supabase migration list --linked
+      - run: supabase db push --linked

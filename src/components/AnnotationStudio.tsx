@@ -197,10 +197,10 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
     const apply = () => {
       const doc = iframe.contentDocument;
       if (!doc?.head) return;
-      doc.getElementById('webreview-fix-preview')?.remove();
+      doc.getElementById('vpin-fix-preview')?.remove();
       if (!previewCss) return;
       const style = doc.createElement('style');
-      style.id = 'webreview-fix-preview';
+      style.id = 'vpin-fix-preview';
       style.textContent = previewCss;
       doc.head.appendChild(style);
     };
@@ -268,7 +268,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
   // Listen for auto-detected full webpage height from proxied website iframe
   useEffect(() => {
     const handleHeightMsg = (e: MessageEvent) => {
-      if (e.data && e.data.type === 'MARKUP_FULL_PAGE_HEIGHT' && typeof e.data.height === 'number') {
+      if (e.data && e.data.type === 'VPIN_FULL_PAGE_HEIGHT' && typeof e.data.height === 'number') {
         const detected = Math.min(Math.max(e.data.height, 600), 40000);
         // Bookkeeping lives outside the state updater (React may run updaters more than once)
         const current = pageHeightRef.current;
@@ -299,7 +299,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
   useEffect(() => {
     const handleNavigate = (e: MessageEvent) => {
       if (e.source !== iframeRef.current?.contentWindow) return;
-      if (e.data?.type === 'MARKUP_NAVIGATE' && typeof e.data.url === 'string') {
+      if (e.data?.type === 'VPIN_NAVIGATE' && typeof e.data.url === 'string') {
         onNavigatePageRef.current(e.data.url);
       }
     };
@@ -1220,7 +1220,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
                           onClick={handleCaptureScreenshot}
                           disabled={isCapturingScreenshot}
                           className="flex-1 text-[11px] bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 font-bold px-2 py-1.5 rounded-lg flex items-center justify-center gap-1 transition-colors cursor-pointer disabled:opacity-50"
-                          title="Auto-crop localized page area around pin (Markup.io style)"
+                          title="Auto-crop localized page area around pin"
                         >
                           {isCapturingScreenshot ? (
                             <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600" />

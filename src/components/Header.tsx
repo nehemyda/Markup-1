@@ -68,7 +68,7 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({
-  appName = 'WebReview Pro',
+  appName = 'Vpin',
   appIcon = 'W',
   isGuestMode = false,
   onToggleGuestMode,

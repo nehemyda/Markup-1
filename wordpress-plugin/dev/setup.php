@@ -7,22 +7,22 @@
 // Run as the site administrator (Elementor checks permissions when site settings change)
 wp_set_current_user(1);
 
-if (get_option('blogname') !== 'WebReview Test Site') {
-	update_option('blogname', 'WebReview Test Site');
+if (get_option('blogname') !== 'Vpin Test Site') {
+	update_option('blogname', 'Vpin Test Site');
 }
 if (get_option('permalink_structure') !== '/%postname%/') {
 	update_option('permalink_structure', '/%postname%/');
 	flush_rewrite_rules();
 }
 
-// Dedicated agent user (Editor role), allowed in WebReview Connector
+// Dedicated agent user (Editor role), allowed in Vpin Connector
 $agent = get_user_by('login', 'webreview-agent');
 if (!$agent) {
 	$agent_id = wp_insert_user(array(
 		'user_login' => 'webreview-agent',
 		'user_pass' => wp_generate_password(32),
 		'user_email' => 'webreview-agent@example.test',
-		'display_name' => 'WebReview Agent',
+		'display_name' => 'Vpin Agent',
 		'role' => 'editor',
 	));
 	$agent = get_user_by('id', $agent_id);
@@ -36,7 +36,7 @@ if (!in_array($agent->ID, $allowed, true)) {
 // Application Password for the agent (created once; the plain password is only shown at creation)
 $credentials_file = WP_CONTENT_DIR . '/webreview-test-credentials.json';
 if (!file_exists($credentials_file) && class_exists('WP_Application_Passwords')) {
-	$created = WP_Application_Passwords::create_new_application_password($agent->ID, array('name' => 'WebReview Pro (local test)'));
+	$created = WP_Application_Passwords::create_new_application_password($agent->ID, array('name' => 'Vpin (local test)'));
 	if (!is_wp_error($created)) {
 		file_put_contents($credentials_file, wp_json_encode(array(
 			'site_url' => home_url('/'),
@@ -68,7 +68,7 @@ if (!$home) {
 if (!get_page_by_path('divi-sample')) {
 	$divi_content = '[et_pb_section fb_built="1" _builder_version="4.27.4"][et_pb_row _builder_version="4.27.4"][et_pb_column type="4_4" _builder_version="4.27.4"]'
 		. '[et_pb_text _builder_version="4.27.4" header_text_color="#1E293B" header_font_size="36px"]<h1>Divi sample heading</h1>[/et_pb_text]'
-		. '[et_pb_text _builder_version="4.27.4"]<p>This page is built with Divi so the WebReview agent can be tested on it.</p>[/et_pb_text]'
+		. '[et_pb_text _builder_version="4.27.4"]<p>This page is built with Divi so the Vpin agent can be tested on it.</p>[/et_pb_text]'
 		. '[et_pb_button button_text="Request service" button_url="#contact" _builder_version="4.27.4"][/et_pb_button]'
 		. '[/et_pb_column][/et_pb_row][/et_pb_section]';
 	$divi_id = wp_insert_post(array(
@@ -93,7 +93,7 @@ if (defined('ELEMENTOR_VERSION') && !get_page_by_path('elementor-sample')) {
 			array('id' => 'h1e2a3d', 'elType' => 'widget', 'widgetType' => 'heading', 'elements' => array(),
 				'settings' => array('title' => 'Elementor sample heading', 'header_size' => 'h1', 'title_color' => '#1E293B')),
 			array('id' => 't1x2t3e', 'elType' => 'widget', 'widgetType' => 'text-editor', 'elements' => array(),
-				'settings' => array('editor' => '<p>This page is built with Elementor so the WebReview agent can be tested on it.</p>')),
+				'settings' => array('editor' => '<p>This page is built with Elementor so the Vpin agent can be tested on it.</p>')),
 			array('id' => 'b1t2n3x', 'elType' => 'widget', 'widgetType' => 'button', 'elements' => array(),
 				'settings' => array('text' => 'Request service', 'link' => array('url' => '#contact'), 'background_color' => '#2563EB')),
 		),

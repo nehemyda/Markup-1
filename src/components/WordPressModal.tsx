@@ -44,7 +44,7 @@ async function downloadPlugin(version: string) {
   const url = URL.createObjectURL(await res.blob());
   const a = document.createElement('a');
   a.href = url;
-  a.download = `webreview-connector-${version}.zip`;
+  a.download = `vpin-connector-${version}.zip`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
@@ -203,7 +203,7 @@ export const WordPressModal: React.FC<WordPressModalProps> = ({ isOpen, onClose,
               {needsUpdate && (
                 <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-[11px] text-amber-900 space-y-2">
                   <div>
-                    <strong>Plugin update available:</strong> this site has WebReview Connector {site!.pluginVersion}; the latest is {latestVersion}.
+                    <strong>Plugin update available:</strong> this site has Vpin Connector {site!.pluginVersion}; the latest is {latestVersion}.
                     Newer features (like changing text across the whole site) need the update.
                   </div>
                   {isAdmin ? (
@@ -261,12 +261,12 @@ export const WordPressModal: React.FC<WordPressModalProps> = ({ isOpen, onClose,
             <form onSubmit={connect} className="space-y-3">
               <ol className="list-decimal pl-4 space-y-1 text-[11px] text-slate-600">
                 <li>
-                  Install and activate the <strong>WebReview Connector</strong> plugin on the site
+                  Install and activate the <strong>Vpin Connector</strong> plugin on the site
                   {latestVersion && (
                     <> (<button type="button" onClick={download} className="text-blue-600 hover:underline font-semibold">download {latestVersion}</button>)</>
                   )}.
                 </li>
-                <li>Create a WordPress user for WebReview (Editor is enough) and allow it under Settings → WebReview Connector.</li>
+                <li>Create a WordPress user for Vpin (Editor is enough) and allow it under Settings → Vpin Connector.</li>
                 <li>Log in as that user, create an <strong>Application Password</strong> under Users → Profile, and paste it below.</li>
               </ol>
               <label className="block space-y-1">

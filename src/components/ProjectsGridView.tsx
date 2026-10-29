@@ -211,7 +211,7 @@ const WebsiteThumbnailPreview: React.FC<{
 };
 
 export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
-  appName = 'WebReview Pro',
+  appName = 'Vpin',
   appIcon = 'W',
   onUpdateBranding,
   projects,
@@ -1280,7 +1280,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
             {/* Header Controls */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-200/80 pb-4 gap-4 relative">
               <div>
-                <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Archived Markups & Projects</h1>
+                <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Archived Projects</h1>
                 <p className="text-xs text-slate-500 mt-0.5">
                   Archived projects are stored for reference. Click any card to view in Studio or click Restore.
                 </p>
@@ -1298,7 +1298,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                       autoFocus
                       value={archiveSearchQuery}
                       onChange={(e) => setArchiveSearchQuery(e.target.value)}
-                      placeholder="Search archived markups..."
+                      placeholder="Search archived projects..."
                       className="bg-white border-2 border-indigo-600 rounded-xl pl-8 pr-8 py-1.5 text-xs text-slate-900 focus:outline-none w-56 shadow-2xs font-medium"
                     />
                     <button
@@ -1319,7 +1319,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                         ? 'bg-indigo-50 border-indigo-500 text-indigo-700'
                         : 'border-slate-200 text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                     }`}
-                    title="Search archived markups"
+                    title="Search archived projects"
                   >
                     <Search className="w-4 h-4" />
                     {archiveSearchQuery && <span className="max-w-[80px] truncate">{archiveSearchQuery}</span>}
@@ -1338,7 +1338,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                         ? 'bg-indigo-600 text-white border-indigo-600 shadow-2xs'
                         : 'border-slate-200 text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                     }`}
-                    title="Filter archived markups"
+                    title="Filter archived projects"
                   >
                     <Filter className="w-4 h-4" />
                     {activeArchiveFilterCount > 0 && (
@@ -1354,7 +1354,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                       <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                         <span className="font-extrabold text-slate-900 flex items-center gap-1.5">
                           <Filter className="w-3.5 h-3.5 text-indigo-600" />
-                          <span>Filter Markups</span>
+                          <span>Filter Projects</span>
                         </span>
                         {activeArchiveFilterCount > 0 && (
                           <button
@@ -1539,7 +1539,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
               </div>
             </div>
 
-            {/* Grid of Archived Markups - CLICKABLE & RESTORABLE */}
+            {/* Grid of Archived Projects - CLICKABLE & RESTORABLE */}
             <div className={`grid ${gridColumnClass} gap-6`}>
               {filteredArchivedItems.map((item) => (
                 <div
@@ -1674,7 +1674,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                   <div className="w-12 h-12 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center mx-auto text-xl">
                     🔍
                   </div>
-                  <div className="text-sm font-bold text-slate-800">No archived markups found</div>
+                  <div className="text-sm font-bold text-slate-800">No archived projects found</div>
                   <p className="text-xs text-slate-500 max-w-sm mx-auto">
                     Try adjusting your search query or reset category/comment filters.
                   </p>
@@ -2137,7 +2137,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                             <span>Invite Teammates & External Reviewers</span>
                           </div>
                           <p className="text-[11px] text-slate-500 mt-0.5">
-                            Generate share invite links or add guests to specific project markups.
+                            Generate share invite links or add guests to specific projects.
                           </p>
                         </td>
                         <td className="py-4 px-4 text-center">
@@ -2193,12 +2193,12 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                         </td>
                       </tr>
 
-                      {/* Row 5: Delete Projects & Markups */}
+                      {/* Row 5: Delete Projects */}
                       <tr className="hover:bg-slate-50/50 transition-colors">
                         <td className="py-4 px-6">
                           <div className="font-bold text-slate-900 flex items-center gap-2">
                             <Trash2 className="w-4 h-4 text-rose-600 shrink-0" />
-                            <span>Delete Active Projects & Markups</span>
+                            <span>Delete Active Projects</span>
                           </div>
                           <p className="text-[11px] text-slate-500 mt-0.5">
                             Permanently delete project cards, assets, and comment threads.
@@ -2455,7 +2455,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                         maxLength={40}
                         value={draft.appName}
                         onChange={(e) => setBrandDraft({ ...draft, appName: e.target.value })}
-                        placeholder="e.g. WebReview Pro"
+                        placeholder="e.g. Vpin"
                         disabled={!canEditDomainAccess}
                         className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-2.5 text-xs text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white disabled:opacity-60 disabled:cursor-not-allowed"
                       />

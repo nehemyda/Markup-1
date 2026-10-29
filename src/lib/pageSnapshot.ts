@@ -136,7 +136,7 @@ export async function capturePageSnapshot(
   if (!doc || !win || !doc.body) {
     throw new Error('The page has not finished loading yet. Wait a moment and try again.');
   }
-  if (doc.querySelector('meta[name="markup-proxy-error"]')) {
+  if (doc.querySelector('meta[name="vpin-proxy-error"]')) {
     throw new Error('This website could not be loaded into the canvas, so there is nothing to review.');
   }
 

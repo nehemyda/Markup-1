@@ -9,7 +9,7 @@ const params = new URLSearchParams(window.location.search);
 export const extensionConnectState =
   window.location.pathname === '/extension/connect' && /^[A-Za-z0-9_-]{24,100}$/.test(params.get('state') || '') ? params.get('state') : null;
 
-// Approve the Markup Chrome extension for the signed-in member
+// Approve the Vpin Chrome extension for the signed-in member
 export const ExtensionConnectPage: React.FC<{ user: AuthUser; appName: string; onClose: () => void }> = ({ user, appName, onClose }) => {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);

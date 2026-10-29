@@ -1,6 +1,6 @@
 # Supabase setup
 
-Markup stores its data in Supabase (Postgres) and signs people in with Supabase Auth. Live updates use Supabase Realtime.
+Vpin stores its data in Supabase (Postgres) and signs people in with Supabase Auth. Live updates use Supabase Realtime.
 
 ## 1. Create the project
 
@@ -26,7 +26,7 @@ npm run migrate:import
 
 This loads `migration/firebase-export.json` (made earlier with `npm run migrate:export`) into Supabase. Team members get a Supabase account with the same email. Passwords cannot be moved, so members sign in with Google, or click **Forgot?** once to set a new password. Run the import before starting the new server for the first time.
 
-Keep `WEBREVIEW_SECRET_KEY` in `.env` unchanged. The saved WordPress passwords are encrypted with it.
+Keep `VPIN_SECRET_KEY` in `.env` unchanged. The saved WordPress passwords are encrypted with it.
 
 ## Checking the security rules
 

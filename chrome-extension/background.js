@@ -1,4 +1,4 @@
-// Background worker: checks Markup every minute, keeps the toolbar badge (unread notifications) up to date and
+// Background worker: checks Vpin every minute, keeps the toolbar badge (unread notifications) up to date and
 // shows a desktop alert for each new notification. Also finishes connecting once the member approves in the app.
 import { api, claimConnection, getConfig, NotConnectedError, pinUrl } from './shared.js';
 
@@ -35,7 +35,7 @@ async function alertNew(notifications) {
   const fresh = notifications.filter((n) => !n.read && !seen.has(n.id));
   if (primed) {
     for (const n of fresh.slice(0, MAX_ALERTS)) {
-      await chrome.notifications.create(`markup:${n.id}`, {
+      await chrome.notifications.create(`vpin:${n.id}`, {
         type: 'basic',
         iconUrl: 'icons/icon-128.png',
         title: n.title,
@@ -44,11 +44,11 @@ async function alertNew(notifications) {
       });
     }
     if (fresh.length > MAX_ALERTS) {
-      await chrome.notifications.create('markup:more', {
+      await chrome.notifications.create('vpin:more', {
         type: 'basic',
         iconUrl: 'icons/icon-128.png',
         title: `${fresh.length - MAX_ALERTS} more new notifications`,
-        message: 'Open the Markup extension to see them all.',
+        message: 'Open the Vpin extension to see them all.',
       });
     }
   }
@@ -60,11 +60,11 @@ async function alertNew(notifications) {
 chrome.notifications.onClicked.addListener(async (notificationId) => {
   chrome.notifications.clear(notificationId);
   const { server, summary } = await getConfig();
-  if (notificationId === 'markup:more') {
+  if (notificationId === 'vpin:more') {
     chrome.tabs.create({ url: server });
     return;
   }
-  const id = notificationId.replace(/^markup:/, '');
+  const id = notificationId.replace(/^vpin:/, '');
   const n = summary?.notifications?.find((x) => x.id === id);
   chrome.tabs.create({ url: n?.projectId ? pinUrl(server, n.projectId, n.pinId) : server });
   try {

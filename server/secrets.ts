@@ -1,21 +1,21 @@
 // Encryption for secrets kept on the server (e.g. WordPress Application Passwords): AES-256-GCM with a key from
-// WEBREVIEW_SECRET_KEY. Locally the key is generated into .env on first use; in production set it in the
-// hosting environment (or a secret manager) and never commit it.
+// VPIN_SECRET_KEY (older setups still use WEBREVIEW_SECRET_KEY). Locally the key is generated into .env on first use;
+// in production set it in the hosting environment (or a secret manager) and never commit it.
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
 function secretKey(): Buffer {
-  let key = process.env.WEBREVIEW_SECRET_KEY;
+  let key = process.env.VPIN_SECRET_KEY || process.env.WEBREVIEW_SECRET_KEY;
   if (!key) {
-    if (process.env.NODE_ENV === 'production') throw new Error('WEBREVIEW_SECRET_KEY is not set.');
+    if (process.env.NODE_ENV === 'production') throw new Error('VPIN_SECRET_KEY is not set.');
     key = crypto.randomBytes(32).toString('base64');
-    fs.appendFileSync(path.join(process.cwd(), '.env'), `\n# Encryption key for secrets stored by the server (keep private)\nWEBREVIEW_SECRET_KEY=${key}\n`);
-    process.env.WEBREVIEW_SECRET_KEY = key;
-    console.warn('Generated WEBREVIEW_SECRET_KEY and saved it to .env');
+    fs.appendFileSync(path.join(process.cwd(), '.env'), `\n# Encryption key for secrets stored by the server (keep private)\nVPIN_SECRET_KEY=${key}\n`);
+    process.env.VPIN_SECRET_KEY = key;
+    console.warn('Generated VPIN_SECRET_KEY and saved it to .env');
   }
   const buf = Buffer.from(key, 'base64');
-  if (buf.length !== 32) throw new Error('WEBREVIEW_SECRET_KEY must be 32 bytes, base64-encoded.');
+  if (buf.length !== 32) throw new Error('VPIN_SECRET_KEY must be 32 bytes, base64-encoded.');
   return buf;
 }
 

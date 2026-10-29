@@ -546,7 +546,7 @@ Body class for page-only CSS: body.${input.bodyClass}
 ${builder === 'elementor' ? 'Elementor elements (id, type, parentId, settings):' : builder === 'divi' ? 'Divi modules in page order (module = the class Divi gives it on the page), then the page content (post_content):' : 'Page content (post_content):'}
 ${input.pageData}
 
-## CSS already added by WebReview (site-wide)
+## CSS already added by Vpin (site-wide)
 ${input.siteCss.trim() || '(none)'}
 
 ## Rules
@@ -749,7 +749,7 @@ export async function prepareFix(opts: {
     // Site-wide replace arrived in plugin 0.5.0
     const site = await getRow('wp_sites', projectId);
     if (compareVersions(site?.pluginVersion, '0.5.0') < 0) {
-      throw new WpError(`Changing text across the whole site needs WebReview Connector 0.5.0 or newer; this site has ${site?.pluginVersion || 'an older version'}. An admin can download the latest plugin from the WordPress button and upload it under Plugins → Add New → Upload Plugin.`, 409);
+      throw new WpError(`Changing text across the whole site needs Vpin Connector 0.5.0 or newer; this site has ${site?.pluginVersion || 'an older version'}. An admin can download the latest plugin from the WordPress button and upload it under Plugins → Add New → Upload Plugin.`, 409);
     }
     // Every place it would change, so the admin approves the full list
     const preview = await wpRequest(creds, '/webreview/v1/site-replace/preview', { method: 'POST', body: { find, replace, whole_word: wholeWord } });
@@ -899,9 +899,9 @@ export async function applyFix(projectId: string, fixId: string, actor: Actor, i
         body: { ...common, content: content.slice(0, index) + withImage(fix.replace) + content.slice(index + fix.find.length), expected_hash: fix.baseHash },
       });
     } else if (fix.kind === 'css') {
-      // CSS fixes are added to the end of WebReview's CSS, so other fixes in between don't matter
+      // CSS fixes are added to the end of Vpin's CSS, so other fixes in between don't matter
       const current = await wpRequest(creds, '/webreview/v1/css');
-      const css = `${String(current.css || '').trimEnd()}\n\n/* WebReview fix ${fixId} — pin #${fix.pinNumber}: ${fix.summary.replace(/\*\//g, '')} */\n${fix.css}\n`.trimStart();
+      const css = `${String(current.css || '').trimEnd()}\n\n/* Vpin fix ${fixId} — pin #${fix.pinNumber}: ${fix.summary.replace(/\*\//g, '')} */\n${fix.css}\n`.trimStart();
       result = await wpRequest(creds, '/webreview/v1/css', { method: 'POST', body: { ...common, css, expected_hash: current.hash } });
     } else {
       throw new WpError('This fix cannot be applied.', 400);

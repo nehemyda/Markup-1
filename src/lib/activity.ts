@@ -76,7 +76,7 @@ export function buildActivity(projectId: string, pins: Pin[], revisions: Revisio
     const submitter = person(r.submittedBy, r.submittedBy?.isGuest ? 'Client' : 'Member');
     add({ id: `rev_${r.id}`, author: submitter, action: `submitted Revision ${r.number} with`, targetName: `${count} ${count === 1 ? 'pin' : 'pins'}`, type: 'approval' }, time(r.submittedAt));
     if (r.doneAt) {
-      add({ id: `rev_done_${r.id}`, author: person({ name: 'Markup' }, 'System'), action: `Revision ${r.number} is`, targetName: 'done', type: 'approval' }, time(r.doneAt));
+      add({ id: `rev_done_${r.id}`, author: person({ name: 'Vpin' }, 'System'), action: `Revision ${r.number} is`, targetName: 'done', type: 'approval' }, time(r.doneAt));
     }
   }
 

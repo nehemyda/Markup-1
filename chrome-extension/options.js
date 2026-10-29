@@ -15,7 +15,7 @@ async function save(value) {
     if (!['http:', 'https:'].includes(url.protocol)) throw new Error();
     origin = url.origin;
   } catch {
-    return show('Enter a full address, like https://markup.example.com', false);
+    return show('Enter a full address, like https://vpin.example.com', false);
   }
   const { server } = await getConfig();
   if (origin === server) return show('Saved.');
@@ -24,7 +24,7 @@ async function save(value) {
     const granted = await chrome.permissions.request({ origins: [`${origin}/*`] });
     if (!granted) return show('Chrome did not allow access to that address.', false);
   }
-  // A key belongs to one Markup: connect again on the new address
+  // A key belongs to one Vpin: connect again on the new address
   await disconnect();
   await chrome.storage.local.set({ server: origin });
   input.value = origin;

@@ -1,15 +1,15 @@
 <?php
 /**
- * Plugin Name: WebReview Connector
- * Description: Lets WebReview Pro read pages and apply approved fixes (Elementor, Divi, Gutenberg, site CSS) safely, with a backup before every change and one-click undo.
+ * Plugin Name: Vpin Connector
+ * Description: Lets Vpin read pages and apply approved fixes (Elementor, Divi, Gutenberg, site CSS) safely, with a backup before every change and one-click undo.
  * Version: 0.5.0
  * Requires at least: 5.6
  * Requires PHP: 7.4
  * Author: YourDigitalAgents
  * License: GPL-2.0-or-later
  *
- * How it connects: the WebReview app calls this plugin's REST API (/wp-json/webreview/v1/...) using a WordPress
- * Application Password of a dedicated user. Only users an administrator allows under Settings > WebReview
+ * How it connects: the Vpin app calls this plugin's REST API (/wp-json/webreview/v1/...) using a WordPress
+ * Application Password of a dedicated user. Only users an administrator allows under Settings > Vpin
  * Connector (plus administrators) can use it. It never edits plugins, themes, PHP files or users.
  */
 
@@ -45,7 +45,7 @@ function webreview_permission() {
 		return new WP_Error('webreview_not_logged_in', 'The username or Application Password was not accepted.', array('status' => 401));
 	}
 	if (!webreview_user_is_allowed()) {
-		return new WP_Error('webreview_forbidden', 'This user is not allowed to use WebReview Connector. An administrator can allow it under Settings > WebReview Connector.', array('status' => 403));
+		return new WP_Error('webreview_forbidden', 'This user is not allowed to use Vpin Connector. An administrator can allow it under Settings > Vpin Connector.', array('status' => 403));
 	}
 	return true;
 }
@@ -159,7 +159,7 @@ function webreview_clear_divi_cache($post_id) {
 	}
 }
 
-// Fingerprint of what a change edits (page builder data, page content or site CSS). WebReview sends the fingerprint it
+// Fingerprint of what a change edits (page builder data, page content or site CSS). Vpin sends the fingerprint it
 // saw; if the page changed since, the change is refused instead of overwriting someone else's edit.
 function webreview_target_hash($kind, $post_id = 0) {
 	if ($kind === 'css') {
@@ -246,7 +246,7 @@ function webreview_snapshot_to_array($post) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Site CSS managed by WebReview (works with any builder or theme). Versioned through snapshots.
+// Site CSS managed by Vpin (works with any builder or theme). Versioned through snapshots.
 // ---------------------------------------------------------------------------------------------------------------------
 
 add_action('wp_head', function () {
@@ -641,7 +641,7 @@ add_action('rest_api_init', function () {
 		},
 	));
 
-	// Site CSS managed by WebReview.
+	// Site CSS managed by Vpin.
 	register_rest_route($ns, '/css', array(
 		array(
 			'methods' => 'GET',
@@ -806,7 +806,7 @@ add_action('rest_api_init', function () {
 // ---------------------------------------------------------------------------------------------------------------------
 
 add_action('admin_menu', function () {
-	add_options_page('WebReview Connector', 'WebReview Connector', 'manage_options', 'webreview-connector', 'webreview_settings_page');
+	add_options_page('Vpin Connector', 'Vpin Connector', 'manage_options', 'webreview-connector', 'webreview_settings_page');
 });
 
 function webreview_settings_page() {
@@ -823,10 +823,10 @@ function webreview_settings_page() {
 	$changes = get_posts(array('post_type' => WEBREVIEW_SNAPSHOT_TYPE, 'post_status' => 'private', 'posts_per_page' => 20, 'orderby' => 'ID', 'order' => 'DESC'));
 	?>
 	<div class="wrap">
-		<h1>WebReview Connector</h1>
-		<p>WebReview Pro uses this plugin to apply approved fixes. Every change is backed up first and can be undone.</p>
+		<h1>Vpin Connector</h1>
+		<p>Vpin uses this plugin to apply approved fixes. Every change is backed up first and can be undone.</p>
 		<h2>Allowed users</h2>
-		<p>Create a dedicated user (Editor role is enough), allow it here, then create an <strong>Application Password</strong> for it under <em>Users &gt; Profile</em> and paste it into WebReview Pro. Administrators are always allowed.</p>
+		<p>Create a dedicated user (Editor role is enough), allow it here, then create an <strong>Application Password</strong> for it under <em>Users &gt; Profile</em> and paste it into Vpin. Administrators are always allowed.</p>
 		<form method="post">
 			<?php wp_nonce_field('webreview_settings'); ?>
 			<?php foreach ($users as $user) : ?>

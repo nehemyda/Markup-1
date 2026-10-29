@@ -15,7 +15,7 @@ export interface GuestPolicy {
   guestLinksEnabled: boolean;
 }
 
-export const DEFAULT_BRANDING: Branding = { appName: 'WebReview Pro', appIcon: 'auto' };
+export const DEFAULT_BRANDING: Branding = { appName: 'Vpin', appIcon: 'auto' };
 export const DEFAULT_GUEST_POLICY: GuestPolicy = { guestLinksEnabled: true };
 
 function useSetting<T extends object>(id: string, defaults: T, pick: (data: any) => Partial<T>): T {
@@ -47,10 +47,10 @@ export function saveGuestPolicy(policy: Partial<GuestPolicy>) {
   return mergeSetting('access', policy);
 }
 
-// "WebReview Pro" -> "WP", "Markup" -> "M"
+// "V Pins" -> "VP", "Vpin" -> "V"
 export function brandInitials(appName: string) {
   const words = appName.trim().split(/\s+/).filter(Boolean);
-  if (!words.length) return 'W';
+  if (!words.length) return 'V';
   const letters = words.length === 1 ? words[0].slice(0, 1) : words.slice(0, 2).map((w) => w[0]).join('');
   return letters.toUpperCase();
 }

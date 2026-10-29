@@ -193,7 +193,7 @@ export async function buildSummary(now = Date.now(), timeZone = DEFAULT_SUMMARY.
   }
 
   const date = new Intl.DateTimeFormat('en-GB', { timeZone, weekday: 'short', day: 'numeric', month: 'short' }).format(now);
-  if (!open && !waiting) return `*Markup daily summary · ${date}*\nNo open pins. Nice work! 🎉`;
+  if (!open && !waiting) return `*Vpin daily summary · ${date}*\nNo open pins. Nice work! 🎉`;
   const rows = [...people.entries()].sort((a, b) => b[1].open - a[1].open);
   const shown = rows.slice(0, 30);
   const lines = shown.map(([uid, row]) => {
@@ -202,13 +202,13 @@ export async function buildSummary(now = Date.now(), timeZone = DEFAULT_SUMMARY.
     return `*${plain(team.get(uid) || 'Someone', 60)}*: ${row.open} open${extras.length ? ` (${extras.join(', ')})` : ''}\n      ${where}${row.perProject.size > 3 ? ` · +${row.perProject.size - 3} more` : ''}`;
   });
   return [
-    `*Markup daily summary · ${date}*`,
+    `*Vpin daily summary · ${date}*`,
     `${open} open ${open === 1 ? 'pin' : 'pins'}${newFromClients ? `, ${newFromClients} new from clients in the last 24 hours` : ''}${waiting ? `. ${waiting} waiting on customers` : ''}.`,
     '',
     ...lines,
     ...(rows.length > shown.length ? [`…and ${rows.length - shown.length} more people with open pins.`] : []),
     '',
-    `<${APP_URL}|Open Markup>`,
+    `<${APP_URL}|Open Vpin>`,
   ].join('\n');
 }
 

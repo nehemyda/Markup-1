@@ -1,4 +1,4 @@
-// Markup Chrome extension: connecting it to a member's account, and what it shows (unread notifications, the
+// Vpin Chrome extension: connecting it to a member's account, and what it shows (unread notifications, the
 // member's open pins). The extension never sees a password: the member approves it in the app and the extension
 // gets its own access key, which can be disconnected at any time.
 //

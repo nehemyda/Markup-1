@@ -1,6 +1,6 @@
 // Shared by the popup, the options page and the background worker.
 // Storage (chrome.storage.local):
-//   server        Markup's address, e.g. http://localhost:3000 (Options page)
+//   server        Vpin's address, e.g. http://localhost:3000 (Options page)
 //   key           this extension's access key (from connecting; never the password)
 //   user          { name, email } of the connected member
 //   pendingState  random value while a connect is waiting for approval in the app
@@ -15,7 +15,7 @@ export async function getConfig() {
 
 export class NotConnectedError extends Error {}
 
-// Calls Markup's server with this extension's key
+// Calls Vpin's server with this extension's key
 export async function api(path, init = {}) {
   const { server, key } = await getConfig();
   if (!key) throw new NotConnectedError('Not connected.');
@@ -26,7 +26,7 @@ export async function api(path, init = {}) {
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', ...(init.headers || {}) },
     });
   } catch {
-    throw new Error(`Can't reach Markup at ${server}.`);
+    throw new Error(`Can't reach Vpin at ${server}.`);
   }
   if (res.status === 401) {
     // Disconnected (or the account was removed): forget the key
@@ -34,11 +34,11 @@ export async function api(path, init = {}) {
     throw new NotConnectedError('Disconnected. Connect again.');
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Markup answered ${res.status}.`);
+  if (!res.ok) throw new Error(data.error || `Vpin answered ${res.status}.`);
   return data;
 }
 
-// Connecting: open Markup, where the member approves; the extension then claims its key
+// Connecting: open Vpin, where the member approves; the extension then claims its key
 export async function startConnect() {
   const bytes = crypto.getRandomValues(new Uint8Array(24));
   const state = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');

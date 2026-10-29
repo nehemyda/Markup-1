@@ -956,7 +956,7 @@ export default function App() {
       const aiReviewer: Teammate = {
         id: 'ai_gemini',
         name: 'Gemini AI Review',
-        email: 'ai-review@markup.local',
+        email: 'ai-review@vpin.local',
         avatar: '',
         role: 'Reviewer',
         status: 'online',

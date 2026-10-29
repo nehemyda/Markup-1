@@ -127,7 +127,7 @@ export const GoogleChatSettings: React.FC<{ canEdit: boolean }> = ({ canEdit }) 
             </button>
           </div>
           <p className="text-[11px] text-slate-500 leading-relaxed">
-            In Google Chat, open the space → space name → <strong>Apps &amp; integrations</strong> → <strong>Webhooks</strong> → Add webhook (name it "Markup"), then copy the link here. The link is stored on the server only.
+            In Google Chat, open the space → space name → <strong>Apps &amp; integrations</strong> → <strong>Webhooks</strong> → Add webhook (name it "Vpin"), then copy the link here. The link is stored on the server only.
           </p>
         </form>
 

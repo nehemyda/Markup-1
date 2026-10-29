@@ -84,7 +84,7 @@ export async function notifyTeam(
       assetId: null,
       actor: actor
         ? { id: actor.id, name: actor.name, avatar: '', email: actor.email, isGuest: actor.isGuest }
-        : { id: '', name: 'Markup', avatar: '', email: '', isGuest: false },
+        : { id: '', name: 'Vpin', avatar: '', email: '', isGuest: false },
       read: false,
       createdAt: now(),
     }));
@@ -175,13 +175,13 @@ export async function submitRevision(projectId: string, by: Submitter) {
     ...(by.isGuest && by.email ? [`Client email: ${by.email}`] : []),
   ];
   for (const r of told) {
-    await sendEmail([r.email], r.forName ? `${title} (for ${r.forName}, out of office)` : title, emailLines, { label: 'Open in Markup', url: projectLink(projectId) });
+    await sendEmail([r.email], r.forName ? `${title} (for ${r.forName}, out of office)` : title, emailLines, { label: 'Open in Vpin', url: projectLink(projectId) });
   }
   await tellChat(projectId, [
     `*${plain(who)} submitted Revision ${number} on ${plain(project.name || 'a project')}* (${count})`,
     people.length > 1 ? people.map((p) => `• ${plain(p.name)}: ${p.count}`).join('\n') : '',
     overLimit ? `_This is over the ${INCLUDED_REVISIONS} included revisions (chargeable)._` : '',
-    `<${projectLink(projectId)}|Open in Markup>`,
+    `<${projectLink(projectId)}|Open in Vpin>`,
   ].filter(Boolean).join('\n'));
 
   return { revision, pinCount: pins.length, overLimit };
@@ -231,5 +231,5 @@ export async function checkRevisionDone(pin: any) {
   if (!project) return;
   const total = revision.pinIds.length;
   await notifyTeam(project, 'revision_done', `rev_${project.id}_${revision.number}_done`, `Revision ${revision.number} on ${project.name || 'a project'} is done`, `All ${total} ${total === 1 ? 'pin is' : 'pins are'} resolved or ready for review. Let the client know with "Copy message for client".`, null);
-  await tellChat(project.id, `*Revision ${revision.number} on ${plain(project.name || 'a project')} is done* (${total} ${total === 1 ? 'pin' : 'pins'}). Let the client know. <${projectLink(project.id)}|Open in Markup>`);
+  await tellChat(project.id, `*Revision ${revision.number} on ${plain(project.name || 'a project')} is done* (${total} ${total === 1 ? 'pin' : 'pins'}). Let the client know. <${projectLink(project.id)}|Open in Vpin>`);
 }

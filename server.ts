@@ -38,7 +38,7 @@ function getAIClient(): GoogleGenAI | null {
       apiKey,
       httpOptions: {
         headers: {
-          'User-Agent': 'webreview-server',
+          'User-Agent': 'vpin-server',
         },
       },
     }));
@@ -574,7 +574,7 @@ async function startServer() {
         const url = String(body.teamWebhookUrl || '').trim();
         if (url) {
           if (!WEBHOOK_PATTERN.test(url)) return res.status(400).json({ error: 'Paste the webhook link from Google Chat (it starts with https://chat.googleapis.com/v1/spaces/).' });
-          await postToChat(url, `✅ *Markup is connected.* New client feedback and a daily summary of open pins will be posted here.`);
+          await postToChat(url, `✅ *Vpin is connected.* New client feedback and a daily summary of open pins will be posted here.`);
           await upsertRow('chat_webhooks', { id: 'team', url, off: null, updatedBy: req.token?.email || '', updatedAt: now() });
           await logAudit(req, 'chat.team_connected', { space: spaceLabel(url) });
         } else {
@@ -633,7 +633,7 @@ async function startServer() {
         // Already posting to its own space and no new link: nothing to change
         if (!url && (await getRow('chat_webhooks', projectId))?.url) return res.json({ ...(await chatStatus(projectId)), canEdit: true });
         if (!WEBHOOK_PATTERN.test(url)) return res.status(400).json({ error: 'Paste the webhook link from Google Chat (it starts with https://chat.googleapis.com/v1/spaces/).' });
-        await postToChat(url, `✅ *Markup is connected for ${String(found.project.name || 'this project').replace(/[*_~`<>|]/g, '')}.* New client feedback on it will be posted here.`);
+        await postToChat(url, `✅ *Vpin is connected for ${String(found.project.name || 'this project').replace(/[*_~`<>|]/g, '')}.* New client feedback on it will be posted here.`);
         await upsertRow('chat_webhooks', { id: projectId, url, off: null, updatedBy: req.token?.email || '', updatedAt: now() });
       } else if (mode === 'off') {
         await upsertRow('chat_webhooks', { id: projectId, url: null, off: true, updatedBy: req.token?.email || '', updatedAt: now() });
@@ -647,13 +647,13 @@ async function startServer() {
     }
   });
 
-  // Latest WebReview Connector plugin: its version, and the zip for admins to install or update
+  // Latest Vpin Connector plugin: its version, and the zip for admins to install or update
   app.get('/api/wp/plugin', requireMember, (req, res) => {
     res.json({ version: LATEST_PLUGIN_VERSION });
   });
   app.get('/api/wp/plugin.zip', requireAdmin, (req, res) => {
     res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="webreview-connector-${LATEST_PLUGIN_VERSION}.zip"`);
+    res.setHeader('Content-Disposition', `attachment; filename="vpin-connector-${LATEST_PLUGIN_VERSION}.zip"`);
     const zip = spawn('zip', ['-rq', '-', 'webreview-connector', '-x', '*.DS_Store'], { cwd: path.dirname(PLUGIN_DIR) });
     zip.stdout.pipe(res);
     zip.on('error', () => res.destroy());
@@ -1152,7 +1152,7 @@ html, body {
     try {
       var height = contentHeight();
       if (height > 200) {
-        window.parent.postMessage({ type: 'MARKUP_FULL_PAGE_HEIGHT', height: height, url: window.location.href }, '*');
+        window.parent.postMessage({ type: 'VPIN_FULL_PAGE_HEIGHT', height: height, url: window.location.href }, '*');
       }
     } catch(e) {}
   }
@@ -1222,7 +1222,7 @@ html, body {
     e.stopPropagation();
     if (url.hostname.replace(/^www\\./, '') === base.hostname.replace(/^www\\./, '')) {
       url.hash = '';
-      window.parent.postMessage({ type: 'MARKUP_NAVIGATE', url: url.href }, '*');
+      window.parent.postMessage({ type: 'VPIN_NAVIGATE', url: url.href }, '*');
     } else {
       window.open(url.href, '_blank', 'noopener');
     }
@@ -1273,7 +1273,7 @@ html, body {
 <!DOCTYPE html>
 <html>
 <head>
-  <meta name="markup-proxy-error" content="1">
+  <meta name="vpin-proxy-error" content="1">
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f8fafc; padding: 40px; text-align: center; }
     .card { max-width: 600px; margin: 40px auto; background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 32px; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5); }
@@ -1339,7 +1339,7 @@ html, body {
   startPreviews(getBrowser);
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 MarkFlow Server running on http://localhost:${PORT}`);
+    console.log(`🚀 Vpin Server running on http://localhost:${PORT}`);
   });
 }
 
