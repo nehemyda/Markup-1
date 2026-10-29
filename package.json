@@ -16,7 +16,8 @@
     "test:db": "node supabase/tests/policies.test.mjs",
     "wp:test": "npx -y @wp-playground/cli@3.1.54 server --port=8881 --php=8.3 --workers=1 --mount-before-install=../wordpress-test-site:/wordpress --wordpress-install-mode=install-from-existing-files-if-needed --mount=./wordpress-plugin/webreview-connector:/wordpress/wp-content/plugins/webreview-connector --mount=./wordpress-plugin/dev:/webreview-dev --blueprint=./wordpress-plugin/dev/blueprint.json --define WP_ENVIRONMENT_TYPE local --login",
     "wp:zip": "mkdir -p build && rm -f build/vpin-connector.zip && cd wordpress-plugin && zip -rq ../build/vpin-connector.zip webreview-connector -x '*.DS_Store'",
-    "ext:zip": "mkdir -p build && rm -f build/vpin-chrome-extension.zip && cd chrome-extension && zip -rq ../build/vpin-chrome-extension.zip . -x '*.DS_Store' 'icons/icon.svg' 'README.md'"
+    "ext:zip": "mkdir -p build && rm -f build/vpin-chrome-extension.zip && cd chrome-extension && zip -rq ../build/vpin-chrome-extension.zip . -x '*.DS_Store' 'icons/icon.svg' 'README.md'",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -37,6 +38,7 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.3.15",
+    "@playwright/test": "1.64.1",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "@types/nodemailer": "^8.0.2",

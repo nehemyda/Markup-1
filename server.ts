@@ -1406,11 +1406,14 @@ html, body {
     });
   });
 
-  startNotifications();
-  startDailySummary();
-  startDeadlineChecks();
-  startTrashCleanup();
-  startPreviews(getBrowser);
+  // BACKGROUND_JOBS=off for a second server on the same database (e.g. end-to-end tests), so only one sends reminders
+  if (process.env.BACKGROUND_JOBS !== 'off') {
+    startNotifications();
+    startDailySummary();
+    startDeadlineChecks();
+    startTrashCleanup();
+    startPreviews(getBrowser);
+  }
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Vpin Server running on http://localhost:${PORT}`);
