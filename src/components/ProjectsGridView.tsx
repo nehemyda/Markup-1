@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Project, Asset, Teammate, ViewMode, Pin, Folder, RolePermissions } from '../types';
+import { RecentlyDeletedModal } from './RecentlyDeletedModal';
 import { projectUrl } from '../lib/routes';
 import { apiFetch } from '../lib/api';
 import { useRolePermissions, saveRolePermission } from '../lib/permissions';
@@ -569,6 +570,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
   const folderNameTaken =
     !!folderDialog?.value.trim() &&
     folders.some((f) => f.id !== folderDialog.folderId && f.name.trim().toLowerCase() === folderDialog.value.trim().toLowerCase());
+  const [showDeleted, setShowDeleted] = useState(false);
   const [activeFolderMenuId, setActiveFolderMenuId] = useState<string | null>(null);
   const [moveMenuProjectId, setMoveMenuProjectId] = useState<string | null>(null);
 
@@ -656,6 +658,15 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-8 pr-3 py-2 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-blue-600 transition-all"
                   />
                 </form>
+
+                <button
+                  onClick={() => setShowDeleted(true)}
+                  title="Recently deleted projects (kept 30 days)"
+                  className="bg-white hover:bg-slate-50 border border-slate-300 text-slate-800 font-bold text-xs px-4 py-2 rounded-xl transition-all shadow-2xs flex items-center gap-1.5 shrink-0 cursor-pointer"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>Recently deleted</span>
+                </button>
 
                 {onCreateFolder && !currentFolderId && (
                   <button
@@ -1075,7 +1086,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                                         setActiveCardMenuId(null);
                                         return;
                                       }
-                                      if (window.confirm(`Are you sure you want to delete "${project.name}"?`)) {
+                                      if (window.confirm(`Delete "${project.name}"? You can restore it from Recently deleted for 30 days.`)) {
                                         onDeleteProject(project.id);
                                       }
                                       setActiveCardMenuId(null);
@@ -1231,6 +1242,8 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
             onClose={() => setAssignProjectId(null)}
           />
         )}
+
+        <RecentlyDeletedModal isOpen={showDeleted} onClose={() => setShowDeleted(false)} currentUser={currentUser} />
 
         {folderDialog && (
           <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center z-[60] p-4">

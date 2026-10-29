@@ -11,6 +11,7 @@ import { saveDataUrl, UPLOAD_DIR, SAFE_FILE, CONTENT_TYPES } from './server/uplo
 import { startNotifications } from './server/notifications';
 import { reopenProject, RevisionError, submitRevision } from './server/revisions';
 import { startDeadlineChecks } from './server/deadlines';
+import { purgeProject, restoreProject, startTrashCleanup, trashProject, TrashError } from './server/trash';
 import { requestPreview, startPreviews } from './server/previews';
 import { approveConnection, claimConnection, disconnect as disconnectExtension, extensionSummary, markRead, requireExtension, ExtensionRequest } from './server/extension';
 import { APP_URL, chatStatus, postToChat, sendSummaryNow, startDailySummary, summarySettings, spaceLabel, DEFAULT_SUMMARY, WEBHOOK_PATTERN } from './server/googleChat';
@@ -518,6 +519,57 @@ async function startServer() {
       res.json(result);
     } catch (err) {
       revisionFail(res, err);
+    }
+  });
+
+  // ---------- Recently deleted projects (kept 30 days, see server/trash.ts) ----------
+  const trashFail = (res: express.Response, err: any) => {
+    if (err instanceof TrashError) return res.status(err.status).json({ error: err.message });
+    console.error('Recently deleted request failed:', err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  };
+  // Admins, or the project's creator, may delete and restore it
+  const mayManage = (req: AuthedRequest, project: any) =>
+    isAdminRole(req.member?.role) || [project?.owner_id, project?.created_by, project?.ownerId, project?.createdBy].includes(req.member!.id);
+
+  app.post('/api/projects/:projectId/delete', requireMember, async (req: AuthedRequest, res) => {
+    const { projectId } = req.params;
+    try {
+      const { data: project } = await supabaseAdmin.from('projects').select('owner_id, created_by, name').eq('id', projectId).maybeSingle();
+      if (!project) return res.status(404).json({ error: 'This project no longer exists.' });
+      if (!mayManage(req, project)) return res.status(403).json({ error: 'Only admins or the project creator can delete it.' });
+      const result = await trashProject(projectId, { id: req.member!.id, name: req.member!.name, email: req.member!.email });
+      await logAudit(req, 'project.deleted', { projectId, name: project.name, pins: result.pinCount });
+      res.json(result);
+    } catch (err) {
+      trashFail(res, err);
+    }
+  });
+
+  app.post('/api/projects/:projectId/restore', requireMember, async (req: AuthedRequest, res) => {
+    const { projectId } = req.params;
+    try {
+      const { data: saved } = await supabaseAdmin.from('deleted_projects').select('project, deleted_by').eq('id', projectId).maybeSingle();
+      if (!saved) return res.status(404).json({ error: 'This project is no longer in Recently deleted.' });
+      if (!mayManage(req, saved.project) && saved.deleted_by?.id !== req.member!.id) {
+        return res.status(403).json({ error: 'Only admins, the project creator or the person who deleted it can restore it.' });
+      }
+      const result = await restoreProject(projectId);
+      await logAudit(req, 'project.restored', { projectId, name: result.name, pins: result.pinCount });
+      res.json(result);
+    } catch (err) {
+      trashFail(res, err);
+    }
+  });
+
+  // Delete for good before the 30 days are up (admins)
+  app.delete('/api/deleted-projects/:projectId', requireAdmin, async (req: AuthedRequest, res) => {
+    try {
+      await purgeProject(req.params.projectId);
+      await logAudit(req, 'project.purged', { projectId: req.params.projectId });
+      res.json({ ok: true });
+    } catch (err) {
+      trashFail(res, err);
     }
   });
 
@@ -1336,6 +1388,7 @@ html, body {
   startNotifications();
   startDailySummary();
   startDeadlineChecks();
+  startTrashCleanup();
   startPreviews(getBrowser);
 
   app.listen(PORT, '0.0.0.0', () => {

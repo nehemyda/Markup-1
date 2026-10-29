@@ -98,7 +98,11 @@ check('admin cannot rename a member', !!(await as(owner, `update users set name=
 check('nobody changes the master admin', !!(await as(owner, `update users set role='Member' where id='owner1'`)).error);
 check('browsers cannot create profiles', !!(await as(mem, `insert into users (id, name) values ('x','x')`)).error);
 check('member creates a project', !(await as(mem, `insert into projects (id, name) values ('P4','x')`)).error);
-check('member deletes a project', (await as(mem, `delete from projects where id='P2'`)).affected === 1);
+check('browsers cannot delete projects (the server keeps them for 30 days)', (await as(mem, `delete from projects where id='P2'`)).affected === 0);
+await db.exec(`insert into deleted_projects (id, name, project) values ('P9', 'old', '{}')`);
+check('member sees recently deleted projects', (await as(mem, `select * from deleted_projects`)).rows?.length === 1);
+check('guest cannot see recently deleted projects', (await as(guest, `select * from deleted_projects`)).rows?.length === 0);
+check('browsers cannot restore or empty the list', !!(await as(mem, `delete from deleted_projects where id='P9'`)).error || (await as(mem, `delete from deleted_projects where id='P9'`)).affected === 0);
 
 // Invites
 check('member invites as Member', !(await as(mem, `insert into invites (id, email, role, invited_by) values ('new@x.com','new@x.com','Member','mem@x.com')`)).error);

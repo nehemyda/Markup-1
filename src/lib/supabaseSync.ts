@@ -240,19 +240,53 @@ export async function deletePin(pinId: string): Promise<void> {
   }
 }
 
-export async function deleteProject(projectId: string): Promise<void> {
-  try {
-    await remove('projects', projectId);
-  } catch (err) {
-    console.warn('Failed deleting project:', err);
-  }
+// ---------- Recently deleted projects ----------
+// Deleting moves the project and its pins to Recently deleted on the server; they can be restored for 30 days.
+
+export interface DeletedProject {
+  id: string;
+  name: string;
+  url: string | null;
+  deletedBy: { id: string; name: string; email: string } | null;
+  deletedAt: string;
+  pinCount: number;
+  createdBy: string | null;
 }
 
-// Delete all pins on the given pages (used when a project is deleted)
-export async function deletePinsForAssets(assetIds: string[]): Promise<void> {
-  if (assetIds.length === 0) return;
-  const { error } = await supabase.from('pins').delete().in('asset_id', assetIds);
-  if (error) console.warn('Failed deleting project pins:', error.message);
+const api = async (path: string, init: RequestInit = { method: 'POST' }) => {
+  const res = await apiFetch(path, init);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `Request failed (${res.status})`);
+  return body;
+};
+
+export async function deleteProject(projectId: string): Promise<void> {
+  await api(`/api/projects/${encodeURIComponent(projectId)}/delete`);
+}
+
+export async function loadDeletedProjects(): Promise<DeletedProject[]> {
+  const { data, error } = await supabase
+    .from('deleted_projects')
+    .select('id, name, url, deleted_by, deleted_at, pins, project')
+    .order('deleted_at', { ascending: false });
+  if (error) throw new Error(error.message);
+  return (data || []).map((r: any) => ({
+    id: r.id,
+    name: r.name,
+    url: r.url,
+    deletedBy: r.deleted_by,
+    deletedAt: r.deleted_at,
+    pinCount: Array.isArray(r.pins) ? r.pins.filter((p: any) => !p.deleted_at).length : 0,
+    createdBy: r.project?.owner_id || r.project?.created_by || null,
+  }));
+}
+
+export async function restoreDeletedProject(projectId: string): Promise<void> {
+  await api(`/api/projects/${encodeURIComponent(projectId)}/restore`);
+}
+
+export async function purgeDeletedProject(projectId: string): Promise<void> {
+  await api(`/api/deleted-projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' });
 }
 
 // ---------- Team members ----------

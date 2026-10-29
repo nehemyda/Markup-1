@@ -31,7 +31,6 @@ import {
   deleteProject,
   savePin,
   deletePin,
-  deletePinsForAssets,
   subscribeTeam,
   subscribeFolders,
   saveFolder,
@@ -1128,8 +1127,11 @@ export default function App() {
   const handleDeleteProject = (projectId: string) => {
     const deletedProject = projects.find((p) => p.id === projectId);
     const assetIds = (deletedProject?.assets || []).map((a) => a.id);
-    deleteProject(projectId);
-    deletePinsForAssets(assetIds);
+    // The server keeps it (with its pins) in Recently deleted for 30 days
+    deleteProject(projectId).catch((err) => {
+      alert(err?.message || 'Could not delete the project.');
+      window.location.reload();
+    });
     setPins((prev) => prev.filter((p) => !assetIds.includes(p.assetId)));
     setProjects((prev) => {
       const updated = prev.filter((p) => p.id !== projectId);
