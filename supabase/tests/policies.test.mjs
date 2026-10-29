@@ -96,6 +96,21 @@ check('member cannot change someone else', !!(await as(mem, `update users set na
 check('admin changes a member\'s role', (await as(owner, `update users set role='Admin' where id='mem1'`)).affected === 1);
 check('admin cannot rename a member', !!(await as(owner, `update users set name='x' where id='mem1'`)).error);
 check('nobody changes the master admin', !!(await as(owner, `update users set role='Member' where id='owner1'`)).error);
+// Owners: only an Owner changes an Owner or makes someone an Owner
+const AD = '00000000-0000-0000-0000-0000000000f1', O2 = '00000000-0000-0000-0000-0000000000f2';
+await db.exec(`
+  insert into auth.users values ('${AD}','admin@x.com'),('${O2}','owner2@x.com');
+  insert into users (id, auth_id, name, email, role) values ('admin1','${AD}','Admin','admin@x.com','Admin'),('owner2','${O2}','Owner Two','owner2@x.com','Owner');
+`);
+const admin = { sub: AD, email: 'admin@x.com' };
+check('admin cannot remove an Owner', !!(await as(admin, `update users set removed = true where id='owner2'`)).error);
+check('admin cannot demote an Owner', !!(await as(admin, `update users set role='Member' where id='owner2'`)).error);
+check('admin cannot make someone an Owner', !!(await as(admin, `update users set role='Owner' where id='mem1'`)).error);
+check('admin still changes a member\'s role', (await as(admin, `update users set role='Admin' where id='mem1'`)).affected === 1);
+check('admin still removes a member', (await as(admin, `update users set removed = true where id='mem2'`)).affected === 1);
+check('an Owner changes another Owner', (await as(owner, `update users set role='Admin' where id='owner2'`)).affected === 1);
+check('admin cannot invite as Owner', !!(await as(admin, `insert into invites (id, email, role, invited_by) values ('o@x.com','o@x.com','Owner','admin@x.com')`)).error);
+check('an Owner invites as Owner', !(await as(owner, `insert into invites (id, email, role, invited_by) values ('o@x.com','o@x.com','Owner','owner@x.com')`)).error);
 check('browsers cannot create profiles', !!(await as(mem, `insert into users (id, name) values ('x','x')`)).error);
 check('member creates a project', !(await as(mem, `insert into projects (id, name) values ('P4','x')`)).error);
 check('browsers cannot delete projects (the server keeps them for 30 days)', (await as(mem, `delete from projects where id='P2'`)).affected === 0);

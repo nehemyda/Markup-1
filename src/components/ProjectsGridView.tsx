@@ -1812,10 +1812,12 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                       const isCurrentUserAdminOrOwner = currentUser.role === 'Admin' || currentUser.role === 'Owner';
                       const isSelf = tm.id === currentUser.id || tm.email.toLowerCase() === currentUser.email.toLowerCase();
                       const isTargetMasterAdmin = tm.isMasterAdmin === true;
-                      const canEditThisMemberRole = isCurrentUserAdminOrOwner && !isSelf && !isTargetMasterAdmin;
+                      // Only an Owner changes or removes an Owner (the database rules enforce it too)
+                      const isOwnerOnlyTarget = tm.role === 'Owner' && currentUser.role !== 'Owner';
+                      const canEditThisMemberRole = isCurrentUserAdminOrOwner && !isSelf && !isTargetMasterAdmin && !isOwnerOnlyTarget;
                       const isTeammateCreator = tm.createdBy === currentUser.email;
                       // Active members: admins only. Pending invites: admins or whoever sent the invite
-                      const canRemoveThisTeammate = !isSelf && !isTargetMasterAdmin && (isCurrentUserAdminOrOwner || (tm.pendingInvite === true && isTeammateCreator));
+                      const canRemoveThisTeammate = !isSelf && !isTargetMasterAdmin && !isOwnerOnlyTarget && (isCurrentUserAdminOrOwner || (tm.pendingInvite === true && isTeammateCreator));
 
                       return (
                         <tr key={tm.id} className="hover:bg-slate-50/50 transition-colors">
@@ -1866,7 +1868,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                             ) : (
                               <span 
                                 className="inline-flex items-center gap-1.5 bg-slate-100 text-slate-800 border border-slate-200/80 px-3 py-1.5 rounded-lg text-xs font-bold cursor-not-allowed"
-                                title={isSelf ? "Members cannot change their own role." : "Only Admins can change member roles."}
+                                title={isSelf ? "Members cannot change their own role." : isOwnerOnlyTarget ? "Only an Owner can change an Owner." : "Only Admins can change member roles."}
                               >
                                 <span>{tm.role}</span>
                                 <Lock className="w-3 h-3 text-slate-400" />
