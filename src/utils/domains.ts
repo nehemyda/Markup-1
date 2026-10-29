@@ -8,7 +8,6 @@ import { mergeSetting, readSetting, subscribeSetting } from '../lib/supabaseSync
 
 export const DEFAULT_ALLOWED_DOMAINS = [
   'yourdigitalagents.com',
-  'yourdigitalagens.com',
   'broadly.com',
   'vendasta.com'
 ];
@@ -21,10 +20,14 @@ function readDomains(data: any): string[] {
 }
 
 // Keep a live copy of the list for synchronous reads (getAllowedDomains) and React (useAllowedDomains)
-subscribeSetting('access', (data) => {
+const useDomains = (data: any) => {
   cachedDomains = readDomains(data);
   listeners.forEach((fn) => fn(cachedDomains));
-});
+};
+subscribeSetting('access', useDomains);
+// Live updates only start once the realtime connection is up, which may not happen for signed-out visitors:
+// read the list once straight away, so the login page offers the workspace's domains
+readSetting('access').then((data) => data && useDomains(data)).catch(() => {});
 
 export function getAllowedDomains(): string[] {
   return [...cachedDomains];

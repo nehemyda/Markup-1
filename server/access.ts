@@ -3,7 +3,7 @@ import type { CallerToken } from './auth';
 import { findRows, getRow, getSetting, deleteRow, insertRow, now, supabaseAdmin, updateRow } from './db';
 import { fromRow } from '../src/lib/rows';
 
-export const DEFAULT_ALLOWED_DOMAINS = ['yourdigitalagents.com', 'yourdigitalagens.com', 'broadly.com', 'vendasta.com'];
+export const DEFAULT_ALLOWED_DOMAINS = ['yourdigitalagents.com', 'broadly.com', 'vendasta.com'];
 const DEFAULT_AVATAR = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80';
 const ORGANIZATION = { id: 'org-yda-enterprise', name: 'YourDigitalAgents Enterprise' };
 
