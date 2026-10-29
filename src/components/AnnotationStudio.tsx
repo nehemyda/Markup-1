@@ -1011,7 +1011,7 @@ export const AnnotationStudio: React.FC<AnnotationStudioProps> = ({
                   ref={iframeRef}
                   src={
                     currentAsset.url.startsWith('http')
-                      ? `/api/proxy-site?url=${encodeURIComponent(currentAsset.url)}${siteVersion ? `&v=${siteVersion}` : ''}`
+                      ? `/api/proxy-site?url=${encodeURIComponent(currentAsset.url)}&device=${viewport}${siteVersion ? `&v=${siteVersion}` : ''}`
                       : currentAsset.url
                   }
                   title={currentAsset.title}

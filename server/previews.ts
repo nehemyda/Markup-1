@@ -5,6 +5,7 @@
 import type { Browser } from 'puppeteer-core';
 import { findRows, getRow, now, supabaseAdmin } from './db';
 import { removeFile, saveFile } from './uploads';
+import { directPageUrl } from './pageUrl';
 
 const REFRESH_MS = 24 * 60 * 60 * 1000;
 // A page that could not be loaded is tried again sooner
@@ -51,7 +52,7 @@ async function capture(url: string): Promise<Uint8Array> {
   try {
     await page.setViewport({ width: 1280, height: 800 });
     try {
-      await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+      await page.goto(directPageUrl(url), { waitUntil: 'networkidle2', timeout: 30000 });
     } catch (err: any) {
       // Busy pages (live chat, analytics) may never go quiet; use what loaded
       if (!/timeout/i.test(err?.message || '') || !(await page.evaluate(() => document.body?.innerText?.length || 0))) throw err;

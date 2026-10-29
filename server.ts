@@ -13,6 +13,8 @@ import { reopenProject, RevisionError, submitRevision } from './server/revisions
 import { startDeadlineChecks } from './server/deadlines';
 import { purgeProject, restoreProject, startTrashCleanup, trashProject, TrashError } from './server/trash';
 import { requestPreview, startPreviews } from './server/previews';
+import { deviceForWidth, directPageUrl, PageDevice } from './server/pageUrl';
+import { rewritePageStyles, rewriteStylesheet } from './server/proxyCss';
 import { approveConnection, claimConnection, disconnect as disconnectExtension, extensionSummary, markRead, requireExtension, ExtensionRequest } from './server/extension';
 import { APP_URL, chatStatus, postToChat, sendSummaryNow, startDailySummary, summarySettings, spaceLabel, DEFAULT_SUMMARY, WEBHOOK_PATTERN } from './server/googleChat';
 import path from 'path';
@@ -1044,7 +1046,7 @@ For each finding, set elementId to the id of the element the problem is on (it m
     }
     const [vw, cx, cy, cw, ch] = nums.map(Math.round);
     const capture = async () => {
-      const page = await getPage(url, vw);
+      const page = await getPage(directPageUrl(url, deviceForWidth(vw)), vw);
       // Scroll to the area so lazy-loaded images there load, then capture it in page coordinates
       await page.evaluate((top: number) => window.scrollTo(0, Math.max(0, top - 200)), cy);
       await new Promise((r) => setTimeout(r, 600));
@@ -1071,7 +1073,7 @@ For each finding, set elementId to the id of the element the problem is on (it m
         png = await capture();
       } catch (err) {
         // A cached page can go stale (site navigated, Chrome restarted): drop it and try once more
-        const key = `${vw}|${url}`;
+        const key = `${vw}|${directPageUrl(url, deviceForWidth(vw))}`;
         const stale = openPages.get(key);
         if (stale) {
           clearTimeout(stale.timer);
@@ -1100,6 +1102,9 @@ For each finding, set elementId to the id of the element the problem is on (it m
       if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
         targetUrl = 'https://' + targetUrl;
       }
+      // Builder preview viewers (Duda's desktop/tablet/phone frames): load the site page itself
+      const device = String(req.query.device || '');
+      targetUrl = directPageUrl(targetUrl, ['desktop', 'tablet', 'mobile'].includes(device) ? (device as PageDevice) : 'desktop');
 
       // Retry brief network failures (connection reset, DNS hiccup) before showing the error page
       let response: Response | undefined;
@@ -1127,6 +1132,8 @@ For each finding, set elementId to the id of the element the problem is on (it m
       if (!response) throw lastError;
 
       const contentType = response.headers.get('content-type') || 'text/html';
+      // Protocol-relative, so it works on http (local) and https (tunnel, hosting)
+      const appOrigin = `//${req.get('host')}`;
 
       if (contentType.includes('text/html')) {
         let html = await response.text();
@@ -1134,6 +1141,8 @@ For each finding, set elementId to the id of the element the problem is on (it m
         // Strip restrictive meta headers and frame busters
         html = html.replace(/<meta[^>]*http-equiv=["']?X-Frame-Options["']?[^>]*>/gi, '');
         html = html.replace(/<meta[^>]*http-equiv=["']?Content-Security-Policy["']?[^>]*>/gi, '');
+        // Lay the page out against a normal screen height (see server/proxyCss.ts)
+        html = rewritePageStyles(html, targetUrl, appOrigin);
 
         const baseTag = `<base href="${escapeHtml(String(targetUrl))}">`;
         const autoHeightSnippet = `
@@ -1175,35 +1184,33 @@ html, body {
     }
     return false;
   }
+  // Where an element's content really ends. Boxes that reach the bottom of the frame may only be stretched to fill it
+  // (min-height: 100vh / 100%, a footer pushed to the bottom): those count up to the end of their own content, so the
+  // frame does not keep growing with them. Fixed/sticky overlays (chat bubbles, cookie bars) are ignored.
+  function contentBottom(el) {
+    var st = getComputedStyle(el);
+    if (st.display === 'none' || st.position === 'fixed' || st.position === 'sticky') return 0;
+    var r = el.getBoundingClientRect();
+    var own = r.height > 0 && r.width > 0 && st.visibility !== 'hidden' ? r.bottom + window.scrollY : 0;
+    var inner = 0;
+    for (var c = el.firstElementChild; c; c = c.nextElementSibling) inner = Math.max(inner, contentBottom(c));
+    if (own && /hidden|clip/.test(st.overflowY)) inner = Math.min(inner, own);
+    if (!own) return inner;
+    if (own < window.innerHeight - 3) return Math.max(own, inner);
+    if (!el.firstElementChild) return Math.abs(own - window.innerHeight) < 3 ? 0 : own;
+    if (!inner) return 0;
+    return Math.min(own, inner + (parseFloat(st.paddingBottom) || 0) + (parseFloat(st.borderBottomWidth) || 0));
+  }
   function contentHeight() {
     if (isAppStylePage()) return APP_PAGE_HEIGHT;
-    var maxBottom = 0;
-    var els = document.body ? document.body.getElementsByTagName('*') : [];
-    for (var i = 0; i < els.length; i++) {
-      var el = els[i];
-      var r = el.getBoundingClientRect();
-      if (r.height <= 0 || r.width <= 0) continue;
-      var bottom = r.bottom + window.scrollY;
-      if (bottom <= maxBottom) continue;
-      var st = getComputedStyle(el);
-      if (st.position === 'fixed' || st.position === 'sticky' || st.display === 'none' || st.visibility === 'hidden') continue;
-      // Skip boxes stretched to the bottom of the frame (min-height: 100vh / 100%, flex fillers);
-      // they grow with the frame, so their real content is counted instead
-      if (Math.abs(r.bottom + window.scrollY - window.innerHeight) < 3) continue;
-      var p = el.parentElement, floating = false;
-      while (p && p !== document.body) {
-        var ps = getComputedStyle(p).position;
-        if (ps === 'fixed' || ps === 'sticky') { floating = true; break; }
-        p = p.parentElement;
-      }
-      if (!floating) maxBottom = bottom;
-    }
-    return Math.ceil(maxBottom);
+    return document.body ? Math.ceil(contentBottom(document.body)) : 0;
   }
+  var lastHeight = 0;
   function reportFullHeight() {
     try {
       var height = contentHeight();
-      if (height > 200) {
+      if (height > 200 && height !== lastHeight) {
+        lastHeight = height;
         window.parent.postMessage({ type: 'VPIN_FULL_PAGE_HEIGHT', height: height, url: window.location.href }, '*');
       }
     } catch(e) {}
@@ -1245,6 +1252,13 @@ html, body {
       var fixed = proxiedFrameUrl(current);
       if (fixed !== current) frames[i].setAttribute('src', fixed);
     }
+    // Stylesheets added by page scripts also load through the proxy (screen-height sizing, see server/proxyCss.ts)
+    var sheets = root.querySelectorAll ? root.querySelectorAll('link[rel~="stylesheet"][href]') : [];
+    for (var j = 0; j < sheets.length; j++) {
+      var href = sheets[j].getAttribute('href');
+      var proxied = proxiedFrameUrl(href);
+      if (proxied !== href) sheets[j].setAttribute('href', proxied);
+    }
   }
   document.addEventListener('DOMContentLoaded', function() { fixFrames(document); });
   new MutationObserver(function(mutations) {
@@ -1253,7 +1267,7 @@ html, body {
       for (var j = 0; j < added.length; j++) {
         var node = added[j];
         if (node.nodeType !== 1) continue;
-        if (node.tagName === 'IFRAME') fixFrames(node.parentNode || document);
+        if (node.tagName === 'IFRAME' || node.tagName === 'LINK') fixFrames(node.parentNode || document);
         else fixFrames(node);
       }
     }
@@ -1282,12 +1296,15 @@ html, body {
   window.addEventListener('load', reportFullHeight);
   window.addEventListener('resize', reportFullHeight);
   document.addEventListener('DOMContentLoaded', reportFullHeight);
-  // Sites keep settling after load (images, fonts, widgets): re-check every second for the first 20s,
-  // and whenever an image finishes loading
+  // Sites keep settling after load (images, fonts, widgets): re-check every second for the first 20s, then every
+  // 2s (galleries and lazy blocks fill in when they come into view), and whenever an image finishes loading
   var checks = 0;
   var timer = setInterval(function() {
     reportFullHeight();
-    if (++checks >= 20) clearInterval(timer);
+    if (++checks >= 20) {
+      clearInterval(timer);
+      setInterval(reportFullHeight, 2000);
+    }
   }, 1000);
   document.addEventListener('load', function(e) {
     if (e.target && e.target.tagName === 'IMG') reportFullHeight();
@@ -1313,6 +1330,10 @@ html, body {
         res.setHeader('X-Frame-Options', 'ALLOWALL');
         res.setHeader('Access-Control-Allow-Origin', '*');
         return res.send(html);
+      } else if (contentType.includes('text/css')) {
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+        return res.send(rewriteStylesheet(await response.text(), response.url || targetUrl, appOrigin));
       } else {
         const buffer = await response.arrayBuffer();
         res.setHeader('Content-Type', contentType);
