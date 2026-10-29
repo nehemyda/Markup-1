@@ -3,6 +3,7 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { expect, test } from '@playwright/test';
 import { supabaseAdmin } from '../server/db';
+import { isPublicAddress } from '../server/publicFetch';
 import { EMAILS, readState } from './support/testData';
 
 const url = process.env.VITE_SUPABASE_URL!;
@@ -40,11 +41,29 @@ test.describe('signed-out visitors', () => {
     }
   });
 
-  test('cannot use the page proxy to fetch other addresses', async ({ request }) => {
+  test('cannot use the page proxy to reach internal addresses', async ({ request }) => {
     // The proxy should only serve signed-in people. Fetching the server's own health check shows whether
     // anyone on the internet could make the server fetch internal addresses for them.
     const res = await request.get(`/api/proxy-site?url=${encodeURIComponent('http://127.0.0.1:' + new URL(test.info().project.use.baseURL!).port + '/api/health')}`);
-    expect(res.status(), 'the proxy answered a signed-out request').toBeGreaterThanOrEqual(400);
+    expect(res.status(), 'the proxy fetched an internal address').toBe(403);
+    const metadata = await request.get(`/api/proxy-site?url=${encodeURIComponent('http://169.254.169.254/latest/meta-data/')}`);
+    expect(metadata.status(), 'the proxy fetched the cloud metadata address').toBe(403);
+  });
+
+  test('the page proxy still opens public websites', async ({ request }) => {
+    const res = await request.get(`/api/proxy-site?url=${encodeURIComponent('https://example.com/')}`);
+    expect(res.status()).toBe(200);
+    expect(await res.text()).toContain('documentation examples');
+  });
+
+  test('the address check tells public from private addresses', () => {
+    const cases: [string, boolean][] = [
+      ['104.20.23.154', true], ['8.8.8.8', true], ['2606:4700::6812:179a', true], ['::ffff:8.8.8.8', true],
+      ['10.0.0.1', false], ['172.16.5.4', false], ['192.168.1.1', false], ['127.0.0.1', false], ['169.254.169.254', false],
+      ['100.64.0.1', false], ['0.0.0.0', false], ['::1', false], ['::', false], ['fe80::1', false], ['fd00::1', false],
+      ['::ffff:127.0.0.1', false], ['::ffff:7f00:1', false], ['64:ff9b::a9fe:a9fe', false],
+    ];
+    expect(cases.filter(([ip, publicIp]) => isPublicAddress(ip) !== publicIp)).toEqual([]);
   });
 });
 

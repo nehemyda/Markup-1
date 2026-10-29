@@ -15,6 +15,7 @@ import { purgeProject, restoreProject, startTrashCleanup, trashProject, TrashErr
 import { requestPreview, startPreviews } from './server/previews';
 import { deviceForWidth, directPageUrl, PageDevice } from './server/pageUrl';
 import { rewritePageStyles, rewriteStylesheet } from './server/proxyCss';
+import { BlockedAddressError, checkPublicUrl, fetchPublic } from './server/publicFetch';
 import { approveConnection, claimConnection, disconnect as disconnectExtension, extensionSummary, markRead, requireExtension, ExtensionRequest } from './server/extension';
 import { APP_URL, chatStatus, postToChat, sendSummaryNow, startDailySummary, summarySettings, spaceLabel, DEFAULT_SUMMARY, WEBHOOK_PATTERN } from './server/googleChat';
 import path from 'path';
@@ -124,6 +125,7 @@ async function inspectPinTarget(url: string, width: number, selector: string, po
   try {
     await page.setViewport({ width, height: 900 });
     // Fresh copy: right after a fix the host may still cache the old page
+    await checkPublicUrl(url);
     await page.goto(bypassPageCache(url), { waitUntil: 'networkidle2', timeout: 30000 });
     // The dev server's TypeScript compiler wraps named functions in __name(); define it inside the page too
     await page.evaluate('globalThis.__name = globalThis.__name || ((fn) => fn)');
@@ -225,6 +227,7 @@ async function getPage(url: string, width: number): Promise<Page> {
     cached.timer = closeLater(cached.page);
     return cached.page;
   }
+  await checkPublicUrl(url);
   const browser = await getBrowser();
   const page = await browser.newPage();
   await page.setViewport({ width, height: 900, deviceScaleFactor: 2 });
@@ -979,7 +982,7 @@ For each finding, set elementId to the id of the element the problem is on (it m
         mimeType = meta.slice(5, meta.indexOf(';'));
         data = b64;
       } else {
-        const imgRes = await fetch(url);
+        const imgRes = await fetchPublic(String(url), { signal: AbortSignal.timeout(20000) });
         if (!imgRes.ok) throw new Error(`Could not download the image (HTTP ${imgRes.status}).`);
         mimeType = imgRes.headers.get('content-type')?.split(';')[0] || mimeType;
         const buf = Buffer.from(await imgRes.arrayBuffer());
@@ -1114,7 +1117,7 @@ For each finding, set elementId to the id of the element the problem is on (it m
         try {
           // After a fix (?v=...) skip hosting page caches so the change shows straight away
           const fetchUrl = req.query.v ? bypassPageCache(targetUrl, String(req.query.v)) : targetUrl;
-          response = await fetch(fetchUrl, {
+          response = (await fetchPublic(fetchUrl, {
             headers: {
               ...(req.query.v ? { 'Cache-Control': 'no-cache', Pragma: 'no-cache' } : {}),
               // The viewer's own browser identity: some hosts' firewalls block outdated or made-up browser versions
@@ -1122,11 +1125,12 @@ For each finding, set elementId to the id of the element the problem is on (it m
               'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
               'Accept-Language': 'en-US,en;q=0.9',
             },
-            redirect: 'follow',
             signal: AbortSignal.timeout(20000),
-          });
+          })) as unknown as Response;
         } catch (err: any) {
           lastError = err;
+          // Not a public address: retrying won't help
+          if (err instanceof BlockedAddressError || err?.cause instanceof BlockedAddressError) break;
         }
       }
       if (!response) throw lastError;
@@ -1340,6 +1344,9 @@ html, body {
         return res.send(Buffer.from(buffer));
       }
     } catch (err: any) {
+      if (err instanceof BlockedAddressError || err?.cause instanceof BlockedAddressError) {
+        return res.status(403).type('text/plain').send('Only public website addresses can be reviewed.');
+      }
       console.warn('Proxy request failed for', rawUrl, err?.message, err?.cause?.code || err?.cause?.message || '');
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       return res.status(200).send(`
