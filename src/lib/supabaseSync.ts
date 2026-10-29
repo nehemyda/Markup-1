@@ -38,7 +38,9 @@ function liveRows<T extends { id: string }>(opts: LiveOptions, onUpdate: (rows: 
   };
   const report = (what: string, error: { message: string }) => console.warn(`Could not ${what} ${opts.table}:`, error.message);
 
-  const loadAll = async () => {
+  // A request cut off by leaving the page (Safari: "due to access control checks") is not worth an uncaught error
+  const loadAll = () => loadAllRows().catch((err) => report('load', err));
+  const loadAllRows = async () => {
     const fresh: T[] = [];
     if (opts.newestBy) {
       const { data, error } = await select().order(snake(opts.newestBy), { ascending: false }).limit(opts.limit || PAGE);
@@ -66,7 +68,7 @@ function liveRows<T extends { id: string }>(opts: LiveOptions, onUpdate: (rows: 
       if (data) rows.set(id, fromRow<T>(data));
       else rows.delete(id);
       emit();
-    });
+    }).catch((err) => report('reload', err));
     pending.set(id, next);
     next.finally(() => pending.get(id) === next && pending.delete(id));
   };
