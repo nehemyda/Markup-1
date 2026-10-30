@@ -6,7 +6,8 @@ import { PinDevice } from './pins';
 //   /archive  /team  /credits  /settings  /settings/access  /folders/:folderId
 //   /projects/:projectId            project canvas
 //   /projects/:projectId/kanban | table | activity      /qa-score (workspace QA scores)
-//   ?view_mode=Desktop|Tablet|Mobile   ?page=<path> (when not the project's start page)   ?pin=<pinId>   ?guest_mode=true
+//   /review/:shareToken             client review link (no project id; the share code opens one project)
+//   ?view_mode=Desktop|Tablet|Mobile   ?page=<path> (when not the project's start page)   ?pin=<pinId>
 
 export type DashboardTab = 'dashboard' | 'archive' | 'team' | 'credits' | 'settings';
 export type SettingsSubTab = 'details' | 'domains' | 'notifications' | 'teams';
@@ -16,6 +17,8 @@ export interface Route {
   settingsSubTab?: SettingsSubTab;
   folderId?: string;
   projectId?: string;
+  // Client review link: the project is the one with this share code
+  shareToken?: string;
   viewMode: ViewMode;
   assetId?: string;
   pagePath?: string;
@@ -40,6 +43,15 @@ export function parseRoute(pathname: string, search: string): Route {
     return { projectId: legacyProject, viewMode: 'studio', pinId: params.get('pin') || undefined };
   }
 
+  if (parts[0] === 'review' && parts[1]) {
+    return {
+      shareToken: parts[1].toLowerCase(),
+      viewMode: 'studio',
+      pagePath: params.get('page') || undefined,
+      pinId: params.get('pin') || undefined,
+      device: parseDevice(params.get('view_mode')),
+    };
+  }
   if (parts[0] === 'qa-score') return { viewMode: 'qascore' };
   if (parts[0] === 'projects' && parts[1]) {
     const segment = parts[2] || '';
@@ -74,7 +86,8 @@ export function buildPath(state: {
   isFirstAsset: boolean;
   pinId?: string;
   device: PinDevice;
-  guestMode: boolean;
+  // On a client review link: keep the /review/<code> address
+  shareToken?: string;
 }): string {
   if (state.viewMode === 'qascore') return '/qa-score';
   if (state.viewMode === 'dashboard' || !state.projectId || PROJECT_VIEW_SEGMENTS[state.viewMode] === undefined) {
@@ -90,8 +103,8 @@ export function buildPath(state: {
   if (state.viewMode === 'studio') params.set('view_mode', state.device[0].toUpperCase() + state.device.slice(1));
   if (state.pagePath && !state.isFirstAsset) params.set('page', state.pagePath);
   if (state.pinId) params.set('pin', state.pinId);
-  if (state.guestMode) params.set('guest_mode', 'true');
   const query = params.toString();
+  if (state.shareToken && state.viewMode === 'studio') return `/review/${encodeURIComponent(state.shareToken)}${query ? `?${query}` : ''}`;
   return `/projects/${encodeURIComponent(state.projectId)}${segment ? `/${segment}` : ''}${query ? `?${query}` : ''}`;
 }
 
@@ -100,6 +113,14 @@ function parseDevice(value: string | null): PinDevice | undefined {
   return v === 'desktop' || v === 'tablet' || v === 'mobile' ? v : undefined;
 }
 
-export function projectUrl(projectId: string, guest = false): string {
-  return `${window.location.origin}/projects/${encodeURIComponent(projectId)}${guest ? '?guest_mode=true' : ''}`;
+export function projectUrl(projectId: string): string {
+  return `${window.location.origin}/projects/${encodeURIComponent(projectId)}`;
 }
+
+// The client review link (no login): /review/<share code>
+export function reviewUrl(shareToken?: string | null): string {
+  return shareToken ? `${window.location.origin}/review/${encodeURIComponent(shareToken)}` : '';
+}
+
+// Is the address bar on a client review link?
+export const isReviewPath = (pathname: string) => /^\/review\/[^/]+/.test(pathname);

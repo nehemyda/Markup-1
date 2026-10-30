@@ -36,7 +36,7 @@ await db.exec(`
     ('mem2','${M2}','Mem Two','mem2@x.com','Member',false),
     ('gone1','${R}','Gone','gone@x.com','Member',false);
   update users set removed = true where id = 'gone1';
-  insert into projects (id, name, assets) values ('P1','One','[{"id":"a1"}]'),('P2','Two','[]');
+  insert into projects (id, name, assets, share_token) values ('P1','One','[{"id":"a1"}]','11111111-1111-4111-8111-111111111111'),('P2','Two','[]',default);
   insert into pins (id, project_id, asset_id, status, title, comments) values ('pin1','P1','a1','open','t','[]'),('pin2','P2','a2','open','t2','[]');
   insert into notifications (id, recipient_uid, title) values ('n1','mem1','for mem'),('n2','owner1','for owner');
   insert into settings (id, value) values ('access','{"allowedDomains":["x.com"]}'),('branding','{"appName":"M"}'),('permissions','{}'),('chat','{}');
@@ -58,7 +58,8 @@ async function as(who, query) {
   finally { await db.exec('rollback'); }
 }
 const owner = { sub: A, email: 'owner@x.com' }, mem = { sub: M, email: 'mem@x.com' }, mem2 = { sub: M2, email: 'mem2@x.com' };
-const guest = { sub: G, anon: true, app_metadata: { guest_project: 'P1' } }, nopass = { sub: G, anon: true }, removed = { sub: R, email: 'gone@x.com' };
+const T1 = '11111111-1111-4111-8111-111111111111';
+const guest = { sub: G, anon: true, app_metadata: { guest_project: 'P1', guest_share: T1 } }, nopass = { sub: G, anon: true }, removed = { sub: R, email: 'gone@x.com' };
 const n = (r) => r.rows?.length ?? -1;
 
 // Reading
@@ -69,6 +70,17 @@ check('signed-out visitor reads access + branding settings only', JSON.stringify
 check('member also reads permissions settings, not chat', JSON.stringify((await as(mem, 'select id from settings order by id')).rows.map(r => r.id)) === '["access","branding","permissions"]');
 check('guest reads only their project', JSON.stringify((await as(guest, 'select id from projects')).rows.map(r => r.id)) === '["P1"]');
 check('guest reads only their project\'s pins', JSON.stringify((await as(guest, 'select id from pins')).rows.map(r => r.id)) === '["pin1"]');
+// Share codes (/review/<uuid>): a pass counts only with the project's current code
+{ const oldPass = { sub: G, anon: true, app_metadata: { guest_project: 'P1' } };
+  check('guest pass from before share codes reads nothing', n(await as(oldPass, 'select id from projects')) === 0 && n(await as(oldPass, 'select id from pins')) === 0); }
+{ const wrong = { sub: G, anon: true, app_metadata: { guest_project: 'P1', guest_share: '22222222-2222-4222-8222-222222222222' } };
+  check('guest pass with a wrong share code reads nothing', n(await as(wrong, 'select id from projects')) === 0); }
+check('browsers cannot change a share code', (await as(mem, `update projects set share_token = '33333333-3333-4333-8333-333333333333' where id='P1' returning share_token`)).rows?.[0]?.share_token === T1);
+{ const r = await as(mem, `insert into projects (id, name, share_token) values ('P9','New','44444444-4444-4444-8444-444444444444') returning share_token`);
+  check('a new project gets a random share code, not one the browser picks', !r.error && r.rows?.[0]?.share_token && r.rows[0].share_token !== '44444444-4444-4444-8444-444444444444', r.error || ''); }
+await db.exec(`update projects set share_token = '55555555-5555-4555-8555-555555555555' where id = 'P1'`);
+check('after the link is reset, the old pass reads nothing', n(await as(guest, 'select id from projects')) === 0 && n(await as(guest, 'select id from pins')) === 0);
+await db.exec(`update projects set share_token = '${T1}' where id = 'P1'`);
 check('anonymous account without a pass reads nothing', n(await as(nopass, 'select id from pins')) === 0 && n(await as(nopass, 'select id from projects')) === 0);
 check('removed member reads nothing', n(await as(removed, 'select id from projects')) === 0);
 check('guest cannot read the team', n(await as(guest, 'select id from users')) === 0);

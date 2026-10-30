@@ -23,6 +23,7 @@ import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
 import fs from 'fs';
+import { randomUUID } from 'crypto';
 import puppeteer, { Browser, Page } from 'puppeteer-core';
 
 dotenv.config();
@@ -237,6 +238,9 @@ async function getPage(url: string, width: number): Promise<Page> {
   return page;
 }
 
+// A review link's share code (projects.share_token)
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 async function startServer() {
   const app = express();
 
@@ -295,28 +299,45 @@ async function startServer() {
     }
   });
 
-  // Guest link: the browser signs in anonymously, then gets a pass that only works for this one project
-  // (read it, add pins and comments). The pass is kept in the account's app_metadata, which only the server can set.
+  // Guest link (/review/<share code>): the browser signs in anonymously, then gets a pass that only works for the
+  // project with this code (read it, add pins and comments). The pass is kept in the account's app_metadata, which
+  // only the server can set, and stops working when the project's link is reset.
   app.post('/api/guest/session', async (req, res) => {
     const token = await readToken(req);
     if (!token) return res.status(401).json({ error: 'Could not open this shared project. Reload the page.' });
     const { data: account } = await supabaseAdmin.auth.admin.getUserById(token.authId);
     if (!account?.user?.is_anonymous) return res.status(400).json({ error: 'Guest passes are only for guest links.' });
-    const projectId = String(req.body?.projectId || '');
-    if (!projectId || !(await getRow('projects', projectId))) {
-      return res.status(404).json({ error: 'This shared project no longer exists or the link is incorrect.' });
-    }
+    const shareToken = String(req.body?.shareToken || '').toLowerCase();
+    const notFound = () => res.status(404).json({ error: 'This review link is not valid any more. Ask the team that shared it for the current link.' });
+    if (!UUID.test(shareToken)) return notFound();
+    const { data: project, error: findError } = await supabaseAdmin.from('projects').select('id').eq('share_token', shareToken).maybeSingle();
+    if (findError) return res.status(500).json({ error: 'Could not open this shared project. Please try again.' });
+    if (!project) return notFound();
     // Settings → Workspace Details → "Allow guest review links without an account"
     const access = await getSetting('access');
     if (access.guestLinksEnabled === false) {
       return res.status(403).json({ error: 'Guest review links are turned off for this workspace. Ask the team that shared it for access.' });
     }
-    if (token.guestProject !== projectId) {
-      const { error } = await supabaseAdmin.auth.admin.updateUserById(token.authId, { app_metadata: { guest_project: projectId } });
+    const projectId = String(project.id);
+    if (token.guestProject !== projectId || token.guestShare !== shareToken) {
+      const { error } = await supabaseAdmin.auth.admin.updateUserById(token.authId, {
+        app_metadata: { guest_project: projectId, guest_share: shareToken },
+      });
       if (error) return res.status(500).json({ error: 'Could not open this shared project. Please try again.' });
       forgetToken(token.authId);
     }
     res.json({ ok: true, projectId });
+  });
+
+  // New review link for a project: the old /review/<code> link stops working straight away
+  app.post('/api/projects/:projectId/share-link/reset', requireMember, async (req: AuthedRequest, res) => {
+    const { projectId } = req.params;
+    const shareToken = randomUUID();
+    const { data, error } = await supabaseAdmin.from('projects').update({ share_token: shareToken }).eq('id', projectId).select('id');
+    if (error) return res.status(500).json({ error: 'Could not reset the link. Please try again.' });
+    if (!data?.length) return res.status(404).json({ error: 'This project no longer exists.' });
+    await logAudit(req, 'project.share_link_reset', { projectId });
+    res.json({ shareToken });
   });
 
   // ---------- Pin and comment files (members and guests upload; links are unguessable) ----------
@@ -1135,8 +1156,10 @@ For each finding, set elementId to the id of the element the problem is on (it m
       if (!response) throw lastError;
 
       const contentType = response.headers.get('content-type') || 'text/html';
-      // Protocol-relative, so it works on http (local) and https (tunnel, hosting)
-      const appOrigin = `//${req.get('host')}`;
+      // The app's own address with its scheme: the page's <base> is the website's (usually https), so an address
+      // without one would point at https://localhost. Behind a tunnel or host, the scheme comes from X-Forwarded-Proto.
+      const scheme = String(req.get('x-forwarded-proto') || req.protocol).split(',')[0].trim();
+      const appOrigin = `${scheme}://${req.get('host')}`;
 
       if (contentType.includes('text/html')) {
         let html = await response.text();
@@ -1229,6 +1252,8 @@ html, body {
     try {
       var abs = new URL(raw, document.baseURI);
       if (!/^https?:$/.test(abs.protocol)) return raw;
+      // Already through the app (e.g. stylesheets the server pointed here, written without http: or https:)
+      if (abs.host === location.host && abs.pathname === '/api/proxy-site') return raw;
       return PROXY_PREFIX + encodeURIComponent(abs.href);
     } catch (err) { return raw; }
   }

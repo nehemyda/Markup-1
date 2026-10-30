@@ -5,10 +5,11 @@ import React, { useState } from 'react';
 import { CheckCircle2, Copy, Loader2, Lock, RotateCcw, Send, AlertTriangle, X } from 'lucide-react';
 import { INCLUDED_REVISIONS, Pin, Project, Revision } from '../types';
 import { copyText } from '../lib/clipboard';
+import { reviewUrl } from '../lib/routes';
 
 const day = (iso?: string | null) => (iso ? new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) : '');
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
-export const guestLink = (projectId: string) => `${window.location.origin}/projects/${encodeURIComponent(projectId)}?guest_mode=true`;
+export const guestLink = (project: Project) => reviewUrl(project.shareToken);
 
 // Who added the unsent pins: "Anna 5, Raj 2, you 1"
 function peopleOf(pins: Pin[], myEmail: string) {
@@ -244,7 +245,7 @@ export const TeamRevisionBar: React.FC<{
     }
   };
   const copyMessage = async () => {
-    const link = guestLink(project.id);
+    const link = guestLink(project);
     const text = latest?.status === 'done'
       ? `Hi! The changes from your Revision ${latest.number} on ${project.name} are done. Please review them here: ${link}`
       : `Hi! We've received your feedback (Revision ${latest?.number ?? count}) on ${project.name} and are working on it. You can follow along here: ${link}`;

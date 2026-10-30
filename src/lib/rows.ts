@@ -6,7 +6,7 @@ export const TABLE_COLUMNS = {
   users: ['id', 'authId', 'name', 'email', 'avatar', 'role', 'organizationId', 'organizationName', 'status', 'cursorColor', 'department', 'isMasterAdmin', 'removed', 'removedAt', 'outOfOffice', 'outOfOfficeUntil', 'createdAt'],
   invites: ['id', 'name', 'email', 'role', 'invitedBy', 'invitedAt'],
   folders: ['id', 'name', 'createdAt', 'createdBy'],
-  projects: ['id', 'name', 'client', 'description', 'color', 'avatar', 'memberCount', 'lastUpdated', 'ownerId', 'createdBy', 'assigneeIds', 'folderId', 'agid', 'assets', 'reviewState', 'revisionCount', 'unsentRemindedAt', 'previewUrl', 'previewAt', 'previewError', 'updatedAt'],
+  projects: ['id', 'name', 'client', 'description', 'color', 'avatar', 'memberCount', 'lastUpdated', 'ownerId', 'createdBy', 'assigneeIds', 'folderId', 'agid', 'assets', 'reviewState', 'revisionCount', 'unsentRemindedAt', 'previewUrl', 'previewAt', 'previewError', 'shareToken', 'updatedAt'],
   pins: ['id', 'projectId', 'assetId', 'number', 'x', 'y', 'category', 'status', 'priority', 'title', 'createdAt', 'author', 'assignedTo', 'assignedBy', 'metadata', 'comments', 'isUnread', 'qaError', 'screenshotUrl', 'attachments', 'deletedAt', 'deletedBy', 'revision', 'internal', 'updatedAt'],
   notifications: ['id', 'recipientUid', 'type', 'title', 'message', 'projectId', 'projectName', 'pinId', 'pinNumber', 'assetId', 'actor', 'read', 'readAt', 'createdAt'],
   ai_usage: ['id', 'at', 'month', 'feature', 'projectId', 'actor', 'model', 'inputTokens', 'outputTokens', 'costUsd', 'pricing'],
@@ -28,7 +28,7 @@ export type Table = keyof typeof TABLE_COLUMNS;
 
 // Set by the server only (submitting and reopening); browsers leave them out when saving
 export const SERVER_FIELDS: Partial<Record<Table, string[]>> = {
-  projects: ['reviewState', 'revisionCount', 'unsentRemindedAt', 'previewUrl', 'previewAt', 'previewError', 'updatedAt'],
+  projects: ['reviewState', 'revisionCount', 'unsentRemindedAt', 'previewUrl', 'previewAt', 'previewError', 'shareToken', 'updatedAt'],
   pins: ['revision', 'internal', 'updatedAt'],
 };
 

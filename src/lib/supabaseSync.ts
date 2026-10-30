@@ -262,6 +262,11 @@ const api = async (path: string, init: RequestInit = { method: 'POST' }) => {
   return body;
 };
 
+// New client review link: the old /review/<code> link stops working straight away. Returns the new code.
+export async function resetShareLink(projectId: string): Promise<string> {
+  return (await api(`/api/projects/${encodeURIComponent(projectId)}/share-link/reset`)).shareToken;
+}
+
 export async function deleteProject(projectId: string): Promise<void> {
   await api(`/api/projects/${encodeURIComponent(projectId)}/delete`);
 }

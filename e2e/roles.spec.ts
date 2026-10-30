@@ -44,7 +44,7 @@ test.describe('member', () => {
 test.describe('guest with a review link', () => {
   test('opens the shared project without an account, and nothing else', async ({ page }) => {
     const watch = watchErrors(page);
-    await page.goto(`/projects/${readState().projectId}?guest_mode=true`);
+    await page.goto(`/review/${readState().shareToken}`);
     await expect(page.locator('iframe').first()).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole('button', { name: 'Sign In to Workspace' })).toBeHidden();
     // No way into the team's workspace

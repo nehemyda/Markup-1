@@ -207,6 +207,8 @@ export interface Project {
   // Card preview: screenshot of the main page taken by the server (server/previews.ts)
   previewUrl?: string | null;
   previewAt?: string | null;
+  // Random code in the client review link (/review/<shareToken>); set and reset by the server
+  shareToken?: string;
 }
 
 // A client's submitted round of feedback (see server/revisions.ts)

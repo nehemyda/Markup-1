@@ -111,7 +111,7 @@ test.describe('guest review links', () => {
     const db = client();
     const { data, error } = await db.auth.signInAnonymously();
     expect(error).toBeNull();
-    const pass = await request.post('/api/guest/session', { headers: auth(data.session!.access_token), data: { projectId: readState().projectId } });
+    const pass = await request.post('/api/guest/session', { headers: auth(data.session!.access_token), data: { shareToken: readState().shareToken } });
     expect(pass.status()).toBe(200);
     await db.auth.refreshSession();
     const projects = await db.from('projects').select('id');
@@ -129,8 +129,16 @@ test.describe('guest review links', () => {
   test('a guest link to a project that does not exist is refused', async ({ request }) => {
     const db = client();
     const { data } = await db.auth.signInAnonymously();
-    const res = await request.post('/api/guest/session', { headers: auth(data.session!.access_token), data: { projectId: 'proj_does_not_exist' } });
+    const res = await request.post('/api/guest/session', { headers: auth(data.session!.access_token), data: { shareToken: crypto.randomUUID() } });
     // This guest got no pass, so cleanup can't tell it apart from a real visitor: remove it here
+    await supabaseAdmin.auth.admin.deleteUser(data.user!.id);
+    expect(res.status()).toBe(404);
+  });
+
+  test('the project id alone no longer opens a project', async ({ request }) => {
+    const db = client();
+    const { data } = await db.auth.signInAnonymously();
+    const res = await request.post('/api/guest/session', { headers: auth(data.session!.access_token), data: { projectId: readState().projectId } });
     await supabaseAdmin.auth.admin.deleteUser(data.user!.id);
     expect(res.status()).toBe(404);
   });

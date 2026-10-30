@@ -70,15 +70,14 @@ import type { Session } from '@supabase/supabase-js';
 import { supabase } from './lib/supabase';
 import { ReviewSnapshot } from './lib/pageSnapshot';
 import { nextPinNumber, pinDevice, describeClient, PinDevice } from './lib/pins';
-import { parseRoute, buildPath, Route, DashboardTab, SettingsSubTab } from './lib/routes';
+import { parseRoute, buildPath, isReviewPath, Route, DashboardTab, SettingsSubTab } from './lib/routes';
 import { isMasterAdmin, getDefaultOrganization, startSession, saveProfile } from './lib/userProfile';
 import { apiFetch } from './lib/api';
 
-// Project id of a guest link in the address bar (/projects/<id>?guest_mode=true), else null
-function guestLinkProjectId(): string | null {
+// Share code of a client review link in the address bar (/review/<code>), else null
+function reviewLinkShareToken(): string | null {
   if (typeof window === 'undefined') return null;
-  if (new URLSearchParams(window.location.search).get('guest_mode') !== 'true') return null;
-  return parseRoute(window.location.pathname, window.location.search).projectId || null;
+  return parseRoute(window.location.pathname, window.location.search).shareToken || null;
 }
 
 // Spinner while signing in or opening a page; offers a reload if it takes too long (e.g. the connection dropped)
@@ -289,19 +288,19 @@ export default function App() {
 
       // Guests sign in anonymously; the server adds a pass for the project in their link
       if (user.is_anonymous) {
-        const linkProject = guestLinkProjectId();
-        if (!linkProject) {
+        const shareToken = reviewLinkShareToken();
+        if (!shareToken) {
           await supabase.auth.signOut();
           return;
         }
-        if (user.app_metadata?.guest_project !== linkProject) {
-          if (guestPassAsked.current === linkProject) return;
-          guestPassAsked.current = linkProject;
+        if (user.app_metadata?.guest_share !== shareToken || !user.app_metadata?.guest_project) {
+          if (guestPassAsked.current === shareToken) return;
+          guestPassAsked.current = shareToken;
           try {
             const res = await apiFetch('/api/guest/session', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ projectId: linkProject }),
+              body: JSON.stringify({ shareToken }),
               signal: AbortSignal.timeout(20000),
             });
             const body = await res.json().catch(() => ({}));
@@ -318,7 +317,7 @@ export default function App() {
         }
         sessionFor.current = null;
         setAuthUser(null);
-        setAccessKey(`guest:${linkProject}`);
+        setAccessKey(`guest:${user.app_metadata.guest_project}`);
         setAuthReady(true);
         return;
       }
@@ -354,7 +353,7 @@ export default function App() {
 
   // Guest link without anyone signed in: sign in as a guest (the listener above then gets the project pass)
   useEffect(() => {
-    if (!authReady || accessKey || !guestLinkProjectId()) return;
+    if (!authReady || accessKey || !reviewLinkShareToken()) return;
     (async () => {
       const { data } = await supabase.auth.getSession();
       if (data.session) return;
@@ -552,6 +551,10 @@ export default function App() {
   const pendingPinId = useRef<string | null>(null);
 
   const applyRoute = (route: Route) => {
+    // A client review link names its project by share code
+    if (route.shareToken) {
+      route = { ...route, projectId: projects.find((p) => p.shareToken === route.shareToken)?.id || '-' };
+    }
     if (!route.projectId) {
       // Workspace pages: dashboard tabs, or the QA scores page
       setViewMode(route.viewMode === 'qascore' ? 'qascore' : 'dashboard');
@@ -640,7 +643,7 @@ export default function App() {
       isFirstAsset: currentProject.assets?.[0]?.id === currentAsset?.id,
       pinId: inProject ? selectedPin?.id : undefined,
       device,
-      guestMode: new URLSearchParams(window.location.search).get('guest_mode') === 'true',
+      shareToken: isReviewPath(window.location.pathname) ? currentProject.shareToken : undefined,
     });
     const current = window.location.pathname + window.location.search;
     if (path === current) return;
@@ -1192,8 +1195,7 @@ export default function App() {
     if (selectedPin?.id === pinId) setSelectedPin(null);
   };
   // Pins that aren't deleted: the page, Kanban, Table, counts and QA scores use these
-  const isGuestShareLink = typeof window !== 'undefined' &&
-    new URLSearchParams(window.location.search).get('guest_mode') === 'true';
+  const isGuestShareLink = typeof window !== 'undefined' && isReviewPath(window.location.pathname);
   // The guest view (a client, or a member previewing the guest link) never shows the team's internal pins
   const guestView = isGuestMode || (!authUser && isGuestShareLink);
   const visiblePins = React.useMemo(() => (guestView ? pins.filter((p) => !isInternalPin(p)) : pins), [pins, guestView]);

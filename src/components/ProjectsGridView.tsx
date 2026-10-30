@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Project, Asset, Teammate, ViewMode, Pin, Folder, RolePermissions } from '../types';
 import { RecentlyDeletedModal } from './RecentlyDeletedModal';
-import { projectUrl } from '../lib/routes';
+import { reviewUrl } from '../lib/routes';
 import { apiFetch } from '../lib/api';
 import { useRolePermissions, saveRolePermission } from '../lib/permissions';
 import { AiCreditsView } from './AiCreditsView';
@@ -528,7 +528,8 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
 
   const copyGuestLinkForProject = (projId: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    const guestUrl = projectUrl(projId, true);
+    const guestUrl = reviewUrl(projects.find((p) => p.id === projId)?.shareToken);
+    if (!guestUrl) return;
     copyText(guestUrl).then((ok) => {
       if (ok) setCopiedCardId(projId);
     });
@@ -1953,7 +1954,7 @@ export const ProjectsGridView: React.FC<ProjectsGridViewProps> = ({
                     <span>What are External Guests?</span>
                   </div>
                   <p className="text-xs text-amber-900 leading-relaxed">
-                    Guests are clients, reviewers, or stakeholders who have been given a <strong>Guest Share Link</strong> (`?guest_mode=true`). They do not require a workspace email or login password — they can directly drop comment pins, reply to chat threads, and view pages in Guest Review mode.
+                    Guests are clients, reviewers, or stakeholders who have been given a <strong>Guest Share Link</strong> (`/review/…`). They do not require a workspace email or login password — they can directly drop comment pins, reply to chat threads, and view pages in Guest Review mode.
                   </p>
                 </div>
 

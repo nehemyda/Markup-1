@@ -11,8 +11,9 @@ export interface CallerToken {
   name: string;
   picture: string;
   emailVerified: boolean;
-  // The one project a guest link opens (null for team members)
+  // The one project a guest link opens (null for team members), and the share code the pass was given for
   guestProject: string | null;
+  guestShare: string | null;
 }
 
 export interface AuthedRequest extends Request {
@@ -41,6 +42,7 @@ export async function readToken(req: Request): Promise<CallerToken | null> {
     picture: String(meta.avatar_url || meta.picture || ''),
     emailVerified: !!user.email_confirmed_at,
     guestProject: user.app_metadata?.guest_project ? String(user.app_metadata.guest_project) : null,
+    guestShare: user.app_metadata?.guest_share ? String(user.app_metadata.guest_share) : null,
   };
   if (recent.size > 5000) recent.clear();
   recent.set(jwt, { token, until: Date.now() + 60_000 });
@@ -52,12 +54,22 @@ export function forgetToken(authId: string) {
   for (const [jwt, entry] of recent) if (entry.token.authId === authId) recent.delete(jwt);
 }
 
+// A guest pass counts only while its share code is still the project's code (resetting the link ends it)
+async function guestPassValid(token: CallerToken): Promise<boolean> {
+  if (!token.guestProject || !token.guestShare) return false;
+  const { data } = await supabaseAdmin.from('projects').select('share_token').eq('id', token.guestProject).maybeSingle();
+  return !!data && String(data.share_token) === token.guestShare;
+}
+
 // Any signed-in caller: a workspace member or a guest with a project pass
 export async function requireSignedIn(req: AuthedRequest, res: Response, next: NextFunction) {
   const token = await readToken(req);
   if (!token) return res.status(401).json({ error: 'Please sign in.' });
   const member = token.guestProject ? null : await getMember(token.authId);
   if (!member && !token.guestProject) return res.status(403).json({ error: 'You are not a member of this workspace.' });
+  if (!member && !(await guestPassValid(token))) {
+    return res.status(403).json({ error: 'This review link has been changed. Ask the team that shared it for the new link.' });
+  }
   token.uid = member?.id || `guest_${token.authId}`;
   req.token = token;
   req.member = member;

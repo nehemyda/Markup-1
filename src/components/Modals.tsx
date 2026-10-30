@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
 import { Project, Asset, Teammate, Folder } from '../types';
-import { projectUrl } from '../lib/routes';
+import { projectUrl, reviewUrl } from '../lib/routes';
+import { resetShareLink } from '../lib/supabaseSync';
 import { copyText } from '../lib/clipboard';
 import { useGuestPolicy } from '../lib/workspaceSettings';
 import { InviteForm } from './InviteForm';
 import { 
   Plus, 
   X, 
+  RotateCcw, 
   Share2, 
   Copy, 
   Check, 
@@ -336,11 +338,32 @@ export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, current
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedGuestLink, setCopiedGuestLink] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
+  // New share code after a reset, until the project's live data catches up
+  const [resetToken, setResetToken] = useState<{ projectId: string; token: string } | null>(null);
+  const [resetting, setResetting] = useState(false);
+  const [resetNote, setResetNote] = useState('');
 
   if (!isOpen) return null;
 
   const shareUrl = currentProject ? projectUrl(currentProject.id) : '';
-  const guestShareUrl = currentProject ? projectUrl(currentProject.id, true) : '';
+  const guestShareUrl = currentProject
+    ? reviewUrl(resetToken?.projectId === currentProject.id ? resetToken.token : currentProject.shareToken)
+    : '';
+
+  const resetGuestLink = async () => {
+    if (!currentProject) return;
+    if (!window.confirm('Make a new review link? The current link stops working straight away, for everyone who has it.')) return;
+    setResetting(true);
+    setResetNote('');
+    try {
+      setResetToken({ projectId: currentProject.id, token: await resetShareLink(currentProject.id) });
+      setResetNote('New link ready. The old link no longer works.');
+    } catch (err: any) {
+      setResetNote(err?.message || 'Could not reset the link. Please try again.');
+    } finally {
+      setResetting(false);
+    }
+  };
 
   // Only show "Copied" when the copy really worked; otherwise ask the person to copy the link by hand
   const copyLink = async () => {
@@ -414,6 +437,17 @@ export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, current
               >
                 {copiedGuestLink ? <Check className="w-3.5 h-3.5 text-white" /> : <Copy className="w-3.5 h-3.5" />}
                 <span>{copiedGuestLink ? 'Copied Link' : 'Copy Share Link'}</span>
+              </button>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] text-amber-800">{resetNote || 'Link shared with the wrong person? Reset it.'}</span>
+              <button
+                onClick={resetGuestLink}
+                disabled={resetting}
+                className="text-[11px] font-bold text-amber-800 hover:text-amber-950 flex items-center gap-1 shrink-0 disabled:opacity-50 cursor-pointer"
+              >
+                <RotateCcw className={`w-3 h-3 ${resetting ? 'animate-spin' : ''}`} />
+                Reset link
               </button>
             </div>
           </div>

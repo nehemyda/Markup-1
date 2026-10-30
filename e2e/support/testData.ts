@@ -22,7 +22,7 @@ export const EMAILS: Record<Role, string> = {
   outsider: `${PREFIX}outsider@example.com`,
 };
 
-export interface State { password: string; projectId: string; folderId: string; startedAt: string }
+export interface State { password: string; projectId: string; shareToken: string; folderId: string; startedAt: string }
 export const readState = (): State => JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
 
 async function testAccounts() {
@@ -86,15 +86,16 @@ export async function setup(): Promise<State> {
   // A test folder and project with one page, owned by nobody real (the admin test account becomes its owner on sign-in)
   const folderId = `folder_e2e_${Date.now()}`;
   const projectId = `proj_e2e_${Date.now()}`;
+  const shareToken = crypto.randomUUID();
   check('folder', (await supabaseAdmin.from('folders').insert({ id: folderId, name: PID, created_at: new Date().toISOString(), created_by: 'e2e' })).error);
   const asset = { id: `asset_e2e_${Date.now()}`, url: 'https://example.com/', type: 'url', title: 'example.com', status: 'in_review', pinCount: 0, resolvedCount: 0, projectId };
   check('project', (await supabaseAdmin.from('projects').insert({
     id: projectId, name: `${TEST_NAME} – seeded`, client: '', description: 'Created by the end-to-end tests. Safe to delete.',
     color: 'from-slate-600 to-slate-800', avatar: '🧪', member_count: 1, last_updated: 'Just now', folder_id: folderId,
-    agid: 'AG-E2ETEST', assets: [asset], assignee_ids: [],
+    agid: 'AG-E2ETEST', assets: [asset], assignee_ids: [], share_token: shareToken,
   })).error);
 
-  const state = { password, projectId, folderId, startedAt };
+  const state = { password, projectId, shareToken, folderId, startedAt };
   fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
   fs.writeFileSync(STATE_FILE, JSON.stringify(state), { mode: 0o600 });
   return state;
