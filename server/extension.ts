@@ -91,6 +91,9 @@ export async function extensionSummary(uid: string) {
     findRows('pins'),
     findRows('projects'),
   ]);
+  const projects = new Map(projectRows.map((p) => [p.id, p]));
+  // The project's random link id for /projects/<id> links (older projects without one: the project id)
+  const linkIdOf = (projectId?: string | null) => (projectId ? String(projects.get(projectId)?.linkId || projectId) : null);
   const notifications = notes.map((n) => {
     return {
       id: n.id,
@@ -98,6 +101,7 @@ export async function extensionSummary(uid: string) {
       title: n.title,
       message: n.message,
       projectId: n.projectId || null,
+      projectLinkId: linkIdOf(n.projectId),
       pinId: n.pinId || null,
       read: n.read === true,
       createdAt: millis(n.createdAt) || null,
@@ -105,7 +109,6 @@ export async function extensionSummary(uid: string) {
     };
   });
 
-  const projects = new Map(projectRows.map((p) => [p.id, p]));
   const mine = (pin: any, project: any) => {
     if (pin.assignedTo?.id) return String(pin.assignedTo.id) === uid;
     const assigned: string[] = Array.isArray(project.assigneeIds) && project.assigneeIds.length ? project.assigneeIds.map(String) : [String(project.ownerId || '')];
@@ -119,6 +122,7 @@ export async function extensionSummary(uid: string) {
     .map((pin) => ({
       id: pin.id,
       projectId: pin.projectId,
+      projectLinkId: linkIdOf(pin.projectId),
       projectName: String(projects.get(pin.projectId)?.name || ''),
       number: pin.number ?? null,
       title: String(pin.title || pin.comments?.[0]?.text || '').slice(0, 160),

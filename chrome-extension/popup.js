@@ -38,7 +38,7 @@ function renderNotes() {
     item.append(body);
     item.addEventListener('click', async () => {
       if (!n.read) api('/api/extension/read', { method: 'POST', body: JSON.stringify({ ids: [n.id] }) }).catch(() => {});
-      openTab(n.projectId ? pinUrl(server, n.projectId, n.pinId) : server);
+      openTab(n.projectId ? pinUrl(server, n, n.pinId) : server);
     });
     list.append(item);
   }
@@ -65,7 +65,7 @@ function renderPins() {
     meta.append(el('span', '', timeAgo(p.createdAt)));
     body.append(meta);
     item.append(body);
-    item.addEventListener('click', () => openTab(pinUrl(server, p.projectId, p.id)));
+    item.addEventListener('click', () => openTab(pinUrl(server, p, p.id)));
     list.append(item);
   }
   if (summary.openPinCount > pins.length) list.append(el('div', 'empty', `Showing ${pins.length} of ${summary.openPinCount}.`));

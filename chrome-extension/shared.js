@@ -76,8 +76,9 @@ export async function disconnect() {
   await chrome.action.setBadgeText({ text: '' });
 }
 
-export const pinUrl = (server, projectId, pinId) =>
-  `${server}/projects/${encodeURIComponent(projectId)}${pinId ? `?pin=${encodeURIComponent(pinId)}` : ''}`;
+// Project links use the project's random link id (projectLinkId); servers from before link ids only send projectId
+export const pinUrl = (server, item, pinId) =>
+  `${server}/projects/${encodeURIComponent(item.projectLinkId || item.projectId)}${pinId ? `?pin=${encodeURIComponent(pinId)}` : ''}`;
 
 export function timeAgo(ms) {
   if (!ms) return '';

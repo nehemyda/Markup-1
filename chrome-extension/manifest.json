@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Vpin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Your Vpin notifications and open feedback pins, with desktop alerts for new client feedback.",
   "icons": {
     "16": "icons/icon-16.png",

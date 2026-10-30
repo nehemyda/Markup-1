@@ -66,7 +66,7 @@ chrome.notifications.onClicked.addListener(async (notificationId) => {
   }
   const id = notificationId.replace(/^vpin:/, '');
   const n = summary?.notifications?.find((x) => x.id === id);
-  chrome.tabs.create({ url: n?.projectId ? pinUrl(server, n.projectId, n.pinId) : server });
+  chrome.tabs.create({ url: n?.projectId ? pinUrl(server, n, n.pinId) : server });
   try {
     await api('/api/extension/read', { method: 'POST', body: JSON.stringify({ ids: [id] }) });
   } catch {}
