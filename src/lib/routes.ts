@@ -4,7 +4,7 @@ import { PinDevice } from './pins';
 // URL scheme
 //   /                               dashboard
 //   /archive  /team  /credits  /settings  /settings/access  /folders/:folderId
-//   /projects/:projectId            project canvas
+//   /projects/:linkId               project canvas (older links: the project id)
 //   /projects/:projectId/kanban | table | activity      /qa-score (workspace QA scores)
 //   /review/:shareToken             client review link (no project id; the share code opens one project)
 //   ?view_mode=Desktop|Tablet|Mobile   ?page=<path> (when not the project's start page)   ?pin=<pinId>
@@ -113,8 +113,9 @@ function parseDevice(value: string | null): PinDevice | undefined {
   return v === 'desktop' || v === 'tablet' || v === 'mobile' ? v : undefined;
 }
 
-export function projectUrl(projectId: string): string {
-  return `${window.location.origin}/projects/${encodeURIComponent(projectId)}`;
+// Team link to a project (sign-in needed): /projects/<link id>
+export function projectUrl(project: { id: string; linkId?: string }): string {
+  return `${window.location.origin}/projects/${encodeURIComponent(project.linkId || project.id)}`;
 }
 
 // The client review link (no login): /review/<share code>

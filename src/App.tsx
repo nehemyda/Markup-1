@@ -564,7 +564,8 @@ export default function App() {
       setSelectedPin(null);
       return;
     }
-    const project = projects.find((p) => p.id === route.projectId);
+    // Team links use the project's link id; older links its id
+    const project = projects.find((p) => p.id === route.projectId || p.linkId === route.projectId);
     if (!project) {
       alert('This project no longer exists or the link is incorrect.');
       window.history.replaceState(null, '', '/');
@@ -638,7 +639,7 @@ export default function App() {
       dashboardTab,
       settingsSubTab,
       folderId: currentFolderId,
-      projectId: inProject ? currentProject.id : undefined,
+      projectId: inProject ? currentProject.linkId || currentProject.id : undefined,
       pagePath: pagePathOf(currentAsset?.url),
       isFirstAsset: currentProject.assets?.[0]?.id === currentAsset?.id,
       pinId: inProject ? selectedPin?.id : undefined,
@@ -1096,6 +1097,7 @@ export default function App() {
     };
     const newProj: Project = {
       id: projId,
+      linkId: crypto.randomUUID(),
       name: name.trim() || domain,
       client: '',
       description: '',
@@ -1497,6 +1499,7 @@ export default function App() {
               };
               const restoredProject: Project = {
                 id: `proj_${Date.now()}`,
+                linkId: crypto.randomUUID(),
                 name: archivedItem.name,
                 client: 'Restored Archive',
                 description: 'Restored project from archive',

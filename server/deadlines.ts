@@ -67,7 +67,7 @@ export async function checkOverdue() {
     const title = `Overdue: ${project.name || 'a project'} Revision ${revision.number}`;
     const message = `${open} of ${live.length} ${live.length === 1 ? 'pin' : 'pins'} still open · due ${shortDate(revision.dueAt)} · ${developers.length === 1 ? 'Developer' : 'Developers'}: ${names}`;
     await notifyTeam(project, 'overdue', `${id}_overdue_${nowIso.slice(0, 10)}`, title, message, null, [...new Set([...developers, ...leaders])]);
-    await tellChat(project.id, `*⏰ ${plain(title)}*\n${plain(message)}\n<${projectLink(project.id)}|Open in Vpin>`);
+    await tellChat(project.id, `*⏰ ${plain(title)}*\n${plain(message)}\n<${projectLink(project)}|Open in Vpin>`);
   }
 }
 

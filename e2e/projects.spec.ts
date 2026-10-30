@@ -44,7 +44,8 @@ test('create, pin, review in every view, delete and restore', async ({ page, bro
   await expect(projectCard(page, site), `the new project did not appear. ${watch.errors.join(' | ')}`).toBeVisible();
   await projectCard(page, site).getByRole('button', { name: 'Project options' }).click();
   await page.getByRole('button', { name: 'Open Studio & Annotate' }).click();
-  await expect(page).toHaveURL(/\/projects\//);
+  // Team links show the project's random link id, never its proj_... id
+  await expect(page).toHaveURL(/\/projects\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(\?|$)/);
   const projectUrl = page.url().split('?')[0];
   const frame = page.locator('iframe').first();
   await expect(frame).toBeVisible();
@@ -89,7 +90,9 @@ test('create, pin, review in every view, delete and restore', async ({ page, bro
   await page.getByRole('button', { name: /Delete (this )?project/i }).click();
   const confirm = page.getByRole('button', { name: /^Delete( project)?$/ });
   if (await confirm.isVisible().catch(() => false)) await confirm.click();
-  expect((await deleted).ok()).toBeTruthy();
+  const deletedResponse = await deleted;
+  expect(deletedResponse.ok()).toBeTruthy();
+  const projectId = deletedResponse.url().split('/').slice(-2)[0];
   await expect(projectCard(page, site)).toBeHidden();
 
   await page.goto('/');
@@ -102,7 +105,7 @@ test('create, pin, review in every view, delete and restore', async ({ page, bro
   await expect(row).toContainText(name);
   const restored = page.waitForResponse((r) => /\/api\/projects\/[^/]+\/restore$/.test(r.url()));
   await row.getByRole('button', { name: 'Restore' }).click();
-  expect((await restored).url()).toContain(new URL(projectUrl).pathname.split('/').pop()!);
+  expect((await restored).url()).toContain(`/api/projects/${projectId}/restore`);
   await page.keyboard.press('Escape');
   await openTestFolder(page);
   await expect(projectCard(page, site)).toBeVisible();

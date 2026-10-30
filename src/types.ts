@@ -209,6 +209,8 @@ export interface Project {
   previewAt?: string | null;
   // Random code in the client review link (/review/<shareToken>); set and reset by the server
   shareToken?: string;
+  // Random id in team links (/projects/<linkId>), so links don't show the project id
+  linkId?: string;
 }
 
 // A client's submitted round of feedback (see server/revisions.ts)

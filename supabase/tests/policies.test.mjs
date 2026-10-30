@@ -78,6 +78,8 @@ check('guest reads only their project\'s pins', JSON.stringify((await as(guest, 
 check('browsers cannot change a share code', (await as(mem, `update projects set share_token = '33333333-3333-4333-8333-333333333333' where id='P1' returning share_token`)).rows?.[0]?.share_token === T1);
 { const r = await as(mem, `insert into projects (id, name, share_token) values ('P9','New','44444444-4444-4444-8444-444444444444') returning share_token`);
   check('a new project gets a random share code, not one the browser picks', !r.error && r.rows?.[0]?.share_token && r.rows[0].share_token !== '44444444-4444-4444-8444-444444444444', r.error || ''); }
+{ const before = (await db.query(`select link_id from projects where id = 'P1'`)).rows[0].link_id;
+  check('browsers cannot change a project\'s link id', (await as(mem, `update projects set link_id = '66666666-6666-4666-8666-666666666666' where id='P1' returning link_id`)).rows?.[0]?.link_id === before); }
 await db.exec(`update projects set share_token = '55555555-5555-4555-8555-555555555555' where id = 'P1'`);
 check('after the link is reset, the old pass reads nothing', n(await as(guest, 'select id from projects')) === 0 && n(await as(guest, 'select id from pins')) === 0);
 await db.exec(`update projects set share_token = '${T1}' where id = 'P1'`);

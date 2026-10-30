@@ -93,7 +93,8 @@ export async function summarySettings(): Promise<SummarySettings & { lastSentDat
 const GROUP_WAIT_MS = 60 * 1000;
 const pending = new Map<string, { projectName: string; lines: string[]; timer: NodeJS.Timeout }>();
 
-const pinLink = (projectId: string, pinId: string) => `${APP_URL}/projects/${encodeURIComponent(projectId)}?pin=${encodeURIComponent(pinId)}`;
+const pinLink = (project: { id: string; linkId?: string }, pinId: string) =>
+  `${APP_URL}/projects/${encodeURIComponent(project.linkId || project.id)}?pin=${encodeURIComponent(pinId)}`;
 
 // Chat formatting uses * _ ~ ` and <url|label>; keep client text from breaking it
 const plain = (text: string, max = 120) => {
@@ -102,7 +103,7 @@ const plain = (text: string, max = 120) => {
 };
 
 export function queueChatAlert(project: { id: string; name?: string }, pin: { id: string; number?: number }, what: string, text: string) {
-  const line = `• <${pinLink(project.id, pin.id)}|Pin #${pin.number ?? '?'}> ${what}: _${plain(text) || 'sent a file'}_`;
+  const line = `• <${pinLink(project, pin.id)}|Pin #${pin.number ?? '?'}> ${what}: _${plain(text) || 'sent a file'}_`;
   const group = pending.get(project.id);
   if (group) {
     group.lines.push(line);

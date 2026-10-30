@@ -345,7 +345,7 @@ export const ShareModal: React.FC<ShareModalProps> = ({ isOpen, onClose, current
 
   if (!isOpen) return null;
 
-  const shareUrl = currentProject ? projectUrl(currentProject.id) : '';
+  const shareUrl = currentProject ? projectUrl(currentProject) : '';
   const guestShareUrl = currentProject
     ? reviewUrl(resetToken?.projectId === currentProject.id ? resetToken.token : currentProject.shareToken)
     : '';
